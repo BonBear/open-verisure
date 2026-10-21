@@ -157,8 +157,8 @@ The Verisure sensor features a 7-pad unpopulated programming header labeled **`J
 ### Step 1: Clone the Repository & Install Toolchains
 
 ```bash
-git clone https://github.com/your-username/verisure-sub1ghz.git
-cd verisure-sub1ghz
+git clone https://github.com/BonBear/open-verisure.git
+cd open-verisure
 ```
 
 **Prerequisites:**
@@ -176,25 +176,54 @@ cd verisure-sub1ghz
 
 ---
 
-### Step 2: Configure Keys & Secrets
+### Step 2: Generate Master Key & Configure Secrets
 
-1. **Derive Device Key:**
-   Find the 8-character ID printed on your sensor's casing (e.g. `2JHL 2MVN`):
+Security in the ecosystem begins with your **Master AES-128 Key**. All individual sensor encryption keys are derived from this Master Key, so it **must be generated and configured first** before creating any sensor firmware.
+
+1. **Generate a Random 128-Bit Master AES Key:**
    ```bash
-   python derive_key.py --id "2JHL 2MVN" --write-config
+   python derive_key.py --generate-master
    ```
-   This generates `VerisureDoorSensor/config.h` (which is git-ignored and never committed).
+   This generates a secure 32-character hexadecimal key, for example:
+   ```text
+   [+] Generated Random 128-Bit Master Key (Hex):
+       53D6D35E692885FAF186522FF5971BD9
+   ```
 
-2. **Configure Gateway Secrets:**
+2. **Configure Gateway Secrets (`secrets.h`):**
    Copy the example template:
    ```bash
    cp 868Receiver/src/secrets.h.example 868Receiver/src/secrets.h
    ```
-   Edit `868Receiver/src/secrets.h` with your local Wi-Fi SSID/password and MQTT broker IP. (Settings can also be modified later via the web portal).
+   Edit `868Receiver/src/secrets.h` with your editor:
+   * Set `MASTER_KEY_HEX` to your newly generated 32-character Master Key.
+   * Set `DEFAULT_WIFI_SSID` and `DEFAULT_WIFI_PASS` to your 2.4 GHz Wi-Fi credentials.
+   * Set `DEFAULT_MQTT_HOST`, port, and credentials for your Home Assistant MQTT broker.
+   *(Note: `secrets.h` is git-ignored and will never be committed).*
+
+3. **Derive Your Sensor Device Key:**
+   Find the 8-character ID printed on your physical sensor casing or sticker (e.g. `2JHL 2MVN`):
+   ```bash
+   python derive_key.py --id "2JHL 2MVN" --write-config
+   ```
+   `derive_key.py` automatically reads your configured `MASTER_KEY_HEX` from `868Receiver/src/secrets.h`, derives the unique 16-byte device encryption key, and writes `VerisureDoorSensor/config.h` (also git-ignored).
 
 ---
 
-### Step 3: Build & Flash the Sensor
+### Step 3: Build & Flash the Gateway
+
+Flash the ESP32-S2 gateway first so that it is online and listening for RF packets when you flash your sensor:
+
+Connect the LOLIN S2 Mini via USB (e.g. `COM9`) and flash:
+```bash
+pio run -d 868Receiver -t upload
+```
+* The gateway boots, connects to Wi-Fi, registers with MQTT, and publishes Home Assistant discovery topics.
+* Open the Web Management Portal at `http://<gateway-ip>` (e.g. `http://192.168.0.142`) to verify the status.
+
+---
+
+### Step 4: Build, Flash & Verify the Sensor
 
 With the ESP32 CC-Flasher connected to your network (`http://192.168.0.80`), run:
 
@@ -202,31 +231,20 @@ With the ESP32 CC-Flasher connected to your network (`http://192.168.0.80`), run
 python build_and_flash.py
 ```
 
-The script will:
-1. Compile `VerisureDoorSensor/main.c` with SDCC.
-2. Upload and flash the binary to the sensor over HTTP.
-3. Automatically prompt for the gateway COM port (or auto-select).
-4. Monitor live incoming RF packets to verify the sensor immediately!
-
----
-
-### Step 4: Build & Flash the Gateway
-
-Connect the LOLIN S2 Mini via USB and flash the gateway:
-
-```bash
-cd 868Receiver
-pio run -t upload
-```
+The automation script will:
+1. Compile `VerisureDoorSensor/main.c` with SDCC using the newly generated `config.h`.
+2. Upload the binary to the CC-Flasher via HTTP and program the CC1110 flash memory.
+3. Release the CC1110 reset line to begin execution.
+4. Open the gateway serial port and monitor RF reception in real-time to confirm instant cryptographic authentication!
 
 ---
 
 ### Step 5: Home Assistant Integration
 
-Once the gateway is powered on and connected to your Wi-Fi/MQTT broker:
+Once the gateway is powered on and a sensor transmits:
 1. Open **Home Assistant** $\rightarrow$ **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **MQTT**.
-2. You will see a newly discovered device: **`Verisure 868 Gateway`**.
-3. As soon as a sensor transmits, it automatically registers as a dedicated device (e.g. **`Verisure Sensor 2JHL2MVN`**) with all 6 entities configured and ready for dashboards and automations!
+2. You will see the **`Verisure 868 Gateway`** device.
+3. The sensor automatically appears as a dedicated device (e.g. **`Verisure Sensor 2JHL2MVN`**) with all 6 entities configured and ready for dashboards and automations!
 
 ---
 

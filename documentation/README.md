@@ -45,14 +45,27 @@ flowchart TD
 
 ---
 
-## ⚡ Quick Start
+## ⚡ Quick Start Workflow
 
-1. **Gateway IP:** [http://192.168.0.142](http://192.168.0.142) (Web management dashboard for Wi-Fi, MQTT, and live sensor telemetry).
-2. **Compile & Flash CC1110:**
+1. **Generate Master Key & Configure Secrets:**
+   ```powershell
+   python derive_key.py --generate-master
+   cp 868Receiver/src/secrets.h.example 868Receiver/src/secrets.h
+   # Edit secrets.h with your MASTER_KEY_HEX, Wi-Fi and MQTT credentials
+   ```
+
+2. **Derive Sensor Key:**
+   ```powershell
+   python derive_key.py --id "2JHL 2MVN" --write-config
+   ```
+
+3. **Build & Flash Gateway (ESP32-S2):**
+   ```powershell
+   pio run -d 868Receiver -t upload
+   ```
+   Web management dashboard: [http://192.168.0.142](http://192.168.0.142) (or your local IP).
+
+4. **Build, Flash & Verify Sensor:**
    ```powershell
    python build_and_flash.py
-   ```
-3. **Build & Flash Gateway:**
-   ```powershell
-   pio run -d 868Receiver -t upload --upload-port COM9
    ```

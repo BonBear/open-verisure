@@ -19,18 +19,19 @@ Input:
 Output:
     - Device_Key : 16 bytes (128 bits) AES key in hexadecimal or C-array format.
 
-Usage Examples:
-    # 1. Derive key for a device ID and print to console:
-    python derive_key.py --id "2JHL 2MVN"
+Usage Workflow & Examples:
+    # 1. First, generate a new secure random 128-bit Master Key:
+    python derive_key.py --generate-master
+    # (Copy this key into 868Receiver/src/secrets.h as MASTER_KEY_HEX)
 
-    # 2. Derive key and automatically write to VerisureDoorSensor/config.h:
+    # 2. Derive device key from secrets.h and write directly to VerisureDoorSensor/config.h:
     python derive_key.py --id "2JHL 2MVN" --write-config
 
-    # 3. Use custom master key:
-    python derive_key.py --id "2JHL 2MVN" --master-key "00112233445566778899AABBCCDDEEFF"
+    # 3. Derive key for a device ID and print to console (inspect without writing):
+    python derive_key.py --id "2JHL 2MVN"
 
-    # 4. Generate a new secure random 128-bit Master Key:
-    python derive_key.py --generate-master
+    # 4. Explicitly specify a custom master key via CLI:
+    python derive_key.py --id "2JHL 2MVN" --master-key "00112233445566778899AABBCCDDEEFF"
 ============================================================================
 """
 

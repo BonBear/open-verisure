@@ -6,7 +6,8 @@
  *   cp config.h.example config.h
  *
  * OR AUTOMATICALLY GENERATE `config.h` USING derive_key.py:
- *   python derive_key.py --id "2JHL 2MVN" --write-config
+ *   1. Configure MASTER_KEY_HEX in `868Receiver/src/secrets.h`
+ *   2. Run: python derive_key.py --id "2JHL 2MVN" --write-config
  *
  * NOTE: `config.h` is git-ignored and will never be committed to the repository,
  * keeping your device-specific encryption keys and serial numbers private.

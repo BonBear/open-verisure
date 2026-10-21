@@ -17,7 +17,9 @@ $$\text{DeviceKey} = \text{AES-128-ECB}_{\text{MasterKey}}(\text{DeviceID}_{\tex
    ['2', 'J', 'H', 'L', '2', 'M', 'V', 'N', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
    ```
 3. **Encryption:** The block is encrypted once with AES-128 in ECB mode using the Master Key. The resulting 16-byte ciphertext becomes the permanent AES-128 Device Key.
-4. **Tooling:** Use [`derive_key.py`](file:///c:/repo/Antigravity/derive_key.py) to derive keys and generate `config.h`.
+4. **Tooling & Setup Order:**
+   - **Step A:** Generate your Master Key: `python derive_key.py --generate-master` and paste it into `868Receiver/src/secrets.h` as `MASTER_KEY_HEX`.
+   - **Step B:** Derive individual sensor keys: `python derive_key.py --id "<ID>" --write-config`. The script automatically reads `MASTER_KEY_HEX` from `secrets.h` and writes `VerisureDoorSensor/config.h`.
 
 ---
 
