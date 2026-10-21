@@ -139,7 +139,7 @@ def get_latest_log_id(session: requests.Session, host: str) -> int:
         return 0
 
 
-def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_CC_HOST, force_erase: bool = False) -> Optional[serial.Serial]:
+def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_CC_HOST, force_erase: bool = False, wait_contact: bool = False) -> Optional[serial.Serial]:
     """
     Upload and flash binary image to CC1110 via ESP_CC_Flasher HTTP API.
 
@@ -147,6 +147,7 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
         receiver_port (str, optional): Port to pre-open for live monitoring.
         cc_host (str): HTTP endpoint of CC Flasher.
         force_erase (bool): Force chip erase to unlock protected CC1110.
+        wait_contact (bool): Loop until solid electrical contact with CC1110 is detected.
 
     Returns:
         Optional[serial.Serial]: Pre-opened serial connection or None.
@@ -159,13 +160,44 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
     session.auth = HTTPBasicAuth(CC_USER, CC_PASS)
 
     # 1. Initialize CC debug interface
-    print(f"[*] Connecting to {cc_host}/cc_init...")
-    try:
-        resp = session.post(f"{cc_host}/cc_init", timeout=10)
-        resp.raise_for_status()
-        init_text = resp.text.strip()
-        print(f"[+] {init_text}")
+    if wait_contact:
+        print("[*] Waiting for physical contact with J2 header (press and hold pins against pads)...")
+    else:
+        print(f"[*] Connecting to {cc_host}/cc_init...")
 
+    init_text = ""
+    status_val = 0
+    t_probe_start = time.time()
+    max_probe = 60 if wait_contact else 3
+
+    while time.time() - t_probe_start < max_probe:
+        try:
+            resp = session.post(f"{cc_host}/cc_init", timeout=2)
+            resp.raise_for_status()
+            init_text = resp.text.strip()
+            m = re.search(r'Status:\s*([0-9a-fA-F]+)', init_text)
+            status_val = int(m.group(1), 16) if m else 0
+
+            # Valid response: either chip ID 0104 or active debug status
+            if "0104" in init_text or status_val != 0 or ("0000" not in init_text and "Status: 00" not in init_text):
+                if wait_contact:
+                    print(f"\n[+] Contact detected! {init_text}")
+                else:
+                    print(f"[+] {init_text}")
+                break
+            elif wait_contact:
+                print(".", end="", flush=True)
+        except Exception as e:
+            if not wait_contact:
+                print(f"[-] Failed to reach CC Flasher at {cc_host}: {e}")
+                return None
+        time.sleep(0.25)
+
+    if wait_contact and "0104" not in init_text and status_val == 0:
+        print("\n[-] Timed out waiting for electrical contact.")
+        return None
+
+    try:
         # Check if chip is locked (factory protected) or erase was requested
         status_val = 0
         m = re.search(r'Status:\s*([0-9a-fA-F]+)', init_text)
@@ -340,6 +372,8 @@ def parse_arguments():
                         help="Flash CC1110 without opening receiver serial monitor.")
     parser.add_argument("--erase", "-e", action="store_true",
                         help="Perform full chip erase to unlock protected/factory CC1110 before flashing.")
+    parser.add_argument("--wait-contact", "-w", action="store_true",
+                        help="Wait in real-time until physical electrical contact with CC1110 is detected, then flash instantly.")
     parser.add_argument("--duration", "-d", type=int, default=30,
                         help="Monitoring verification duration in seconds (default: 30).")
 
@@ -371,7 +405,7 @@ def main():
         )
 
     # 3. Flash CC1110
-    ser = flash_firmware(receiver_port=receiver_port, cc_host=args.host, force_erase=args.erase)
+    ser = flash_firmware(receiver_port=receiver_port, cc_host=args.host, force_erase=args.erase, wait_contact=args.wait_contact)
     if not ser and not args.skip_monitor and not receiver_port:
         sys.exit(1)
 
