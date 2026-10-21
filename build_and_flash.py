@@ -139,13 +139,14 @@ def get_latest_log_id(session: requests.Session, host: str) -> int:
         return 0
 
 
-def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_CC_HOST) -> Optional[serial.Serial]:
+def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_CC_HOST, force_erase: bool = False) -> Optional[serial.Serial]:
     """
     Upload and flash binary image to CC1110 via ESP_CC_Flasher HTTP API.
 
     Args:
         receiver_port (str, optional): Port to pre-open for live monitoring.
         cc_host (str): HTTP endpoint of CC Flasher.
+        force_erase (bool): Force chip erase to unlock protected CC1110.
 
     Returns:
         Optional[serial.Serial]: Pre-opened serial connection or None.
@@ -164,8 +165,34 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
         resp.raise_for_status()
         init_text = resp.text.strip()
         print(f"[+] {init_text}")
-        if "Device id: 0000" in init_text:
-            print("\n[-] ERROR: Sensor CC1110 chip not detected (Device id: 0000)!")
+
+        # Check if chip is locked (factory protected) or erase was requested
+        status_val = 0
+        m = re.search(r'Status:\s*([0-9a-fA-F]+)', init_text)
+        if m:
+            status_val = int(m.group(1), 16)
+
+        is_locked = (status_val & 0x04) != 0 or (status_val != 0 and "Device id: 0000" in init_text)
+        if is_locked or force_erase:
+            print("[*] Chip is locked (factory security) or erase requested. Unlocking via chip erase...")
+            try:
+                r_erase = session.post(f"{cc_host}/erase_cc", timeout=10)
+                print(f"[+] {r_erase.text.strip()}")
+                time.sleep(0.5)
+                # Re-initialize to verify unlocked state
+                resp = session.post(f"{cc_host}/cc_init", timeout=10)
+                resp.raise_for_status()
+                init_text = resp.text.strip()
+                print(f"[+] Post-unlock init: {init_text}")
+                m2 = re.search(r'Status:\s*([0-9a-fA-F]+)', init_text)
+                if m2:
+                    status_val = int(m2.group(1), 16)
+            except Exception as e:
+                print(f"[-] Failed during chip unlock: {e}")
+
+        # If it still reports 0000 and status 00, it's genuinely disconnected
+        if "Device id: 0000" in init_text and (status_val == 0 or "Status: 00" in init_text):
+            print("\n[-] ERROR: Sensor CC1110 chip not detected (no electrical contact)!")
             print("    Please check that the physical flasher wires are firmly connected to header J2:")
             print("    - Pin 3 (VCC)   -> 3.3V")
             print("    - Pin 4 (DC)    -> GPIO 19")
@@ -311,6 +338,8 @@ def parse_arguments():
                         help="Only compile CC1110 firmware with SDCC without flashing.")
     parser.add_argument("--skip-monitor", "-s", action="store_true",
                         help="Flash CC1110 without opening receiver serial monitor.")
+    parser.add_argument("--erase", "-e", action="store_true",
+                        help="Perform full chip erase to unlock protected/factory CC1110 before flashing.")
     parser.add_argument("--duration", "-d", type=int, default=30,
                         help="Monitoring verification duration in seconds (default: 30).")
 
@@ -342,7 +371,7 @@ def main():
         )
 
     # 3. Flash CC1110
-    ser = flash_firmware(receiver_port=receiver_port, cc_host=args.host)
+    ser = flash_firmware(receiver_port=receiver_port, cc_host=args.host, force_erase=args.erase)
     if not ser and not args.skip_monitor and not receiver_port:
         sys.exit(1)
 
