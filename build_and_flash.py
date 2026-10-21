@@ -406,7 +406,8 @@ def main():
 
     # 3. Flash CC1110
     ser = flash_firmware(receiver_port=receiver_port, cc_host=args.host, force_erase=args.erase, wait_contact=args.wait_contact)
-    if not ser and not args.skip_monitor and not receiver_port:
+    if not ser:
+        print("\n[-] Flashing failed. Monitoring aborted.")
         sys.exit(1)
 
     # 4. Monitor receiver
