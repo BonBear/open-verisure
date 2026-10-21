@@ -75,20 +75,20 @@ def main():
     port_arg, duration, baud = parse_arguments()
 
     # If no port specified, or if requested port is not available, prompt user
-    port = select_com_port(preferred_port=port_arg, hint_keyword="Gateway", prompt_title="Välj Gateway Serieport")
+    port = select_com_port(preferred_port=port_arg, hint_keyword="Gateway", prompt_title="Select Gateway Serial Port")
     if not port:
         sys.exit(1)
 
-    dur_str = f"{duration} sekunder" if duration > 0 else "tills Ctrl+C trycks"
+    dur_str = f"{duration} seconds" if duration > 0 else "until Ctrl+C is pressed"
     print("=" * 65)
-    print(f"  ÖVERVAKAR VERISURE GATEWAY PÅ {port} ({dur_str})")
-    print("  Tryck på sabotageknappen, flytta magneten eller skaka sensorn!")
+    print(f"  MONITORING VERISURE GATEWAY ON {port} ({dur_str})")
+    print("  Press tamper button, move magnet, or shake the sensor!")
     print("=" * 65 + "\n")
 
     try:
         ser = serial.Serial(port, baud, timeout=0.1)
     except Exception as e:
-        print(f"[-] Kunde inte öppna {port}: {e}")
+        print(f"[-] Failed to open {port}: {e}")
         sys.exit(1)
 
     t0 = time.time()
@@ -100,11 +100,11 @@ def main():
             if line:
                 print(line)
     except KeyboardInterrupt:
-        print("\nAvbruten av användaren.")
+        print("\nCancelled by user.")
     finally:
         ser.close()
         print("\n" + "=" * 65)
-        print("  Övervakning avslutad.")
+        print("  Monitoring finished.")
         print("=" * 65)
 
 

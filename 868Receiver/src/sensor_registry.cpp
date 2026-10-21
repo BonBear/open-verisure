@@ -35,9 +35,9 @@ void sensorRegistryUpdate(const VerisureTelemetry& telem) {
         s_sensors[idx].firstSeenMs = millis();
         s_sensors[idx].lastSeenMs = millis();
         s_sensors[idx].packetCount = 1;
-        Serial.printf("[Registry] Registrerade ny sensor: %s (Totalt: %d)\n", telem.deviceId, s_count);
+        Serial.printf("[Registry] Registered new sensor: %s (Total: %d)\n", telem.deviceId, s_count);
     } else {
-        Serial.printf("[Registry] Varning: Registret fullt (%d sensorer), ignorerar ny enhet %s\n",
+        Serial.printf("[Registry] Warning: Registry full (%d sensors), ignoring new node %s\n",
                       MAX_SENSORS, telem.deviceId);
     }
 }

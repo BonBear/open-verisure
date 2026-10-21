@@ -109,10 +109,10 @@ void ConfigManager::begin() {
     }
     bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
 
-    Serial.println("[Config] Läste in inställningar:");
-    Serial.printf("         Wi-Fi SSID  : %s\n", s_config.wifiSsid[0] ? s_config.wifiSsid : "(ej konfigurerat)");
+    Serial.println("[Config] Loaded configuration:");
+    Serial.printf("         Wi-Fi SSID  : %s\n", s_config.wifiSsid[0] ? s_config.wifiSsid : "(not configured)");
     Serial.printf("         MQTT Broker : %s:%d (Topic: %s)\n",
-                  s_config.mqttHost[0] ? s_config.mqttHost : "(ej konfigurerat)",
+                  s_config.mqttHost[0] ? s_config.mqttHost : "(not configured)",
                   s_config.mqttPort, s_config.mqttTopic);
     Serial.printf("         Master Key  : %s\n", s_config.masterKeyHex);
 }
@@ -130,7 +130,7 @@ bool ConfigManager::save() {
     s_prefs.putString("mqtt_pass", s_config.mqttPass);
     s_prefs.putString("mqtt_topic", s_config.mqttTopic);
     s_prefs.putBytes("master_key", s_config.masterKey, 16);
-    Serial.println("[Config] Inställningar sparade till NVS!");
+    Serial.println("[Config] Configuration saved to NVS!");
     return true;
 }
 
@@ -146,7 +146,7 @@ void ConfigManager::resetToDefaults() {
     hexToBytes(DEFAULT_MASTER_KEY_HEX, s_config.masterKey, 16);
     bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
     save();
-    Serial.println("[Config] NVS återställd till fabriksinställningar.");
+    Serial.println("[Config] NVS reset to factory defaults.");
 }
 
 void ConfigManager::setWifi(const char* ssid, const char* pass) {

@@ -40,6 +40,6 @@ bool mqttIsConnected();
 
 /**
  * @brief Get human-readable connection status string.
- * @return "Ansluten (IP:Port)" or "Frånkopplad / Försöker ansluta...".
+ * @return "Connected (IP:Port)" or "Disconnected / Retrying...".
  */
 String mqttGetStatusString();

@@ -14,9 +14,9 @@
  * 1. Contact (Door Sensor, device_class: door) - binary_sensor
  * 2. Vibration (Shock / Break-in Sensor) - binary_sensor
  * 3. Tamper (Sabotage / Cover Sensor) - binary_sensor
- * 4. Batteri (Battery Percentage 0-100%) - sensor
- * 5. Batterispänning (Millivolts mV) - sensor
- * 6. Signalstyrka (RF RSSI in dBm) - sensor
+ * 4. Battery (Battery Percentage 0-100%) - sensor
+ * 5. Battery Voltage (Millivolts mV) - sensor
+ * 6. Signal Strength (RF RSSI in dBm) - sensor
  */
 
 #pragma once

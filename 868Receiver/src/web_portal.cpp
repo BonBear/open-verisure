@@ -23,7 +23,7 @@ static uint32_t s_cachedPackets = 0;
 
 static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="sv">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -97,27 +97,27 @@ button.danger:hover { background: #b91c1c; }
         <div style="font-size: 12px; color: var(--text-muted);">TI CC1101 &bull; 868.950 MHz &bull; AES-128 KDF</div>
       </div>
     </div>
-    <div id="net-badge" class="badge badge-sta">Ansluten</div>
+    <div id="net-badge" class="badge badge-sta">Connected</div>
   </header>
 
-  <!-- Live Telemetri -->
+  <!-- Live Telemetry -->
   <div class="card">
-    <h2><span class="pulse-dot"></span> Realtidstelemetri & Radio</h2>
+    <h2><span class="pulse-dot"></span> Live Telemetry & Radio</h2>
     <div class="stats-grid">
       <div class="stat-box">
-        <div class="stat-label">Radiofrekvens</div>
+        <div class="stat-label">Radio Frequency</div>
         <div class="stat-val">868.950 MHz</div>
       </div>
       <div class="stat-box">
-        <div class="stat-label">Radio RSSI (Brusgolv)</div>
+        <div class="stat-label">Radio RSSI (Noise Floor)</div>
         <div id="radio-rssi" class="stat-val">- dBm</div>
       </div>
       <div class="stat-box">
-        <div class="stat-label">Totalt Mottagna Paket</div>
+        <div class="stat-label">Total Received Packets</div>
         <div id="radio-packets" class="stat-val">0</div>
       </div>
       <div class="stat-box">
-        <div class="stat-label">Aktiva Sensorer</div>
+        <div class="stat-label">Active Sensors</div>
         <div id="sensor-count" class="stat-val">0</div>
       </div>
     </div>
@@ -126,47 +126,47 @@ button.danger:hover { background: #b91c1c; }
       <table>
         <thead>
           <tr>
-            <th>Enhet-ID</th>
+            <th>Device ID</th>
             <th>Magnet</th>
-            <th>Skak</th>
-            <th>Knapp</th>
-            <th>Batteri</th>
+            <th>Shock</th>
+            <th>Tamper</th>
+            <th>Battery</th>
             <th>Signal</th>
-            <th>Sekvens</th>
-            <th>Senast Sedd</th>
+            <th>Sequence</th>
+            <th>Last Seen</th>
           </tr>
         </thead>
         <tbody id="sensors-table-body">
-          <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">Väntar på radiosignal från sensorer...</td></tr>
+          <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">Waiting for radio signal from sensors...</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 
-  <!-- Gateway Konfiguration -->
+  <!-- Gateway Configuration -->
   <form id="config-form" class="card" onsubmit="saveConfig(event)">
-    <h2>&#9881;&#65039; Gateway-konfiguration</h2>
+    <h2>&#9881;&#65039; Gateway Configuration</h2>
     <div class="form-grid">
       <div class="form-group full">
-        <label>Wi-Fi Nätverk (SSID)</label>
+        <label>Wi-Fi Network (SSID)</label>
         <div class="input-row">
-          <input type="text" id="wifi_ssid" name="wifi_ssid" placeholder="Ditt Wi-Fi-namn" required>
-          <button type="button" class="secondary" onclick="scanWifi()">Skanna Wi-Fi</button>
+          <input type="text" id="wifi_ssid" name="wifi_ssid" placeholder="Your Wi-Fi SSID" required>
+          <button type="button" class="secondary" onclick="scanWifi()">Scan Wi-Fi</button>
         </div>
         <div id="scan-results" class="scan-list"></div>
       </div>
 
       <div class="form-group full">
-        <label>Wi-Fi Lösenord</label>
+        <label>Wi-Fi Password</label>
         <div class="input-row">
-          <input type="password" id="wifi_pass" name="wifi_pass" placeholder="Lämna tomt om öppet nätverk">
+          <input type="password" id="wifi_pass" name="wifi_pass" placeholder="Leave blank if open network">
           <button type="button" class="secondary" onclick="togglePass('wifi_pass')">&#128065;</button>
         </div>
       </div>
 
       <div class="form-group">
         <label>MQTT Broker Host / IP</label>
-        <input type="text" id="mqtt_host" name="mqtt_host" placeholder="t.ex. 192.168.0.100">
+        <input type="text" id="mqtt_host" name="mqtt_host" placeholder="e.g. 192.168.0.100">
       </div>
 
       <div class="form-group">
@@ -175,14 +175,14 @@ button.danger:hover { background: #b91c1c; }
       </div>
 
       <div class="form-group">
-        <label>MQTT Användarnamn</label>
-        <input type="text" id="mqtt_user" name="mqtt_user" placeholder="Frivilligt">
+        <label>MQTT Username</label>
+        <input type="text" id="mqtt_user" name="mqtt_user" placeholder="Optional">
       </div>
 
       <div class="form-group">
-        <label>MQTT Lösenord</label>
+        <label>MQTT Password</label>
         <div class="input-row">
-          <input type="password" id="mqtt_pass" name="mqtt_pass" placeholder="Frivilligt">
+          <input type="password" id="mqtt_pass" name="mqtt_pass" placeholder="Optional">
           <button type="button" class="secondary" onclick="togglePass('mqtt_pass')">&#128065;</button>
         </div>
       </div>
@@ -193,21 +193,21 @@ button.danger:hover { background: #b91c1c; }
       </div>
 
       <div class="form-group full">
-        <label>Master AES-128 Krypteringsnyckel (32 hex-tecken)</label>
+        <label>Master AES-128 Encryption Key (32 hex characters)</label>
         <div class="input-row">
           <input type="text" id="master_key" name="master_key" pattern="[0-9a-fA-F]{32}" maxlength="32" placeholder="0102030405060708090A0B0C0D0E0F10" required>
-          <button type="button" class="secondary" onclick="generateKey()">Slumpa Nyckel</button>
+          <button type="button" class="secondary" onclick="generateKey()">Generate Key</button>
         </div>
         <small style="color: var(--text-muted); font-size: 11px; margin-top: 4px;">
-          Unika enhetsnycklar härleds automatiskt ur denna Master Key via KDF: <code>AES_Master(Enhets_ID)</code>.
+          Unique device keys are automatically derived from this Master Key via KDF: <code>AES_Master(Device_ID)</code>.
         </small>
       </div>
     </div>
 
     <div class="btn-bar">
-      <button type="button" class="danger" onclick="factoryReset()">Återställ NVS</button>
-      <button type="button" class="secondary" onclick="rebootGateway()">Starta Om</button>
-      <button type="submit">Spara & Starta Om</button>
+      <button type="button" class="danger" onclick="factoryReset()">Factory Reset NVS</button>
+      <button type="button" class="secondary" onclick="rebootGateway()">Reboot</button>
+      <button type="submit">Save & Reboot</button>
     </div>
   </form>
 </div>
@@ -270,13 +270,13 @@ async function fetchStatus() {
     // Render sensor table
     const tbody = document.getElementById('sensors-table-body');
     if (data.sensors.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">Väntar på radiosignal från sensorer...</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">Waiting for radio signal from sensors...</td></tr>';
     } else {
       let rows = '';
       data.sensors.forEach(s => {
-        const magBadge = s.magnet ? '<span class="badge badge-alarm">ÖPPEN (LARM)</span>' : '<span class="badge badge-ok">STÄNGD</span>';
-        const shockBadge = s.shock ? '<span class="badge badge-alarm">VIBRATION!</span>' : '<span class="badge badge-ok">Lugnt</span>';
-        const btnBadge = s.button ? '<span class="badge badge-alarm">TRYCKT</span>' : (s.power_on ? '<span class="badge badge-ap">Power-On</span>' : 'Normal');
+        const magBadge = s.magnet ? '<span class="badge badge-alarm">OPEN (ALARM)</span>' : '<span class="badge badge-ok">CLOSED</span>';
+        const shockBadge = s.shock ? '<span class="badge badge-alarm">SHOCK!</span>' : '<span class="badge badge-ok">Clear</span>';
+        const btnBadge = s.button ? '<span class="badge badge-alarm">TAMPER</span>' : (s.power_on ? '<span class="badge badge-ap">Power-On</span>' : 'Normal');
         const battBadge = s.low_battery ? '<span style="color:var(--danger)">' + s.battery_mv + ' mV (' + s.battery_pct + '%)</span>' : s.battery_mv + ' mV (' + s.battery_pct + '%)';
         rows += `<tr>
           <td><strong>${s.id}</strong></td>
@@ -286,7 +286,7 @@ async function fetchStatus() {
           <td>${battBadge}</td>
           <td>${s.rssi} dBm (LQI ${s.lqi})</td>
           <td>#${s.seq}</td>
-          <td>${s.last_seen_sec} s sedan</td>
+          <td>${s.last_seen_sec}s ago</td>
         </tr>`;
       });
       tbody.innerHTML = rows;
@@ -299,12 +299,12 @@ async function fetchStatus() {
 async function scanWifi() {
   const box = document.getElementById('scan-results');
   box.style.display = 'block';
-  box.innerHTML = '<div style="padding:10px; color:var(--text-muted); font-size:13px;">Skannar efter nätverk...</div>';
+  box.innerHTML = '<div style="padding:10px; color:var(--text-muted); font-size:13px;">Scanning for networks...</div>';
   try {
     const res = await fetch('/api/scan');
     const list = await res.json();
     if (list.length === 0) {
-      box.innerHTML = '<div style="padding:10px; color:var(--text-muted); font-size:13px;">Inga nätverk hittades.</div>';
+      box.innerHTML = '<div style="padding:10px; color:var(--text-muted); font-size:13px;">No networks found.</div>';
       return;
     }
     let html = '';
@@ -316,7 +316,7 @@ async function scanWifi() {
     });
     box.innerHTML = html;
   } catch (err) {
-    box.innerHTML = '<div style="padding:10px; color:var(--danger); font-size:13px;">Skanning misslyckades.</div>';
+    box.innerHTML = '<div style="padding:10px; color:var(--danger); font-size:13px;">Scan failed.</div>';
   }
 }
 
@@ -341,30 +341,30 @@ async function saveConfig(e) {
     });
     const reply = await res.json();
     if (reply.ok) {
-      showToast('Inställningar sparade! Startar om gateway om 3 sekunder...', false);
+      showToast('Settings saved! Rebooting gateway in 3 seconds...', false);
       setTimeout(() => { location.reload(); }, 6000);
     } else {
-      showToast('Fel: ' + (reply.error || 'Kunde inte spara'), true);
+      showToast('Error: ' + (reply.error || 'Failed to save'), true);
     }
   } catch (err) {
-    showToast('Kunde inte ansluta till gateway.', true);
+    showToast('Failed to connect to gateway.', true);
   }
 }
 
 async function rebootGateway() {
-  if (!confirm('Vill du starta om gatewayn?')) return;
+  if (!confirm('Reboot the gateway?')) return;
   try {
     await fetch('/api/reboot', { method: 'POST' });
-    showToast('Startar om gateway... Laddar om sidan om 5 sekunder.', false);
+    showToast('Rebooting gateway... Reloading page in 5 seconds.', false);
     setTimeout(() => { location.reload(); }, 6000);
   } catch (err) {}
 }
 
 async function factoryReset() {
-  if (!confirm('VARNING: Detta raderar alla sparade inställningar (Wi-Fi, nyckel, MQTT) i NVS! Fortsätt?')) return;
+  if (!confirm('WARNING: This will erase all stored settings (Wi-Fi, master key, MQTT) in NVS! Continue?')) return;
   try {
     await fetch('/api/reset', { method: 'POST' });
-    showToast('NVS rensat. Startar om gateway...', false);
+    showToast('NVS erased. Rebooting gateway...', false);
     setTimeout(() => { location.reload(); }, 6000);
   } catch (err) {}
 }
@@ -533,7 +533,7 @@ static void handleApiSave() {
 
     if (key.length() == 32) {
         if (!ConfigManager::setMasterKeyHex(key.c_str())) {
-            s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Ogiltig Master Key (måste vara 32 hex-tecken)\"}");
+            s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid Master Key (must be 32 hex characters)\"}");
             return;
         }
     }
@@ -562,13 +562,13 @@ void webPortalInit() {
 
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
         if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
-            Serial.println("[WiFi-Event] Ansluten till AP (Länk etablerad)");
+            Serial.println("[WiFi-Event] Connected to AP (Link established)");
         } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-            Serial.printf("[WiFi-Event] IP tilldelad via DHCP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+            Serial.printf("[WiFi-Event] IP assigned via DHCP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
             s_isApMode = false;
             MDNS.begin("verisure-gateway");
         } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-            Serial.printf("[WiFi-Event] Frånkopplad från Wi-Fi. Orsakskod: %d\n", info.wifi_sta_disconnected.reason);
+            Serial.printf("[WiFi-Event] Disconnected from Wi-Fi. Reason: %d\n", info.wifi_sta_disconnected.reason);
         }
     });
 
@@ -579,15 +579,15 @@ void webPortalInit() {
 
     if (cfg.wifiSsid[0]) {
         s_wifiMulti.addAP(cfg.wifiSsid, cfg.wifiPass);
-        Serial.printf("[Wi-Fi] Ansluter till konfigurerat SSID: %s...\n", cfg.wifiSsid);
+        Serial.printf("[Wi-Fi] Connecting to configured SSID: %s...\n", cfg.wifiSsid);
         s_wifiMulti.run(5000);
     } else {
-        Serial.println("[Wi-Fi] Inget Wi-Fi SSID konfigurerat. Startar Access Point 'Verisure-Gateway'...");
+        Serial.println("[Wi-Fi] No Wi-Fi SSID configured. Starting Access Point 'Verisure-Gateway'...");
         WiFi.mode(WIFI_AP);
         WiFi.softAP("Verisure-Gateway", "12345678");
         s_dnsServer.start(53, "*", WiFi.softAPIP());
         s_isApMode = true;
-        Serial.printf("[Wi-Fi] AP startad! IP: %s (Lösenord: 12345678)\n", WiFi.softAPIP().toString().c_str());
+        Serial.printf("[Wi-Fi] AP started! IP: %s (Password: 12345678)\n", WiFi.softAPIP().toString().c_str());
     }
 
     // Web routes
@@ -607,7 +607,7 @@ void webPortalInit() {
     s_server.onNotFound(handleRoot);
 
     s_server.begin();
-    Serial.println("[WebPortal] HTTP-server startad på port 80.");
+    Serial.println("[WebPortal] HTTP server started on port 80.");
 }
 
 void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
@@ -631,7 +631,7 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
         if (!wasConnected) {
             wasConnected = true;
             s_isApMode = false;
-            Serial.printf("[Wi-Fi] Ansluten till \"%s\"! IP: %s | RSSI: %d dBm\n",
+            Serial.printf("[Wi-Fi] Connected to \"%s\"! IP: %s | RSSI: %d dBm\n",
                           WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
             MDNS.begin("verisure-gateway");
         }
@@ -639,13 +639,13 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
         wasConnected = false;
         if (millis() - lastAttempt >= reconnectInterval) {
             lastAttempt = millis();
-            Serial.println("[Wi-Fi] Försöker ansluta via WiFiMulti...");
+            Serial.println("[Wi-Fi] Attempting connection via WiFiMulti...");
             s_wifiMulti.run(3000);
         }
     }
 
     if (s_rebootAt > 0 && millis() >= s_rebootAt) {
-        Serial.println("[System] Startar om ESP32 nu...");
+        Serial.println("[System] Rebooting ESP32 now...");
         delay(100);
         ESP.restart();
     }
@@ -658,5 +658,5 @@ bool webPortalIsApMode() {
 String webPortalGetIp() {
     if (s_isApMode) return WiFi.softAPIP().toString();
     if (WiFi.status() == WL_CONNECTED) return WiFi.localIP().toString();
-    return "Ansluter...";
+    return "Connecting...";
 }

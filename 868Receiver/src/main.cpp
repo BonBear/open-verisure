@@ -159,7 +159,7 @@ void setup() {
     delay(2000);
 
     Serial.println("\n=======================================================");
-    Serial.println("  ESP32-S2 VERISURE GATEWAY & MOTTAGARE (868.950 MHz) ");
+    Serial.println("  ESP32-S2 VERISURE GATEWAY & RECEIVER (868.950 MHz)   ");
     Serial.println("=======================================================\n");
 
     // 1. Initialize WebPortal, NVS Config, Serial CLI & MQTT
@@ -167,7 +167,7 @@ void setup() {
     serialCliInit();
     mqttInit();
 
-    Serial.println("[System] Ger Wi-Fi tid att etablera länk innan radio startas...");
+    Serial.println("[System] Allowing Wi-Fi time to establish connection before radio start...");
     unsigned long wifiWaitStart = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - wifiWaitStart < 8000) {
         delay(250);
@@ -175,10 +175,10 @@ void setup() {
     }
     Serial.println();
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("[Wi-Fi] Ansluten direkt! IP: %s | RSSI: %d dBm\n",
+        Serial.printf("[Wi-Fi] Connected! IP: %s | RSSI: %d dBm\n",
                       WiFi.localIP().toString().c_str(), WiFi.RSSI());
     } else {
-        Serial.println("[Wi-Fi] Fortsätter ansluta i bakgrunden...");
+        Serial.println("[Wi-Fi] Connecting in background...");
     }
 
     // 2. Initialize CC1101 SPI & Radio Transceiver on ADC1 pins
@@ -194,12 +194,12 @@ void setup() {
                       ver, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
         initRadioRegisters();
         printTimestamp(millis());
-        Serial.println("[System] Mottagaren lyssnar på 868.950 MHz (Robust RX, 30/32 Sync)...");
+        Serial.println("[System] Receiver listening on 868.950 MHz (Robust RX, 30/32 Sync)...");
     } else {
         s_radioOnline = false;
-        Serial.printf("  [CC1101] Ingen kontakt (läste 0x%02X på SCK=%d, MISO=%d, MOSI=%d, CS=%d).\n",
+        Serial.printf("  [CC1101] No communication (read 0x%02X on SCK=%d, MISO=%d, MOSI=%d, CS=%d).\n",
                       ver, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
-        Serial.println("  [CC1101] CC1101 urkopplad - väntar på koppling till säkra pinnar (GPIO 3, 5, 7, 9).\n");
+        Serial.println("  [CC1101] CC1101 disconnected - waiting for connection on pins (GPIO 3, 5, 7, 9).\n");
     }
 
     lastEventTime = millis();
@@ -221,14 +221,14 @@ void loop() {
             byte ver = ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION);
             if (ver == 0x04 || ver == 0x14) {
                 s_radioOnline = true;
-                Serial.printf("\n[CC1101] MODUL DETEKTERAD! Version: 0x%02X. Initierar radio...\n", ver);
+                Serial.printf("\n[CC1101] MODULE DETECTED! Version: 0x%02X. Initializing radio...\n", ver);
                 initRadioRegisters();
             }
         }
-        Serial.printf("[Gateway Heartbeat] Wi-Fi: %s | MQTT: %s | CC1101: %s | RSSI: %d dBm | Paket: %lu\n",
-                      WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Ansluter...",
+        Serial.printf("[Gateway Heartbeat] Wi-Fi: %s | MQTT: %s | CC1101: %s | RSSI: %d dBm | Packets: %lu\n",
+                      WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Connecting...",
                       mqttGetStatusString().c_str(),
-                      s_radioOnline ? "Online (868.95 MHz)" : "Urkopplad",
+                      s_radioOnline ? "Online (868.95 MHz)" : "Disconnected",
                       s_radioOnline ? cachedRssi : 0,
                       packetCount);
     }
@@ -277,20 +277,20 @@ void loop() {
                     printTimestamp(now);
                     Serial.printf(">>> [#%04lu] [AUTHENTICATED] Device: \"%s\" | Seq: #%u <<<\n",
                                   packetCount, telem.deviceId, telem.sequence);
-                    Serial.printf("    Magnet  : %s\n", telem.isOpen ? "ÖPPEN [LARM!]" : "STÄNGD (Säkrad)");
-                    Serial.printf("    Shock   : %s\n", telem.isShock ? "SKAK / VIBRATION DETEKTERAD!" : "Lugnt");
-                    Serial.printf("    Sabotage: %s\n", telem.isButton ? "SABOTAGE (Lock av!)" : "Säkrad (Lock på)");
-                    Serial.printf("    Battery : %u mV (%u%%)%s\n", telem.batteryMv, telem.batteryPct, telem.isLowBatt ? " [LÅGT BATTERI!]" : "");
+                    Serial.printf("    Magnet  : %s\n", telem.isOpen ? "OPEN [ALARM!]" : "CLOSED (Secure)");
+                    Serial.printf("    Shock   : %s\n", telem.isShock ? "SHOCK / VIBRATION DETECTED!" : "Clear");
+                    Serial.printf("    Tamper  : %s\n", telem.isButton ? "TAMPER (Cover removed!)" : "Secure (Cover closed)");
+                    Serial.printf("    Battery : %u mV (%u%%)%s\n", telem.batteryMv, telem.batteryPct, telem.isLowBatt ? " [LOW BATTERY!]" : "");
                     Serial.printf("    Signal  : RSSI %d dBm | LQI %u | CRC: OK\n", telem.rssi, telem.lqi);
                     Serial.printf("    Pins    : P0=0x%02X P1=0x%02X P2=0x%02X (P2_0=%d) RST_CAUSE=%u\n\n",
                                   telem.rawP0, telem.rawP1, telem.rawP2, telem.rawP2 & 0x01, telem.rawRst);
                 } else {
                     printTimestamp(now);
-                    Serial.println("[Security] Paket mottaget men avvisades (felaktig nyckel, spoofing eller replay-attack).");
+                    Serial.println("[Security] Packet received but rejected (invalid key, spoofing, or replay attack).");
                 }
             } else {
                 printTimestamp(now);
-                Serial.println("[Radio] Paket mottaget med felaktig hårdvaru-CRC (kastas).");
+                Serial.println("[Radio] Packet received with invalid hardware CRC (dropped).");
             }
             enterRxMode();
         } else if (bytesInFifo > 0) {

@@ -49,7 +49,7 @@ static const HaEntityDef S_SENSOR_ENTITIES[] = {
     {
         "battery",
         "sensor",
-        "Batteri",
+        "Battery",
         "battery",
         "measurement",
         "%",
@@ -61,7 +61,7 @@ static const HaEntityDef S_SENSOR_ENTITIES[] = {
     {
         "voltage",
         "sensor",
-        "Batterispänning",
+        "Battery Voltage",
         "voltage",
         "measurement",
         "mV",
@@ -73,7 +73,7 @@ static const HaEntityDef S_SENSOR_ENTITIES[] = {
     {
         "rssi",
         "sensor",
-        "Signalstyrka",
+        "Signal Strength",
         "signal_strength",
         "measurement",
         "dBm",
@@ -91,7 +91,7 @@ static const HaEntityDef S_GATEWAY_ENTITIES[] = {
     {
         "radio_rssi",
         "sensor",
-        "Radiobrus",
+        "Radio Noise Floor",
         "signal_strength",
         "measurement",
         "dBm",
@@ -103,7 +103,7 @@ static const HaEntityDef S_GATEWAY_ENTITIES[] = {
     {
         "packets",
         "sensor",
-        "Mottagna paket",
+        "Packets Received",
         nullptr,
         "total_increasing",
         "pkts",
@@ -115,10 +115,10 @@ static const HaEntityDef S_GATEWAY_ENTITIES[] = {
     {
         "sensors",
         "sensor",
-        "Aktiva sensorer",
+        "Active Sensors",
         nullptr,
         "measurement",
-        "st",
+        "sensors",
         "{{ value_json.sensors }}",
         nullptr,
         nullptr,

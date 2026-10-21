@@ -1,75 +1,75 @@
-# Protokoll, RF & Kryptografi: Verisure Sub-1GHz AES-128
+# Protocol, RF & Cryptography: Verisure Sub-1GHz AES-128
 
-Detta dokument beskriver den fullständiga specifikationen för radiosändningen på 868.950 MHz, den kryptografiska nyckelhärledningen (KDF), paketstrukturen och replay-attack-skyddet i gatewayen.
+This document describes the radio transmission specification at 868.950 MHz, the cryptographic Key Derivation Function (KDF), the packet frame layout, and the replay attack prevention implemented in the gateway.
 
 ---
 
-## 🔑 Nyckelhärledning (Key Derivation Function - KDF)
+## 🔑 Key Derivation Function (KDF)
 
-Verisure-systemet använder en hierarkisk nyckelstruktur där varje sensor har en unik **Device AES Key**, härledd ur en central **Master Key** och sensorns 8-tecken Device ID (t.ex. `2JHL2MVN`).
+The Verisure ecosystem employs a hierarchical key architecture where each physical sensor possesses a unique **Device AES Key**, derived from a central **Master Key** combined with the sensor's 8-character physical Device ID (e.g. `2JHL2MVN`).
 
-### Matematiskt Flöde
+### Mathematical Specification
 $$\text{DeviceKey} = \text{AES-128-ECB}_{\text{MasterKey}}(\text{DeviceID}_{\text{ASCII}} \,\|\, \text{Padding})$$
 
-1. **Master Key (16 bytes):** Genereras eller hämtas från centralenheten/gatewayen (t.ex. `01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10`).
-2. **Input Block (16 bytes):** De 8 ASCII-tecknen från sensorns ID noll-paddade till 16 bytes:
+1. **Master Key (16 bytes):** Stored securely on the gateway / central receiver (e.g. `01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10`).
+2. **Input Block (16 bytes):** The 8 ASCII characters of the sensor ID right-padded with 8 zero bytes:
    ```text
    ['2', 'J', 'H', 'L', '2', 'M', 'V', 'N', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
    ```
-3. **Kryptering:** Blocket krypteras en gång med AES-128 i ECB-läge med Master-nyckeln. Resultatet blir sensorns permanenta 16-bytes AES-128 enhetsnyckel.
-4. **Verktyg:** Använd [`derive_key.py`](file:///c:/repo/Antigravity/derive_key.py) för att automatiskt härleda nyckeln och uppdatera sensorns `config.h`.
+3. **Encryption:** The block is encrypted once with AES-128 in ECB mode using the Master Key. The resulting 16-byte ciphertext becomes the permanent AES-128 Device Key.
+4. **Tooling:** Use [`derive_key.py`](file:///c:/repo/Antigravity/derive_key.py) to derive keys and generate `config.h`.
 
 ---
 
-## 📦 Paketstruktur (24 Bytes + 2 Bytes Hårdvaru-CRC)
+## 📦 Packet Structure (24 Bytes + 2 Bytes Hardware CRC)
 
-Radion sänder ett paket med fast längd på **24 bytes**, följt av 2 bytes hårdvarugenererad CC1101/CC1110 CRC16.
+The radio transmits a fixed-length frame of **24 bytes**, followed by 2 bytes of hardware-generated CC1101/CC1110 CRC16.
 
 ```
 +--------------------------------+-------------------------------------------------+
 |   Bytes 0..7: Plaintext Header  |          Bytes 8..23: AES-128 Ciphertext         |
-|   (8-tecken Device ID)         |          (Krypterad med Device Key)             |
+|   (8-character Device ID)      |          (Encrypted with Device Key)            |
 +--------------------------------+-------------------------------------------------+
 ```
 
 ### 1. Plaintext Header (Bytes 0..7)
-Innehåller sensorns 8-tecken alfanumeriska ID (t.ex. `2JHL2MVN`). Gatewayen läser detta i klartext för att identifiera vilken enhet som sänder och hämta motsvarande härledda enhetsnyckel ur sessionstabellen.
+Contains the sensor's 8-character alphanumeric identifier (e.g. `2JHL2MVN`). The gateway reads this in plaintext to look up the corresponding derived device key from its active session table.
 
-### 2. Krypterad Payload (16 Bytes AES-128 Block)
-Avkodas av gatewayen till följande 16 byte telemetri:
+### 2. Encrypted Payload (16-Byte AES-128 Block)
+Decrypted by the gateway into the following 16-byte telemetry fields:
 
-| Byte Index | Fält | Datatyp | Beskrivning |
+| Byte Index | Field | Data Type | Description |
 | :---: | :--- | :---: | :--- |
-| **`0..1`** | **Sekvensnummer** | `uint16_t` (Big-Endian) | Rullande räknare (`0` till `65535`), ökar för varje sänt paket. |
-| **`2`** | **Sensorflaggor** | `uint8_t` (Bitmask) | Sensorstatusbitar (se tabell nedan). |
-| **`3`** | **Batteriprocent** | `uint8_t` | Uppskattad laddning `0`–`100 %`. |
-| **`4..5`** | **Batterispänning**| `uint16_t` (Big-Endian) | Uppmätt spänning i millivolt (t.ex. `3370 mV` för 3.37 V). |
-| **`6..9`** | **Device ID Echo** | `char[4]` | De 4 första tecknen i Device ID (integritetskontroll mot nyckelfel). |
-| **`10..11`**| **Magic Bytes** | `char[2]` | Fast signatur: `'V'`, `'S'` (Verisure Sensor). |
-| **`12`** | **Port 0 Diagnostik**| `uint8_t` | Råvärde från CC1110 `P0` (P0_1 Tamper, P0_2/P0_4 LED). |
-| **`13`** | **Port 1 Diagnostik**| `uint8_t` | Råvärde från CC1110 `P1` (P1_7 Reed, P1_2 Shock). |
-| **`14`** | **Port 2 Diagnostik**| `uint8_t` | Råvärde från CC1110 `P2` (P2_0, P2_1 DD, P2_2 DC). |
-| **`15`** | **Reset Cause** | `uint8_t` | `SLEEP.RST[1:0]` (0=Power-On, 1=Extern Reset). |
+| **`0..1`** | **Sequence Number** | `uint16_t` (Big-Endian) | Rolling counter (`0` to `65535`), increments with each transmission. |
+| **`2`** | **Sensor Flags** | `uint8_t` (Bitmask) | Real-time sensor state flags (see table below). |
+| **`3`** | **Battery Percentage**| `uint8_t` | Approximate capacity `0`–`100%`. |
+| **`4..5`** | **Battery Voltage** | `uint16_t` (Big-Endian) | Measured supply voltage in millivolts (e.g. `3370 mV` for 3.37 V). |
+| **`6..9`** | **Device ID Echo** | `char[4]` | First 4 characters of Device ID (integrity check against key mismatch). |
+| **`10..11`**| **Magic Bytes** | `char[2]` | Fixed signature: `'V'`, `'S'` (Verisure Sensor). |
+| **`12`** | **Port 0 Diagnostics**| `uint8_t` | Raw state of CC1110 `P0` (P0_1 Tamper, P0_2/P0_4 LEDs). |
+| **`13`** | **Port 1 Diagnostics**| `uint8_t` | Raw state of CC1110 `P1` (P1_7 Reed switch, P1_2 Shock). |
+| **`14`** | **Port 2 Diagnostics**| `uint8_t` | Raw state of CC1110 `P2` (P2_0, P2_1 DD, P2_2 DC). |
+| **`15`** | **Reset Cause** | `uint8_t` | `SLEEP.RST[1:0]` (0=Power-On, 1=External Pin Reset). |
 
-### Flaggbitar (Byte 2)
+### Flag Bits (Byte 2)
 ```text
-Bit 0 (0x01): Magnet Reed Kontakt (1 = Öppen / Larm, 0 = Stängd)
-Bit 1 (0x02): Skak / Vibrationssensor (1 = Stöt detekterad, 0 = Lugnt)
-Bit 2 (0x04): Sabotage / Tamper (1 = Locket av / Larm, 0 = Locket på / Säkrad)
-Bit 3 (0x08): Power-On Reset (1 = Nytt batteri isatt, aktivt de första 3 paketen)
-Bit 4 (0x10): Låg batterivarning (1 = Spänning under 2400 mV)
-Bit 5..7:     Reserverade (0)
+Bit 0 (0x01): Magnet Reed Switch (1 = Open / Alarm, 0 = Closed / Secure)
+Bit 1 (0x02): Shock / Vibration Sensor (1 = Shock detected, 0 = Clear)
+Bit 2 (0x04): Tamper Switch (1 = Cover removed / Alarm, 0 = Cover secured)
+Bit 3 (0x08): Power-On Reset (1 = Fresh battery inserted, active for first 3 packets)
+Bit 4 (0x10): Low Battery Warning (1 = Voltage below 2400 mV)
+Bit 5..7:     Reserved (0)
 ```
 
 ---
 
-## 🛡️ Säkerhet & Replay-Attack-Skydd
+## 🛡️ Security & Replay Attack Prevention
 
-Gatewayen implementerar ett strikt 4-stegs verifieringsfilter:
-1. **Hårdvaru-CRC16:** Paketet accepteras endast om CC1101:s inbyggda CRC-kontroll passerar (Bit 7 i LQI-statusbyten = 1).
-2. **Kryptografisk Integritet:** Payloaden avkodas med sensorns enhetsnyckel. Om magic bytes inte är exakt `'V'`, `'S'`, eller om Device ID Echo inte matchar headern, avvisas paketet omedelbart som manipulerat eller krypterat med fel nyckel.
-3. **Replay-Skydd via Sekvensnummer:**
-   * Gatewayen sparar det senast sedda sekvensnumret för varje sensor.
-   * Ett nytt paket måste ha `seq > last_seq` (med säker 16-bitars wraparound-hantering).
-   * Om en angripare spelar in ett gammalt paket och sänder ut det igen, blockeras det direkt i mjukvaran.
-   * **Undantag:** Om sekvensnumret nollställs i samband med batteribyte (`isPowerOn`) eller hårdvarureset accepteras omslaget säkert.
+The gateway applies a multi-stage authentication filter:
+1. **Hardware CRC16 Verification:** The packet is discarded immediately unless the CC1101 internal CRC check passes (Bit 7 of LQI status byte = 1).
+2. **Cryptographic Integrity Check:** The payload is decrypted using the derived device key. If the magic bytes are not `'V'`, `'S'`, or if the Device ID Echo does not match the header, the frame is rejected as spoofed or corrupted.
+3. **Sequence Window Replay Protection:**
+   * The gateway maintains session records tracking the highest verified sequence counter per device.
+   * Incoming packets must satisfy `seq > last_seq` within a standard 16-bit sliding window.
+   * Replayed or duplicated frames captured over the air are dropped before reaching Home Assistant.
+   * **Exception Handling:** If a sequence reset occurs alongside a verified Power-On Reset flag (`isPowerOn`), the counter is resynchronized gracefully.

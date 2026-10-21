@@ -68,13 +68,13 @@ def get_device_hint(port: ListPortInfo) -> str:
         return "FTDI USB-UART"
 
     # Fallback to standard description
-    return desc if desc else "Serieport"
+    return desc if desc else "Serial Port"
 
 
 def select_com_port(
     preferred_port: Optional[str] = None,
     hint_keyword: Optional[str] = None,
-    prompt_title: str = "Välj COM-port"
+    prompt_title: str = "Select COM Port"
 ) -> Optional[str]:
     """
     Select an active COM port. If no port is specified or if multiple ports are
@@ -92,8 +92,8 @@ def select_com_port(
 
     # 1. No ports detected
     if not ports:
-        print("\n[-] Inga aktiva COM-portar hittades på systemet!")
-        print("    Kontrollera att ESP32-gatewayen eller flashern är ansluten via USB.\n")
+        print("\n[-] No active COM ports found on system!")
+        print("    Ensure the ESP32 gateway or CC-Flasher is connected via USB.\n")
         return None
 
     # Check if preferred_port exists in active ports
@@ -103,14 +103,14 @@ def select_com_port(
             if p.device.upper() == clean_pref:
                 return p.device
         # Preferred port was specified, but is not connected
-        print(f"\n[!] Varning: Den angivna porten '{preferred_port}' hittades inte.")
-        print("    Visar tillgängliga portar istället:\n")
+        print(f"\n[!] Warning: Specified port '{preferred_port}' was not found.")
+        print("    Listing available ports instead:\n")
 
     # 2. Exactly one port detected
     if len(ports) == 1:
         single_port = ports[0]
         hint = get_device_hint(single_port)
-        print(f"[+] Hittade 1 aktiv COM-port: {single_port.device} ({hint}) - använder denna automatiskt.")
+        print(f"[+] Found 1 active COM port: {single_port.device} ({hint}) - using automatically.")
         return single_port.device
 
     # 3. Multiple ports detected -> Determine default recommendation
@@ -126,18 +126,18 @@ def select_com_port(
     # If running in a non-interactive environment (CI / pipe / subagent), choose default
     if not sys.stdin.isatty():
         chosen = ports[default_idx]
-        print(f"[i] Icke-interaktiv session: väljer automatiskt {chosen.device} ({get_device_hint(chosen)}).")
+        print(f"[i] Non-interactive session: automatically choosing {chosen.device} ({get_device_hint(chosen)}).")
         return chosen.device
 
     # Interactive Menu
     print("=" * 65)
     print(f"  {prompt_title.upper()}")
     print("=" * 65)
-    print(f"Hittade {len(ports)} anslutna COM-portar:\n")
+    print(f"Found {len(ports)} connected COM port(s):\n")
 
     for i, p in enumerate(ports):
         hint = get_device_hint(p)
-        rec_tag = " (Rekommenderad)" if i == default_idx else ""
+        rec_tag = " (Recommended)" if i == default_idx else ""
         print(f"  [{i + 1}] {p.device:<7} - {hint}{rec_tag}")
 
     print("-" * 65)
@@ -145,15 +145,15 @@ def select_com_port(
 
     while True:
         try:
-            choice = input(f"Välj port [1-{len(ports)}] eller ange namn (standard: {default_num}): ").strip()
+            choice = input(f"Select port [1-{len(ports)}] or enter port name (default: {default_num}): ").strip()
         except (KeyboardInterrupt, EOFError):
-            print("\nAvbruten av användaren.")
+            print("\nCancelled by user.")
             return None
 
         # User pressed Enter without typing -> accept default
         if not choice:
             selected = ports[default_idx].device
-            print(f"[+] Valde: {selected} ({get_device_hint(ports[default_idx])})\n")
+            print(f"[+] Selected: {selected} ({get_device_hint(ports[default_idx])})\n")
             return selected
 
         # User entered a numeric index
@@ -161,29 +161,29 @@ def select_com_port(
             val = int(choice)
             if 1 <= val <= len(ports):
                 selected = ports[val - 1].device
-                print(f"[+] Valde: {selected} ({get_device_hint(ports[val - 1])})\n")
+                print(f"[+] Selected: {selected} ({get_device_hint(ports[val - 1])})\n")
                 return selected
             else:
-                print(f"[-] Ogiltigt val! Ange ett nummer mellan 1 och {len(ports)}.")
+                print(f"[-] Invalid choice! Enter a number between 1 and {len(ports)}.")
                 continue
 
         # User entered the port name directly (e.g. "COM9" or "com9")
         choice_upper = choice.upper()
         for p in ports:
             if p.device.upper() == choice_upper:
-                print(f"[+] Valde: {p.device} ({get_device_hint(p)})\n")
+                print(f"[+] Selected: {p.device} ({get_device_hint(p)})\n")
                 return p.device
 
-        print(f"[-] Porten '{choice}' kändes inte igen. Försök igen.")
+        print(f"[-] Port '{choice}' was not recognized. Please try again.")
 
 
 def main():
-    print("Testar port_selector...")
+    print("Testing port_selector...")
     chosen = select_com_port(hint_keyword="Gateway")
     if chosen:
-        print(f"Resultat: Vald port är {chosen}")
+        print(f"Result: Selected port is {chosen}")
     else:
-        print("Ingen port kunde väljas.")
+        print("No port could be selected.")
 
 
 if __name__ == "__main__":

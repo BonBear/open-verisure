@@ -1,37 +1,37 @@
-# CC-Flasher & Programmering: ESP32 till Verisure J2-kontakt
+# CC-Flasher & Programming: ESP32 to Verisure J2 Header
 
-Detta dokument beskriver kabeldragningen, pinout och flashningsrutinen för att programmera **Texas Instruments CC1110F32**-mikrokontrollern på Verisure-sensorkortet via en **ESP32 med ESP_CC_Flasher** (Aaron Christophels CC-Debugger-implementation).
+This document details the wiring, pinout, and flashing routine for programming the **Texas Instruments CC1110F32** microcontroller on the Verisure sensor PCB using an **ESP32 running ESP_CC_Flasher** (Aaron Christophel's open-source CC-Debugger implementation).
 
 ---
 
-## 📌 J2-kontakt Pinout (Verisure Sensorkort)
+## 📌 J2 Header Pinout (Verisure Sensor PCB)
 
-Flashing- och debug-gränssnittet sitter som 7 genompläterade paddar längs batteriurtaget på baksidan av kretskortet, märkt **`J2`**.
+The flashing and debug interface consists of 7 through-hole/test pads situated alongside the battery compartment on the rear side of the PCB, marked **`J2`**.
 
 > [!NOTE]
-> **Pin 1 identifieras av en kvadratisk kopparpadd och en vit silkscreen-prick.** Resterande paddar (2 till 7) är runda.
+> **Pin 1 is identified by a square copper pad and a white silkscreen dot.** The remaining pads (2 through 7) are circular.
 
-| J2 Pin | Form & Märkning | Mätt nod på CC1110 | Signalnamn | Beskrivning & Funktion |
+| J2 Pin | Shape & Marking | Measured Node on CC1110 | Signal Name | Description & Function |
 | :---: | :--- | :---: | :---: | :--- |
-| **`J2-1`** | Kvadratisk padd (vit prick) | Pin 3 (`P1_0`) | Aux / UART | Fabrikstestpunkt / Aux GPIO |
-| **`J2-2`** | Rund padd | Pin 2 (`P1_1`) | Aux / UART | Fabrikstestpunkt / Aux GPIO |
-| **`J2-3`** | Rund padd | **VCC (3.3V)** | **VDD (Target Power)** | Matning direkt till batteriets pluspol via säkring `F1` |
-| **`J2-4`** | Rund padd | **Pin 22 (`P2_2`)** | **`DC` (Debug Clock)** | CC-Debugger klocklinje (2-wire debug interface) |
-| **`J2-5`** | Rund padd | **Pin 21 (`P2_1`)** | **`DD` (Debug Data)** | CC-Debugger dubbelriktad datalinje |
-| **`J2-6`** | Rund padd | **Pin 31 (`RESET_N`)**| **`RESET` (Debug Reset)**| Aktiv låg reset för att tvinga chippet i debug-läge |
-| **`J2-7`** | Rund padd (vid text "J2")| **GND** | **Systemjord (GND)** | Direkt ansluten till kretskortets solida jordplan |
+| **`J2-1`** | Square pad (white dot) | Pin 3 (`P1_0`) | Aux / UART | Factory test point / Aux GPIO |
+| **`J2-2`** | Round pad | Pin 2 (`P1_1`) | Aux / UART | Factory test point / Aux GPIO |
+| **`J2-3`** | Round pad | **VCC (3.3V)** | **VDD (Target Power)** | Direct supply from battery positive terminal via fuse `F1` |
+| **`J2-4`** | Round pad | **Pin 22 (`P2_2`)** | **`DC` (Debug Clock)** | CC-Debugger clock line (2-wire debug interface) |
+| **`J2-5`** | Round pad | **Pin 21 (`P2_1`)** | **`DD` (Debug Data)** | CC-Debugger bidirectional data line |
+| **`J2-6`** | Round pad | **Pin 31 (`RESET_N`)**| **`RESET` (Debug Reset)**| Active-low reset line forcing chip into debug mode |
+| **`J2-7`** | Round pad (near text "J2")| **GND** | **System Ground (GND)** | Connected directly to the solid ground plane |
 
 ---
 
-## 🔌 Koppling: ESP32 Flasher till Verisure J2
+## 🔌 Wiring: ESP32 Flasher to Verisure J2
 
-| ESP32 Flasher Pin | Standard Flasher GPIO | Verisure J2 Pin | Kabelfärg (rekommenderad) |
+| ESP32 Flasher Pin | Default Flasher GPIO | Verisure J2 Pin | Recommended Wire Color |
 | :---: | :---: | :---: | :---: |
-| **3V3** | 3.3V Utgång | **`J2-3` (VCC)** | Röd |
-| **GND** | Jord | **`J2-7` (GND)** | Svart |
-| **GPIO 18** | Debug Clock (`DC`) | **`J2-4` (DC)** | Gul |
-| **GPIO 19** | Debug Data (`DD`) | **`J2-5` (DD)** | Blå |
-| **GPIO 23** | Debug Reset (`RESET`)| **`J2-6` (RESET)** | Grön |
+| **3V3** | 3.3V Power Out | **`J2-3` (VCC)** | Red |
+| **GND** | Ground | **`J2-7` (GND)** | Black |
+| **GPIO 18** | Debug Clock (`DC`) | **`J2-4` (DC)** | Yellow |
+| **GPIO 19** | Debug Data (`DD`) | **`J2-5` (DD)** | Blue |
+| **GPIO 23** | Debug Reset (`RESET`)| **`J2-6` (RESET)** | Green |
 
 ```mermaid
 flowchart LR
@@ -43,7 +43,7 @@ flowchart LR
         FRST["GPIO 23 (RESET Out)"]
     end
 
-    subgraph J2["Verisure J2 Header (PCB Baksida)"]
+    subgraph J2["Verisure J2 Header (PCB Rear)"]
         J3["J2-3 (VCC)"]
         J7["J2-7 (GND)"]
         J4["J2-4 (DC / Pin 22)"]
@@ -51,43 +51,43 @@ flowchart LR
         J6["J2-6 (RESET_N / Pin 31)"]
     end
 
-    F3V3 ===|Röd kabel| J3
-    FGND ===|Svart kabel| J7
-    FDC ===|Gul kabel| J4
-    FDD ===|Blå kabel| J5
-    FRST ===|Grön kabel| J6
+    F3V3 ===|Red wire| J3
+    FGND ===|Black wire| J7
+    FDC ===|Yellow wire| J4
+    FDD ===|Blue wire| J5
+    FRST ===|Green wire| J6
 ```
 
-### 🖼️ Illustrerat Kopplingsdiagram
-![ESP32 Flasher till Verisure J2 Header](images/wiring_cc_flasher_j2.jpg)
+### 🖼️ Illustrated Wiring Diagram
+![ESP32 Flasher to Verisure J2 Header](images/wiring_cc_flasher_j2.jpg)
 
 ---
 
-## 💻 Automatiserad Bygg- och Flashningsprocess
+## 💻 Automated Build and Flashing Process
 
-All kompilering och flashning är helt automatiserad via Python-skriptet [`build_and_flash.py`](file:///c:/repo/Antigravity/build_and_flash.py).
+All compilation and flashing steps are fully automated via the Python script [`build_and_flash.py`](file:///c:/repo/Antigravity/build_and_flash.py).
 
-### Steg-för-steg Flöde:
-1. **Kompilering med SDCC:**
-   Kompilerar `VerisureDoorSensor/main.c` till en optimerad MCS-51 8051-binär:
+### Step-by-Step Flow:
+1. **Compilation with SDCC:**
+   Compiles `VerisureDoorSensor/main.c` into an optimized MCS-51 8051 binary:
    ```powershell
    sdcc -mmcs51 --model-small --code-size 0x8000 --xram-loc 0xF000 --xram-size 0x0E00 -c main.c -o build/
    sdcc -mmcs51 --model-small --code-size 0x8000 --xram-loc 0xF000 --xram-size 0x0E00 build/main.rel -o build/main.ihx
    packihx build/main.ihx > build/main.hex
    makebin -p build/main.ihx build/main.bin
    ```
-2. **Chip-detektering:**
-   Anropar `POST http://192.168.0.80/cc_init`. ESP32:an genererar debug-initieringspulserna på `DC` och `RESET_N`.
-   CC1110 svarar med `Device id: 0104 Status: B2` (0104 = CC1110F32, 32 kB Flash).
-3. **Uppladdning & Skrivning:**
-   Laddar upp `main.bin` via `POST /edit`, raderar chippets flash med `POST /flash_cc?file=main.bin` och verifierar varje block.
-4. **Exekveringsstart:**
-   Anropar `POST /cc_exit_dbg`. ESP32:an släpper `RESET_N` och låter CC1110 starta sin applikation.
+2. **Chip Detection:**
+   Sends `POST http://192.168.0.80/cc_init`. The ESP32 generates debug initialization waveforms on `DC` and `RESET_N`.
+   The CC1110 responds with `Device id: 0104 Status: B2` (0104 = CC1110F32, 32 kB Flash).
+3. **Upload & Flash:**
+   Uploads `main.bin` via `POST /edit`, programs and erases flash via `POST /flash_cc?file=main.bin`, and verifies every sector.
+4. **Resuming Execution:**
+   Sends `POST /cc_exit_dbg`. The ESP32 releases `RESET_N` and allows the CC1110 to boot normal execution.
 
 ---
 
-## ⚠️ Viktiga Försiktighetsåtgärder
-* **Ladda ALDRIG upp gateway-firmware till Flasher-porten:**
-  ESP32 CC-Flashern ligger på t.ex. `COM12` (Silicon Labs CP210x). Gatewayen ligger på `COM9` (LOLIN S2 Mini). Rensa eller verifiera alltid serieporten innan `pio run -t upload`.
-* **Kabelglapp på 3V3 / GND:**
-  Om `cc_init` svarar med `Device id: 0000` eller `Status: 00`, kontrollera omedelbart att 3V3 och GND har god kontakt med J2-3 och J2-7.
+## ⚠️ Important Precautions
+* **Never flash gateway firmware to the CC Flasher port:**
+  The ESP32 CC-Flasher runs on e.g. `COM12` (Silicon Labs CP210x). The Gateway runs on `COM9` (LOLIN S2 Mini). Always verify target ports prior to running `pio run -t upload`.
+* **Reliable Power Connection on 3V3 / GND:**
+  If `cc_init` returns `Device id: 0000` or `Status: 00`, inspect the 3V3 and GND jumper wires for loose contact on J2-3 and J2-7.

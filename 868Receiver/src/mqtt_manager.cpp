@@ -61,7 +61,7 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
         s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
     }
     markDeviceDiscovered(deviceId);
-    Serial.printf("[MQTT] Publicerat Home Assistant Discovery för sensor \"%s\" (6 entiteter retained)\n", deviceId);
+    Serial.printf("[MQTT] Published Home Assistant Discovery for sensor \"%s\" (6 entities retained)\n", deviceId);
 }
 
 /**
@@ -79,7 +79,7 @@ static void publishGatewayDiscovery(const char* baseTopic) {
 
         s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
     }
-    Serial.printf("[MQTT] Publicerat Home Assistant Discovery för Gateway-enheten (%d entiteter retained)\n", count);
+    Serial.printf("[MQTT] Published Home Assistant Discovery for Gateway (%d entities retained)\n", count);
 }
 
 void mqttInit() {
@@ -92,12 +92,12 @@ bool mqttIsConnected() {
 }
 
 String mqttGetStatusString() {
-    if (!WiFi.isConnected()) return "Inget Wi-Fi";
+    if (!WiFi.isConnected()) return "No Wi-Fi";
     if (s_mqttClient.connected()) {
         const GatewayConfig& cfg = ConfigManager::get();
-        return "Ansluten till " + String(cfg.mqttHost) + ":" + String(cfg.mqttPort);
+        return "Connected to " + String(cfg.mqttHost) + ":" + String(cfg.mqttPort);
     }
-    return "Frånkopplad (återansluter...)";
+    return "Disconnected (reconnecting...)";
 }
 
 /**
@@ -120,7 +120,7 @@ static void checkMqttConnection() {
     String clientId = "verisure-gw-" + WiFi.macAddress();
     clientId.replace(":", "");
 
-    Serial.printf("[MQTT] Ansluter till broker %s:%d (Klient-ID: %s)...\n",
+    Serial.printf("[MQTT] Connecting to broker %s:%d (Client-ID: %s)...\n",
                   cfg.mqttHost, cfg.mqttPort, clientId.c_str());
 
     String statusTopic = String(cfg.mqttTopic) + "/status";
@@ -135,7 +135,7 @@ static void checkMqttConnection() {
     }
 
     if (connected) {
-        Serial.println("[MQTT] Ansluten till broker!");
+        Serial.println("[MQTT] Connected to broker!");
         s_wasConnected = true;
 
         // Publish Gateway Online Status (Retained)
@@ -152,7 +152,7 @@ static void checkMqttConnection() {
             }
         }
     } else {
-        Serial.printf("[MQTT] Anslutningsfel! rc=%d\n", s_mqttClient.state());
+        Serial.printf("[MQTT] Connection error! rc=%d\n", s_mqttClient.state());
     }
 }
 
@@ -191,8 +191,8 @@ void mqttPublishTelemetry(const VerisureTelemetry& telem) {
 
     bool ok = s_mqttClient.publish(topic.c_str(), payload.c_str(), false);
     if (ok) {
-        Serial.printf("[MQTT] >> Publicerat till %s: %s\n", topic.c_str(), payload.c_str());
+        Serial.printf("[MQTT] >> Published to %s: %s\n", topic.c_str(), payload.c_str());
     } else {
-        Serial.printf("[MQTT] Fel vid publicering till %s\n", topic.c_str());
+        Serial.printf("[MQTT] Error publishing to %s\n", topic.c_str());
     }
 }

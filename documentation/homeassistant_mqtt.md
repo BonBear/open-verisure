@@ -1,45 +1,45 @@
 # Home Assistant & MQTT Integration
 
-Detta dokument beskriver hur gatewayen automatiskt integrerar Verisure-sensorerna i **Home Assistant** via MQTT Auto-Discovery, samt webbdashboardens REST API.
+This document details how the gateway integrates Verisure Sub-1GHz sensors into **Home Assistant** via MQTT Auto-Discovery, as well as the Gateway Web Dashboard's REST API.
 
 ---
 
-## 📡 MQTT Topic-Arkitektur
+## 📡 MQTT Topic Architecture
 
 ```
 verisure/
   status                           <-- LWT (Birth: "online", Last Will: "offline")
   <deviceId>/
-    state                          <-- JSON-telemetri vid varje sändning
+    state                          <-- JSON telemetry published on each event
 homeassistant/
   binary_sensor/
     verisure_<deviceId>/
-      contact/config               <-- Auto-Discovery för Contact (öppning/stängning)
-      vibration/config             <-- Auto-Discovery för Vibration (skak)
-      button/config                <-- Auto-Discovery för Tamper (sabotagelock)
+      contact/config               <-- Auto-Discovery for Contact (door open/closed)
+      vibration/config             <-- Auto-Discovery for Vibration (shock)
+      button/config                <-- Auto-Discovery for Tamper (casing cover)
   sensor/
     verisure_<deviceId>/
-      battery/config               <-- Auto-Discovery för Batteri (%)
-      voltage/config               <-- Auto-Discovery för Batterispänning (mV)
-      rssi/config                  <-- Auto-Discovery för Signalstyrka (dBm)
+      battery/config               <-- Auto-Discovery for Battery (%)
+      voltage/config               <-- Auto-Discovery for Battery Voltage (mV)
+      rssi/config                  <-- Auto-Discovery for Signal Strength (dBm)
 ```
 
 ---
 
-## 🎯 Entitetskonfiguration i Home Assistant
+## 🎯 Entity Configuration in Home Assistant
 
-Varje sensor skapar en egen sammanhållen enhet (*Device*) i Home Assistant med följande 6 entiteter:
+Each sensor creates a dedicated device entity in Home Assistant exposing 6 entities:
 
-| Entitet | Typ | Enhetsklass (`device_class`) | Enhet | Payload / Mall | Beskrivning |
-| :--- | :---: | :---: | :---: | :--- | :--- |
-| **Contact** | `binary_sensor` | `door` | – | `{{ value_json.contact }}`<br>(`OPEN` / `CLOSED`) | Dörrkontakt (visar dörrikon och "Öppen" / "Stängd" i HA) |
-| **Vibration** | `binary_sensor` | `vibration` | – | `{{ value_json.vibration }}`<br>(`ON` / `OFF`) | Skak/vibrationsdetektering |
-| **Tamper** | `binary_sensor` | `tamper` | – | `{{ value_json.button }}`<br>(`ON` / `OFF`) | Sabotagekontakt (visar "Sabotage / Öppen" vid lock av) |
-| **Batteri** | `sensor` | `battery` | `%` | `{{ value_json.battery_pct }}` | Batterinivå i procent |
-| **Batterispänning**| `sensor` | `voltage` | `mV` | `{{ value_json.battery_mv }}` | Exakt batterispänning i millivolt (t.ex. `3370 mV`) |
-| **Signalstyrka** | `sensor` | `signal_strength` | `dBm` | `{{ value_json.rssi }}` | RF-mottagningsstyrka från sensorn till gatewayen |
+| Entity | Platform | Device Class (`device_class`) | Unit | Payload / Template | Description |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Contact** | `binary_sensor` | `door` | – | `{{ value_json.contact }}`<br>(`OPEN` / `CLOSED`) | Door/window contact (renders door icon with Open/Closed state) |
+| **Vibration** | `binary_sensor` | `vibration` | – | `{{ value_json.vibration }}`<br>(`ON` / `OFF`) | Shock and vibration detection |
+| **Tamper** | `binary_sensor` | `tamper` | – | `{{ value_json.button }}`<br>(`ON` / `OFF`) | Tamper switch (reports Tamper/Open if cover is removed) |
+| **Battery** | `sensor` | `battery` | `%` | `{{ value_json.battery_pct }}` | Battery percentage (0–100%) |
+| **Battery Voltage** | `sensor` | `voltage` | `mV` | `{{ value_json.battery_mv }}` | Accurate battery terminal voltage in millivolts |
+| **Signal Strength** | `sensor` | `signal_strength` | `dBm` | `{{ value_json.rssi }}` | RF reception signal strength from sensor to gateway |
 
-### Exempel på Telemetri-JSON (`verisure/2JHL2MVN/state`)
+### Example Telemetry JSON (`verisure/2JHL2MVN/state`)
 ```json
 {
   "contact": "CLOSED",
@@ -59,11 +59,11 @@ Varje sensor skapar en egen sammanhållen enhet (*Device*) i Home Assistant med 
 
 ## 🌐 Gateway Web Dashboard & REST API
 
-Gatewayen har en inbyggd webbserver på port 80 ([http://192.168.0.142](http://192.168.0.142)). Den tillhandahåller ett mörkt och responsivt gränssnitt för att övervaka sensorer och konfigurera nätverket.
+The gateway hosts an embedded web server on port 80 ([http://192.168.0.142](http://192.168.0.142)). It provides a dark-mode responsive interface for monitoring sensor telemetry and configuring network parameters.
 
 ### REST API Endpoints:
-* **`GET /api/status`:** Returnerar JSON med aktuell status för Wi-Fi, radiobrus, MQTT-anslutning och alla registrerade sensorer i realtid.
-* **`GET /api/scan`:** Utför en asynkron Wi-Fi-skanning och returnerar en lista över tillgängliga SSID med RSSI och krypteringsstatus.
-* **`POST /api/save`:** Sparar Wi-Fi SSID, lösenord, MQTT broker, port, användare, ämne och Master Key i ESP32-S2:ans permanenta NVS (Non-Volatile Storage).
-* **`POST /api/reboot`:** Startar om gatewayen.
-* **`POST /api/reset`:** Fabriksåterställer NVS-konfigurationen.
+* **`GET /api/status`:** Returns real-time JSON status for Wi-Fi, radio noise floor, MQTT broker link, and all registered sensors.
+* **`GET /api/scan`:** Performs an asynchronous Wi-Fi scan and returns available networks with RSSI and encryption flags.
+* **`POST /api/save`:** Persists Wi-Fi SSID, password, MQTT broker host, port, credentials, topic prefix, and Master Key into ESP32-S2 NVS (Non-Volatile Storage).
+* **`POST /api/reboot`:** Triggers a software restart of the gateway.
+* **`POST /api/reset`:** Resets NVS parameters to compiled defaults.

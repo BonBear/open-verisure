@@ -23,21 +23,21 @@ void serialCliInit() {
 
 static void printHelp() {
     Serial.println("\n--- VERISURE GATEWAY SERIAL CLI ---");
-    Serial.println("  help                       - Visa detta hjälpmeddelande");
-    Serial.println("  status                     - Visa aktuell gateway- och sensorstatus");
-    Serial.println("  testspi                    - Testa SPI-kontakt och register på CC1101");
-    Serial.println("  scan                       - Skanna och lista tillgängliga Wi-Fi-nätverk");
-    Serial.println("  connect <ssid> [losenord]  - Anslut till Wi-Fi och spara till NVS");
-    Serial.println("  setkey <32-hex-tecken>     - Konfigurera Master AES-nyckel");
-    Serial.println("  setmqtt <host> <port> [user] [pass] [topic] - Konfigurera MQTT-broker");
-    Serial.println("  reset                      - Rensa alla NVS-inställningar");
-    Serial.println("  reboot                     - Starta om gatewayn");
+    Serial.println("  help                       - Show this help menu");
+    Serial.println("  status                     - Display gateway and sensor status");
+    Serial.println("  testspi                    - Test CC1101 SPI bus and registers");
+    Serial.println("  scan                       - Scan and list available Wi-Fi networks");
+    Serial.println("  connect <ssid> [password]  - Connect to Wi-Fi and save to NVS");
+    Serial.println("  setkey <32-hex-characters> - Configure Master AES Key");
+    Serial.println("  setmqtt <host> <port> [user] [pass] [topic] - Configure MQTT broker");
+    Serial.println("  reset                      - Factory reset all NVS settings");
+    Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
 }
 
 static void runTestSpi() {
-    Serial.println("\n--- SPI & CC1101 DIAGNOSTIK ---");
-    Serial.printf("Pinnar: SCK=GPIO%d, MISO=GPIO%d, MOSI=GPIO%d, CS=GPIO%d\n",
+    Serial.println("\n--- SPI & CC1101 HARDWARE DIAGNOSTICS ---");
+    Serial.printf("Pins: SCK=GPIO%d, MISO=GPIO%d, MOSI=GPIO%d, CS=GPIO%d\n",
                   PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
 
     pinMode(PIN_CS, OUTPUT);
@@ -52,8 +52,8 @@ static void runTestSpi() {
     int miso_low = digitalRead(PIN_MISO);
     digitalWrite(PIN_CS, HIGH);
 
-    Serial.printf("CS HIGH (med Pullup) -> MISO: %d (Bör vara 1 när CC1101 är avstängd)\n", miso_high);
-    Serial.printf("CS LOW                -> MISO: %d (MÅSTE bli 0 när CC1101 svarar!)\n", miso_low);
+    Serial.printf("CS HIGH (with Pullup) -> MISO: %d (Expected: 1 when CC1101 is deselected)\n", miso_high);
+    Serial.printf("CS LOW                -> MISO: %d (MUST be 0 when CC1101 responds!)\n", miso_low);
 
     // Manual CC1101 Power-On-Reset Sequence (TI Datasheet 19.1.2)
     digitalWrite(PIN_CS, HIGH);
@@ -92,41 +92,41 @@ static void runTestSpi() {
     digitalWrite(PIN_CS, HIGH);
     SPI.endTransaction();
 
-    Serial.printf("Efter SRES Reset:\n");
+    Serial.printf("After SRES Reset:\n");
     Serial.printf("  SRES Status: 0x%02X (CHIP_RDYn=%d, STATE=%d)\n", sres_st, (sres_st >> 7) & 1, (sres_st >> 4) & 7);
-    Serial.printf("  PARTNUM    : 0x%02X (Status: 0x%02X, förväntat: 0x00)\n", val_part, st_part);
-    Serial.printf("  VERSION    : 0x%02X (Status: 0x%02X, förväntat: 0x04 eller 0x14)\n", val_ver, st_ver);
+    Serial.printf("  PARTNUM    : 0x%02X (Status: 0x%02X, expected: 0x00)\n", val_part, st_part);
+    Serial.printf("  VERSION    : 0x%02X (Status: 0x%02X, expected: 0x04 or 0x14)\n", val_ver, st_ver);
     Serial.printf("  MARCSTATE  : 0x%02X (Status: 0x%02X, 0x01=IDLE, 0x0D=RX)\n", val_marc, st_marc);
 
     if (val_ver == 0x04 || val_ver == 0x14) {
-        Serial.println("[+] SPI och CC1101 fungerar UTMÄRKT!\n");
+        Serial.println("[+] SPI and CC1101 communication OK!\n");
     } else {
-        Serial.println("[-] FEL: CC1101 svarar inte korrekt via SPI.\n");
+        Serial.println("[-] ERROR: CC1101 did not respond correctly over SPI.\n");
     }
 }
 
 static void printStatus() {
     const GatewayConfig& cfg = ConfigManager::get();
     Serial.println("\n================ GATEWAY STATUS ================");
-    Serial.printf("  Uptime       : %lu sekunder\n", millis() / 1000);
-    Serial.printf("  Wi-Fi Läge   : %s\n", webPortalIsApMode() ? "Access Point (AP)" : "Station (STA)");
-    Serial.printf("  IP-Adress    : %s\n", webPortalGetIp().c_str());
+    Serial.printf("  Uptime       : %lu seconds\n", millis() / 1000);
+    Serial.printf("  Wi-Fi Mode   : %s\n", webPortalIsApMode() ? "Access Point (AP)" : "Station (STA)");
+    Serial.printf("  IP Address   : %s\n", webPortalGetIp().c_str());
     Serial.printf("  Wi-Fi SSID   : %s (Signal: %d dBm)\n",
                   webPortalIsApMode() ? "Verisure-Gateway" : cfg.wifiSsid,
                   webPortalIsApMode() ? 0 : WiFi.RSSI());
     Serial.printf("  MQTT Status  : %s\n", mqttGetStatusString().c_str());
     Serial.printf("  Master Key   : %s\n", cfg.masterKeyHex);
-    Serial.printf("  Sensorer     : %d st registrerade\n", sensorRegistryGetCount());
+    Serial.printf("  Sensors      : %d registered\n", sensorRegistryGetCount());
 
     int count = sensorRegistryGetCount();
     for (int i = 0; i < count; i++) {
         const SensorRecord* rec = sensorRegistryGetByIndex(i);
         if (!rec) continue;
-        Serial.printf("    - ID: %s | Magnet: %s | Skak: %s | Sabotage: %s | Batt: %u mV (%u%%) | RSSI: %d dBm | Paket: %u\n",
+        Serial.printf("    - ID: %s | Contact: %s | Shock: %s | Tamper: %s | Batt: %u mV (%u%%) | RSSI: %d dBm | Packets: %u\n",
                       rec->lastTelem.deviceId,
-                      rec->lastTelem.isOpen ? "ÖPPEN [LARM]" : "STÄNGD",
-                      rec->lastTelem.isShock ? "SKAK!" : "Lugnt",
-                      rec->lastTelem.isButton ? "SABOTAGE!" : "Säkrad",
+                      rec->lastTelem.isOpen ? "OPEN [ALARM]" : "CLOSED",
+                      rec->lastTelem.isShock ? "SHOCK!" : "Normal",
+                      rec->lastTelem.isButton ? "TAMPER!" : "Secured",
                       rec->lastTelem.batteryMv, rec->lastTelem.batteryPct,
                       rec->lastTelem.rssi, rec->packetCount);
     }
@@ -134,22 +134,22 @@ static void printStatus() {
 }
 
 static void runScan() {
-    Serial.println("[Wi-Fi] Skannar efter nätverk...");
+    Serial.println("[Wi-Fi] Scanning for networks...");
     WiFi.disconnect(true);
     delay(200);
     WiFi.mode(WIFI_STA);
     delay(100);
     int n = WiFi.scanNetworks(false, true);
-    Serial.printf("[Wi-Fi] Hittade %d nätverk:\n", n);
+    Serial.printf("[Wi-Fi] Found %d networks:\n", n);
     for (int i = 0; i < n; i++) {
         wifi_auth_mode_t auth = WiFi.encryptionType(i);
-        const char* authStr = (auth == WIFI_AUTH_OPEN) ? "Öppet" :
+        const char* authStr = (auth == WIFI_AUTH_OPEN) ? "Open" :
                               (auth == WIFI_AUTH_WPA_PSK) ? "WPA" :
                               (auth == WIFI_AUTH_WPA2_PSK) ? "WPA2" :
                               (auth == WIFI_AUTH_WPA_WPA2_PSK) ? "WPA/WPA2" :
                               (auth == WIFI_AUTH_WPA2_ENTERPRISE) ? "Enterprise" :
                               (auth == WIFI_AUTH_WPA3_PSK) ? "WPA3" :
-                              (auth == WIFI_AUTH_WPA2_WPA3_PSK) ? "WPA2/WPA3" : "Krypterat";
+                              (auth == WIFI_AUTH_WPA2_WPA3_PSK) ? "WPA2/WPA3" : "Encrypted";
         Serial.printf("  %2d: %-20s (Ch %2d, %3d dBm) [%s] BSSID: %s\n",
                       i + 1,
                       WiFi.SSID(i).c_str(),
@@ -189,7 +189,7 @@ static void processCommand(char* cmd) {
             strncpy(ssid, args, sizeof(ssid) - 1);
         }
 
-        Serial.printf("[CLI] Ansluter till SSID \"%s\"...\n", ssid);
+        Serial.printf("[CLI] Connecting to SSID \"%s\"...\n", ssid);
         WiFi.disconnect(true, true);
         delay(200);
         WiFi.mode(WIFI_STA);
@@ -203,21 +203,21 @@ static void processCommand(char* cmd) {
         Serial.println();
 
         if (WiFi.status() == WL_CONNECTED) {
-            Serial.printf("[CLI] Ansluten! IP: %s | RSSI: %d dBm\n",
+            Serial.printf("[CLI] Connected! IP: %s | RSSI: %d dBm\n",
                           WiFi.localIP().toString().c_str(), WiFi.RSSI());
             ConfigManager::setWifi(ssid, pass);
             ConfigManager::save();
         } else {
-            Serial.println("[CLI] Anslutningen misslyckades.");
+            Serial.println("[CLI] Connection failed.");
         }
     } else if (strncmp(cmd, "setkey ", 7) == 0) {
         char* keyStr = cmd + 7;
         while (*keyStr == ' ') keyStr++;
         if (strlen(keyStr) == 32 && ConfigManager::setMasterKeyHex(keyStr)) {
             ConfigManager::save();
-            Serial.printf("[CLI] Master Key sparad: %s\n", keyStr);
+            Serial.printf("[CLI] Master Key saved: %s\n", keyStr);
         } else {
-            Serial.println("[CLI] Fel: Nyckeln måste vara exakt 32 hex-tecken!");
+            Serial.println("[CLI] Error: Key must be exactly 32 hex characters!");
         }
     } else if (strncmp(cmd, "setmqtt ", 8) == 0) {
         char host[65] = {0};
@@ -229,19 +229,19 @@ static void processCommand(char* cmd) {
         if (parsed >= 2) {
             ConfigManager::setMqtt(host, (uint16_t)port, user, pass, topic);
             ConfigManager::save();
-            Serial.printf("[CLI] MQTT sparad: %s:%d (Topic: %s)\n", host, port, topic);
+            Serial.printf("[CLI] MQTT saved: %s:%d (Topic: %s)\n", host, port, topic);
         } else {
-            Serial.println("[CLI] Användning: setmqtt <host> <port> [user] [pass] [topic]");
+            Serial.println("[CLI] Usage: setmqtt <host> <port> [user] [pass] [topic]");
         }
     } else if (strcmp(cmd, "reset") == 0) {
         ConfigManager::resetToDefaults();
-        Serial.println("[CLI] Återställt alla inställningar till standard.");
+        Serial.println("[CLI] Reset all settings to factory defaults.");
     } else if (strcmp(cmd, "reboot") == 0) {
-        Serial.println("[CLI] Startar om gatewayn nu...");
+        Serial.println("[CLI] Rebooting gateway now...");
         delay(100);
         ESP.restart();
     } else {
-        Serial.printf("[CLI] Okänt kommando: \"%s\". Skriv 'help' för lista.\n", cmd);
+        Serial.printf("[CLI] Unknown command: \"%s\". Type 'help' for command list.\n", cmd);
     }
 }
 

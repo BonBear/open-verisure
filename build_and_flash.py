@@ -72,7 +72,7 @@ def compile_firmware() -> bool:
         bool: True on successful compilation, packaging, and binary generation.
     """
     print("=" * 60)
-    print("1. KOMPILERAR CC1110 FIRMWARE MED SDCC")
+    print("1. COMPILING CC1110 FIRMWARE WITH SDCC")
     print("=" * 60)
 
     os.makedirs(BUILD_DIR, exist_ok=True)
@@ -84,10 +84,10 @@ def compile_firmware() -> bool:
         "--xram-loc", "0xF000", "--xram-size", "0x0E00",
         "-c", "main.c", "-o", "build/"
     ]
-    print(f"[*] Kör: {' '.join(cmd_compile)}")
+    print(f"[*] Running: {' '.join(cmd_compile)}")
     res = subprocess.run(cmd_compile, cwd=VERISURE_DIR, capture_output=True, text=True)
     if res.returncode != 0:
-        print(f"[-] Kompileringsfel:\n{res.stderr}\n{res.stdout}")
+        print(f"[-] Compilation error:\n{res.stderr}\n{res.stdout}")
         return False
 
     # 2. Link REL -> IHX
@@ -97,23 +97,23 @@ def compile_firmware() -> bool:
         "--xram-loc", "0xF000", "--xram-size", "0x0E00",
         "build/main.rel", "-o", "build/main.ihx"
     ]
-    print(f"[*] Kör: {' '.join(cmd_link)}")
+    print(f"[*] Running: {' '.join(cmd_link)}")
     res = subprocess.run(cmd_link, cwd=VERISURE_DIR, capture_output=True, text=True)
     if res.returncode != 0:
-        print(f"[-] Länkningsfel:\n{res.stderr}\n{res.stdout}")
+        print(f"[-] Linking error:\n{res.stderr}\n{res.stdout}")
         return False
 
     # 3. Pack IHX -> Intel HEX
-    print("[*] Genererar Intel HEX (packihx)...")
+    print("[*] Generating Intel HEX (packihx)...")
     with open(HEX_FILE, "w", encoding="utf-8") as f_hex:
         with open(IHX_FILE, "r", encoding="utf-8") as f_ihx:
             res = subprocess.run(["packihx"], stdin=f_ihx, stdout=f_hex, stderr=subprocess.PIPE, text=True)
             if res.returncode != 0:
-                print(f"[-] packihx fel: {res.stderr}")
+                print(f"[-] packihx error: {res.stderr}")
                 return False
 
     # 4. Pack IHX -> Flat Binary
-    print("[*] Genererar binär (makebin)...")
+    print("[*] Generating binary (makebin)...")
     res = subprocess.run(
         ["makebin", "-p", "build/main.ihx", "build/main.bin"],
         cwd=VERISURE_DIR,
@@ -121,11 +121,11 @@ def compile_firmware() -> bool:
         text=True
     )
     if res.returncode != 0:
-        print(f"[-] makebin fel: {res.stderr}")
+        print(f"[-] makebin error: {res.stderr}")
         return False
 
     size = os.path.getsize(BIN_FILE)
-    print(f"[+] Bygge lyckades! Binärstorlek: {size} bytes ({BIN_FILE})\n")
+    print(f"[+] Build succeeded! Binary size: {size} bytes ({BIN_FILE})\n")
     return True
 
 
@@ -151,43 +151,43 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
         Optional[serial.Serial]: Pre-opened serial connection or None.
     """
     print("=" * 60)
-    print(f"2. FLASHAR CC1110 VIA ESP_CC_FLASHER ({cc_host})")
+    print(f"2. FLASHING CC1110 VIA ESP_CC_FLASHER ({cc_host})")
     print("=" * 60)
 
     session = requests.Session()
     session.auth = HTTPBasicAuth(CC_USER, CC_PASS)
 
     # 1. Initialize CC debug interface
-    print(f"[*] Ansluter till {cc_host}/cc_init...")
+    print(f"[*] Connecting to {cc_host}/cc_init...")
     try:
         resp = session.post(f"{cc_host}/cc_init", timeout=10)
         resp.raise_for_status()
         print(f"[+] {resp.text.strip()}")
     except Exception as e:
-        print(f"[-] Kunde inte nå CC Flasher på {cc_host}: {e}")
+        print(f"[-] Failed to reach CC Flasher at {cc_host}: {e}")
         return None
 
     # 2. Upload binary payload
     with open(BIN_FILE, "rb") as f:
         data = f.read()
-    print(f"[*] Laddar upp /main.bin ({len(data)} bytes)...")
+    print(f"[*] Uploading /main.bin ({len(data)} bytes)...")
     files = {'data': ('/main.bin', data, 'application/octet-stream')}
     resp = session.post(f"{cc_host}/edit", files=files, timeout=30)
     resp.raise_for_status()
-    print("[+] Fil uppladdad!")
+    print("[+] File uploaded successfully!")
 
     # 3. Retrieve baseline log ID
     last_log_id = get_latest_log_id(session, cc_host)
-    print(f"[*] Senaste log-ID före flashstart: {last_log_id}")
+    print(f"[*] Latest log ID before flash start: {last_log_id}")
 
     # 4. Trigger flash command
-    print("[*] Startar flashning av /main.bin...")
+    print("[*] Initiating flashing of /main.bin...")
     resp = session.post(f"{cc_host}/flash_cc", params={'file': 'main.bin'}, timeout=10)
     resp.raise_for_status()
-    print(f"[+] Flash-start svar: {resp.text.strip()}")
+    print(f"[+] Flash start response: {resp.text.strip()}")
 
     # 5. Monitor flashing progress and verification
-    print("[*] Väntar på att radering, flashning och verifiering slutförs...")
+    print("[*] Waiting for erase, programming, and verification to complete...")
     t0 = time.time()
     flash_complete = False
     flash_failed = False
@@ -207,36 +207,36 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
                         elif "Verify failed" in msg:
                             flash_failed = True
                 if flash_complete:
-                    print("    -> [OK] Verify successful! Flashning slutförd och verifierad.")
+                    print("    -> [OK] Verify successful! Flashing completed and verified.")
                     break
                 if flash_failed and "CC reset" in r.text:
-                    print("    -> [-] Verify failed efter försök!")
+                    print("    -> [-] Verify failed after attempt!")
                     break
         except Exception:
             pass
         time.sleep(0.5)
 
     if not flash_complete:
-        print("[-] Varning: Flashning lyckades inte eller verifiering uteblev!")
+        print("[-] Warning: Flashing failed or verification timed out!")
         return None
 
     # Pre-open gateway serial connection before releasing chip reset
     s = None
     if receiver_port:
-        print(f"[*] Öppnar mottagarens serieport {receiver_port} före reset...")
+        print(f"[*] Opening receiver serial port {receiver_port} before reset...")
         try:
             s = serial.Serial(receiver_port, RECEIVER_BAUD, timeout=0.1)
         except Exception as e:
-            print(f"[-] Kunde inte öppna {receiver_port}: {e}")
+            print(f"[-] Failed to open {receiver_port}: {e}")
             s = None
 
     # 6. Exit debug and release reset line for live execution
-    print("[*] Återställer CC1110 och startar exekvering (cc_exit_dbg)...")
+    print("[*] Resetting CC1110 and resuming execution (cc_exit_dbg)...")
     try:
         resp = session.post(f"{cc_host}/cc_exit_dbg", timeout=10)
-        print(f"[+] Svar: {resp.text.strip()}\n")
+        print(f"[+] Response: {resp.text.strip()}\n")
     except Exception as e:
-        print(f"[-] cc_exit_dbg fel: {e}")
+        print(f"[-] cc_exit_dbg error: {e}")
 
     return s
 
@@ -255,20 +255,20 @@ def monitor_receiver(s: Optional[serial.Serial], port: Optional[str] = None, dur
     """
     if not port and s:
         port = s.port
-    port_label = port or "Okänd port"
+    port_label = port or "Unknown port"
 
     print("=" * 60)
-    print(f"3. ÖVERVAKAR ESP32-MOTTAGAREN PÅ {port_label} ({duration} s)")
+    print(f"3. MONITORING ESP32 RECEIVER ON {port_label} ({duration} s)")
     print("=" * 60)
 
     if s is None:
         if not port:
-            print("[-] Ingen serieport angiven för övervakning.")
+            print("[-] No serial port specified for monitoring.")
             return False
         try:
             s = serial.Serial(port, RECEIVER_BAUD, timeout=0.1)
         except Exception as e:
-            print(f"[-] Kunde inte öppna {port}: {e}")
+            print(f"[-] Failed to open {port}: {e}")
             return False
 
     t0 = time.time()
@@ -279,7 +279,7 @@ def monitor_receiver(s: Optional[serial.Serial], port: Optional[str] = None, dur
             line = s.readline().decode('utf-8', errors='replace').strip()
             if line:
                 print(f"  {line}")
-                if "AUTHENTICATED" in line or ("MOTTAGET" in line and "CRC: OK" in line):
+                if "AUTHENTICATED" in line or ("RECEIVED" in line and "CRC: OK" in line):
                     packet_received = True
     finally:
         s.close()
@@ -315,7 +315,7 @@ def main():
         sys.exit(1)
 
     if args.compile_only:
-        print("[+] Kompilering slutförd (--compile-only angivet). Avslutar.")
+        print("[+] Compilation complete (--compile-only specified). Exiting.")
         return
 
     # 2. Select receiver serial port if monitoring is enabled
@@ -324,7 +324,7 @@ def main():
         receiver_port = select_com_port(
             preferred_port=args.port or os.environ.get("RECEIVER_PORT"),
             hint_keyword="Gateway",
-            prompt_title="Välj Gateway Mottagarport"
+            prompt_title="Select Gateway Receiver Port"
         )
 
     # 3. Flash CC1110
@@ -337,14 +337,14 @@ def main():
         ok = monitor_receiver(ser, port=receiver_port, duration=args.duration)
         if ok:
             print("\n" + "=" * 60)
-            print("[SUCCESS] PAKET MOTTAGET MED CRC: OK! RF-LÄNKEN ÄR VERIFIERAD!")
+            print("[SUCCESS] PACKET RECEIVED WITH CRC: OK! RF LINK IS VERIFIED!")
             print("=" * 60)
         else:
             print("\n" + "=" * 60)
-            print("[INFO] Övervakning slutförd.")
+            print("[INFO] Monitoring completed.")
             print("=" * 60)
     else:
-        print("[+] Flashning slutförd (--skip-monitor angivet).")
+        print("[+] Flashing completed (--skip-monitor specified).")
 
 
 if __name__ == "__main__":
