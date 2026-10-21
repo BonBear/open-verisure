@@ -51,7 +51,8 @@ SECRETS_H_PATH = os.path.join(os.path.dirname(__file__), "868Receiver", "src", "
 
 def get_master_key_from_secrets() -> Optional[str]:
     """
-    Parse DEFAULT_MASTER_KEY_HEX from 868Receiver/src/secrets.h if the file exists.
+    Parse MASTER_KEY_HEX, MASTER_AES_KEY_HEX, or DEFAULT_MASTER_KEY_HEX from
+    868Receiver/src/secrets.h if the file exists.
 
     Returns:
         Optional[str]: 32-character hex key string or None.
@@ -60,7 +61,7 @@ def get_master_key_from_secrets() -> Optional[str]:
         try:
             with open(SECRETS_H_PATH, "r", encoding="utf-8") as f:
                 content = f.read()
-                match = re.search(r'#define\s+DEFAULT_MASTER_KEY_HEX\s+"([0-9a-fA-F]{32})"', content)
+                match = re.search(r'#define\s+(?:MASTER_KEY_HEX|MASTER_AES_KEY_HEX|DEFAULT_MASTER_KEY_HEX)\s+"([0-9a-fA-F]{32})"', content)
                 if match:
                     return match.group(1).upper()
         except Exception:

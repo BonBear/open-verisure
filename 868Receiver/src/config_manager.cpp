@@ -40,8 +40,14 @@
 #define DEFAULT_MQTT_TOPIC "verisure"
 #endif
 
-#ifndef DEFAULT_MASTER_KEY_HEX
-#define DEFAULT_MASTER_KEY_HEX "0102030405060708090A0B0C0D0E0F10"
+#if defined(MASTER_KEY_HEX)
+#define ACTIVE_MASTER_KEY_HEX MASTER_KEY_HEX
+#elif defined(MASTER_AES_KEY_HEX)
+#define ACTIVE_MASTER_KEY_HEX MASTER_AES_KEY_HEX
+#elif defined(DEFAULT_MASTER_KEY_HEX)
+#define ACTIVE_MASTER_KEY_HEX DEFAULT_MASTER_KEY_HEX
+#else
+#define ACTIVE_MASTER_KEY_HEX "0102030405060708090A0B0C0D0E0F10"
 #endif
 
 static Preferences s_prefs;
@@ -105,7 +111,7 @@ void ConfigManager::begin() {
     // 3. Master Key (16 bytes)
     size_t keyLen = s_prefs.getBytes("master_key", s_config.masterKey, 16);
     if (keyLen != 16) {
-        hexToBytes(DEFAULT_MASTER_KEY_HEX, s_config.masterKey, 16);
+        hexToBytes(ACTIVE_MASTER_KEY_HEX, s_config.masterKey, 16);
     }
     bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
 
@@ -143,7 +149,7 @@ void ConfigManager::resetToDefaults() {
     strncpy(s_config.mqttUser, DEFAULT_MQTT_USER, sizeof(s_config.mqttUser) - 1);
     strncpy(s_config.mqttPass, DEFAULT_MQTT_PASS, sizeof(s_config.mqttPass) - 1);
     strncpy(s_config.mqttTopic, DEFAULT_MQTT_TOPIC, sizeof(s_config.mqttTopic) - 1);
-    hexToBytes(DEFAULT_MASTER_KEY_HEX, s_config.masterKey, 16);
+    hexToBytes(ACTIVE_MASTER_KEY_HEX, s_config.masterKey, 16);
     bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
     save();
     Serial.println("[Config] NVS reset to factory defaults.");
