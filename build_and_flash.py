@@ -204,7 +204,7 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
         if m:
             status_val = int(m.group(1), 16)
 
-        is_locked = (status_val & 0x04) != 0 or (status_val != 0 and "Device id: 0000" in init_text)
+        is_locked = (status_val != 0xFF and status_val != 0 and (status_val & 0x04) != 0) or (status_val != 0 and status_val != 0xFF and "Device id: 0000" in init_text)
         if is_locked or force_erase:
             print("[*] Chip is locked (factory security) or erase requested. Unlocking via chip erase...")
             try:
@@ -222,15 +222,14 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
             except Exception as e:
                 print(f"[-] Failed during chip unlock: {e}")
 
-        # If it still reports 0000 and status 00, it's genuinely disconnected
-        if "Device id: 0000" in init_text and (status_val == 0 or "Status: 00" in init_text):
-            print("\n[-] ERROR: Sensor CC1110 chip not detected (no electrical contact)!")
-            print("    Please check that the physical flasher wires are firmly connected to header J2:")
-            print("    - Pin 3 (VCC)   -> 3.3V")
-            print("    - Pin 4 (DC)    -> GPIO 19")
-            print("    - Pin 5 (DD)    -> GPIO 23")
-            print("    - Pin 6 (RESET) -> GPIO 33")
-            print("    - Pin 7 (GND)   -> GND\n")
+        # Verify that we have genuine communication with a CC1110 (Chip ID 0104)
+        if "0104" not in init_text and "01" not in init_text:
+            print(f"\n[-] ERROR: No valid CC1110 chip communication ({init_text})!")
+            print("    All bits returned 1s (FFFF) or 0s (0000). This means:")
+            print("    - Debug Clock (DC / Pad 4 -> GPIO 19) is not pulsing the chip, OR")
+            print("    - Debug Data (DD / Pad 5 -> GPIO 23) is disconnected/floating, OR")
+            print("    - Ground (GND / Pad 7 -> GND) reference is missing.")
+            print("    Please check the physical wire contact on Pad 4 and Pad 5.\n")
             return None
     except Exception as e:
         print(f"[-] Failed to reach CC Flasher at {cc_host}: {e}")
