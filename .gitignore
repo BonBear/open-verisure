@@ -1,0 +1,60 @@
+# ====================================================================
+# Git Ignore for Antigravity: Embedded RF (TI CC1110 & ESP32 / CC1101)
+# ====================================================================
+
+# --- PlatformIO & ESP-IDF Build Artifacts ---
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_format
+
+# --- SDCC (Small Device C Compiler) & 8051 Build Outputs ---
+**/build/
+*.rel
+*.rst
+*.sym
+*.asm
+*.lst
+*.map
+*.mem
+*.ihx
+*.lk
+*.adb
+*.cdb
+*.omf
+
+# --- Firmware Binaries & Temporary Dumps ---
+*.bin
+*.hex
+
+# --- Local Secrets & Configs ---
+VerisureDoorSensor/config.h
+!VerisureDoorSensor/config.h.example
+868Receiver/src/secrets.h
+!868Receiver/src/secrets.h.example
+
+# --- Python Environment & Caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# --- IDEs and Text Editors ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- Operating System & Temporary Files ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
+*.tmp
+*.bak
+*.swp
+*~
