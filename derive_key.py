@@ -36,14 +36,36 @@ Usage Examples:
 
 import os
 import sys
+import re
 import argparse
 import secrets
+from typing import Optional
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
 # Default Development Master Key (16 bytes / 128 bits)
 DEFAULT_MASTER_KEY_HEX = "0102030405060708090A0B0C0D0E0F10"
 CONFIG_H_PATH = os.path.join(os.path.dirname(__file__), "VerisureDoorSensor", "config.h")
+SECRETS_H_PATH = os.path.join(os.path.dirname(__file__), "868Receiver", "src", "secrets.h")
+
+
+def get_master_key_from_secrets() -> Optional[str]:
+    """
+    Parse DEFAULT_MASTER_KEY_HEX from 868Receiver/src/secrets.h if the file exists.
+
+    Returns:
+        Optional[str]: 32-character hex key string or None.
+    """
+    if os.path.isfile(SECRETS_H_PATH):
+        try:
+            with open(SECRETS_H_PATH, "r", encoding="utf-8") as f:
+                content = f.read()
+                match = re.search(r'#define\s+DEFAULT_MASTER_KEY_HEX\s+"([0-9a-fA-F]{32})"', content)
+                if match:
+                    return match.group(1).upper()
+        except Exception:
+            pass
+    return None
 
 
 def clean_device_id(raw_id: str) -> str:
@@ -153,12 +175,31 @@ def main():
     if not args.id:
         parser.error("Argument --id is required (e.g. --id '2JHL 2MVN').")
 
-    # Resolve Master Key
-    master_hex = args.master_key or os.environ.get("VERISURE_MASTER_KEY") or DEFAULT_MASTER_KEY_HEX
+    # Resolve Master Key in order of precedence:
+    # 1. Explicit CLI argument (--master-key)
+    # 2. Environment variable (VERISURE_MASTER_KEY)
+    # 3. Compile-time configuration in 868Receiver/src/secrets.h
+    # 4. Built-in development fallback
+    key_source = ""
+    if args.master_key:
+        master_hex = args.master_key
+        key_source = "CLI argument (--master-key)"
+    elif os.environ.get("VERISURE_MASTER_KEY"):
+        master_hex = os.environ.get("VERISURE_MASTER_KEY")
+        key_source = "Environment variable (VERISURE_MASTER_KEY)"
+    else:
+        secrets_key = get_master_key_from_secrets()
+        if secrets_key:
+            master_hex = secrets_key
+            key_source = "868Receiver/src/secrets.h"
+        else:
+            master_hex = DEFAULT_MASTER_KEY_HEX
+            key_source = "Built-in fallback default"
+
     try:
         master_bytes = bytes.fromhex(master_hex.strip())
     except ValueError:
-        print("[-] Error: Master key must be valid hex.")
+        print(f"[-] Error: Master key must be valid hex (got: '{master_hex}').")
         sys.exit(1)
 
     device_id = clean_device_id(args.id)
@@ -170,6 +211,7 @@ def main():
     print(f"[*] Input Device ID : {args.id}")
     print(f"[*] Clean Device ID : {device_id} (8 ASCII bytes)")
     print(f"[*] Master Key (Hex): {master_bytes.hex().upper()}")
+    print(f"[*] Key Source      : {key_source}")
     print(f"[+] Device Key (Hex): {device_key.hex().upper()}")
     print("-" * 65)
     print("C Array Format:")
