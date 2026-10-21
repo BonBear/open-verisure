@@ -58,7 +58,7 @@ flowchart LR
         HACore --> Dashboard["Lovelace UI\n(Door, Shock, Tamper, Batt)"]
     end
 
-    CC1110_RF -.->|Sub-1GHz RF (2-FSK)| CC1101_RF
+    CC1110_RF -.->|Sub-1GHz RF 2-FSK| CC1101_RF
     MQTTClient -->|TCP / MQTTS| Broker
 ```
 
