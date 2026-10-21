@@ -57,8 +57,8 @@ IHX_FILE = os.path.join(BUILD_DIR, "main.ihx")
 HEX_FILE = os.path.join(BUILD_DIR, "main.hex")
 BIN_FILE = os.path.join(BUILD_DIR, "main.bin")
 
-# CC Flasher Network configuration
-DEFAULT_CC_HOST = os.environ.get("CC_HOST", "http://192.168.0.80")
+# CC Flasher Network configuration (mDNS default: http://cc.local)
+DEFAULT_CC_HOST = os.environ.get("CC_HOST", "http://cc.local")
 CC_USER = "admin"
 CC_PASS = "admin"
 RECEIVER_BAUD = 115200
@@ -162,7 +162,17 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
     try:
         resp = session.post(f"{cc_host}/cc_init", timeout=10)
         resp.raise_for_status()
-        print(f"[+] {resp.text.strip()}")
+        init_text = resp.text.strip()
+        print(f"[+] {init_text}")
+        if "Device id: 0000" in init_text:
+            print("\n[-] ERROR: Sensor CC1110 chip not detected (Device id: 0000)!")
+            print("    Please check that the physical flasher wires are firmly connected to header J2:")
+            print("    - Pin 3 (VCC)   -> 3.3V")
+            print("    - Pin 4 (DC)    -> GPIO 19")
+            print("    - Pin 5 (DD)    -> GPIO 23")
+            print("    - Pin 6 (RESET) -> GPIO 33")
+            print("    - Pin 7 (GND)   -> GND\n")
+            return None
     except Exception as e:
         print(f"[-] Failed to reach CC Flasher at {cc_host}: {e}")
         return None
@@ -321,10 +331,14 @@ def main():
     # 2. Select receiver serial port if monitoring is enabled
     receiver_port = None
     if not args.skip_monitor:
+        print("\n" + "-" * 65)
+        print("[i] Flashing is done over Wi-Fi (http://cc.local via ESP_CC_Flasher).")
+        print("    The COM port below is ONLY used to verify RF packets on your Gateway.")
+        print("-" * 65)
         receiver_port = select_com_port(
             preferred_port=args.port or os.environ.get("RECEIVER_PORT"),
             hint_keyword="Gateway",
-            prompt_title="Select Gateway Receiver Port"
+            prompt_title="Select Gateway Receiver Port (for Live RF Verification)"
         )
 
     # 3. Flash CC1110

@@ -94,7 +94,6 @@ flowchart LR
 │   └── README.md                # Documentation index
 ├── build_and_flash.py           # All-in-one compile, HTTP flash & verify script
 ├── derive_key.py                # AES-128 Key Derivation Tool (KDF)
-├── flash_cc1110.py              # Standalone HTTP flasher for ESP_CC_Flasher
 ├── monitor.py                   # Real-time USB Serial monitor for gateway
 ├── port_selector.py             # Smart COM-port discovery & interactive menu
 ├── LICENSE                      # MIT Open-Source License
@@ -104,14 +103,22 @@ flowchart LR
 
 ---
 
+## 🎯 Supported Sensors & Devices
+
+| Model | Type | SoC / MCU | Frequency | Built-in Features | Support Status |
+| :--- | :--- | :---: | :---: | :--- | :---: |
+| **`GW-MC-SHOCK`** | Door & Window Sensor | TI CC1110F32 (8051) | 868.950 MHz | Magnetic Reed, Piezo Shock, Tamper Switch, Battery (mV & %) | ✅ **Fully Supported** |
+
+---
+
 ## 🛠️ Hardware Requirements & Bill of Materials
 
 | Component | Description | Approximate Cost |
 | :--- | :--- | :--- |
-| **Verisure Sensor** | Verisure Door/Window Sensor (Model with CC1110F32, reed, shock, and tamper). | Repurposed / Existing |
+| **Verisure Sensor** | **GW-MC-SHOCK** (Door/Window & Shock Sensor with CC1110F32). | Repurposed / Existing |
 | **ESP32-S2 Board** | **WEMOS LOLIN S2 Mini** (ESP32-S2FN4R2, 4MB Flash, Type-C). | ~$3 - $5 |
 | **Sub-1GHz Module**| **CC1101 868 MHz SPI Transceiver** (Red or green PCB with SMA antenna). | ~$3 - $5 |
-| **CC Programmer**   | **ESP32 running ESP_CC_Flasher** (or TI CC-Debugger) connected to sensor J2 header. | ~$4 |
+| **CC Programmer**   | **ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)** (or TI CC-Debugger) connected to sensor J2 header. | ~$4 |
 | **Jumper Wires**   | Female-to-Female & Jumper probe pins for sensor flashing header J2. | ~$1 |
 
 ---
@@ -140,13 +147,13 @@ flowchart LR
 
 The Verisure sensor features a 7-pad unpopulated programming header labeled **`J2`**. Pin 1 has a square pad.
 
-| ESP32 Flasher Pin | Verisure J2 Pad | Signal Name | Wire Color |
+| ESP32 Flasher Pin | Verisure J2 Pad | Signal Name | Wire / Function |
 | :---: | :---: | :---: | :---: |
-| **3V3** | **Pad 3** | VCC (Target Power) | 🔴 Red |
-| **GPIO 18** | **Pad 4** | DC (Debug Clock) | 🟡 Yellow |
-| **GPIO 19** | **Pad 5** | DD (Debug Data) | 🔵 Blue |
-| **GPIO 23** | **Pad 6** | RESET_N | 🟢 Green |
-| **GND** | **Pad 7** | Ground | ⚫ Black |
+| **3V3** | **Pad 3** | VCC (Target Power) | 🔴 Red (3.3V) |
+| **GPIO 19** | **Pad 4** | DC (Debug Clock) | 🟡 Yellow (CC_DC) |
+| **GPIO 23** | **Pad 5** | DD (Debug Data) | 🔵 Blue (CC_DD) |
+| **GPIO 33** | **Pad 6** | RESET_N | 🟢 Green (CC_RST) |
+| **GND** | **Pad 7** | Ground | ⚫ Black (GND) |
 
 ![CC Flasher Wiring Diagram](documentation/images/wiring_cc_flasher_j2.jpg)
 
@@ -169,7 +176,8 @@ cd open-verisure
 * [Small Device C Compiler (SDCC)](https://sdcc.sourceforge.net/) for CC1110 8051 compilation:
   * Windows: Download installer from SourceForge or install via Chocolatey (`choco install sdcc`).
   * Linux: `sudo apt install sdcc`
-* [PlatformIO](https://platformio.org/) for ESP32-S2 gateway compilation:
+* [PlatformIO](https://platformio.org/) for ESP32-S2 gateway compilation (or install PlatformIO IDE extension in VSCode).
+* **ESP32 CC-Flasher Programmer:** An ESP32 board running [atc1441/ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher) connected to your local Wi-Fi (reachable at `http://cc.local`). Used to flash the CC1110 sensor via HTTP.
   ```bash
   pip install platformio
   ```
@@ -225,7 +233,7 @@ pio run -d 868Receiver -t upload
 
 ### Step 4: Build, Flash & Verify the Sensor
 
-With the ESP32 CC-Flasher connected to your network (`http://192.168.0.80`), run:
+With the ESP32 CC-Flasher connected to your network (`http://cc.local`), run:
 
 ```bash
 python build_and_flash.py

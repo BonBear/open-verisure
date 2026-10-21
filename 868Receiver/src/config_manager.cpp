@@ -109,11 +109,25 @@ void ConfigManager::begin() {
     s_config.mqttTopic[sizeof(s_config.mqttTopic) - 1] = '\0';
 
     // 3. Master Key (16 bytes)
-    size_t keyLen = s_prefs.getBytes("master_key", s_config.masterKey, 16);
-    if (keyLen != 16) {
+    // If the firmware was recompiled with a new MASTER_KEY_HEX in secrets.h, automatically adopt it!
+    String lastCompiledKey = s_prefs.getString("compiled_key", "");
+    String currentCompiledKey = String(ACTIVE_MASTER_KEY_HEX);
+
+    if (lastCompiledKey != currentCompiledKey) {
+        Serial.println("[Config] Firmware update: Detected new MASTER_KEY_HEX in secrets.h! Updating active key...");
         hexToBytes(ACTIVE_MASTER_KEY_HEX, s_config.masterKey, 16);
+        bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
+        s_prefs.putBytes("master_key", s_config.masterKey, 16);
+        s_prefs.putString("compiled_key", currentCompiledKey);
+    } else {
+        size_t keyLen = s_prefs.getBytes("master_key", s_config.masterKey, 16);
+        if (keyLen != 16) {
+            hexToBytes(ACTIVE_MASTER_KEY_HEX, s_config.masterKey, 16);
+            s_prefs.putBytes("master_key", s_config.masterKey, 16);
+            s_prefs.putString("compiled_key", currentCompiledKey);
+        }
+        bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
     }
-    bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
 
     Serial.println("[Config] Loaded configuration:");
     Serial.printf("         Wi-Fi SSID  : %s\n", s_config.wifiSsid[0] ? s_config.wifiSsid : "(not configured)");
@@ -151,6 +165,7 @@ void ConfigManager::resetToDefaults() {
     strncpy(s_config.mqttTopic, DEFAULT_MQTT_TOPIC, sizeof(s_config.mqttTopic) - 1);
     hexToBytes(ACTIVE_MASTER_KEY_HEX, s_config.masterKey, 16);
     bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
+    s_prefs.putString("compiled_key", ACTIVE_MASTER_KEY_HEX);
     save();
     Serial.println("[Config] NVS reset to factory defaults.");
 }

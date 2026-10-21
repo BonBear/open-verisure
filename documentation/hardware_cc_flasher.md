@@ -1,6 +1,6 @@
 # CC-Flasher & Programming: ESP32 to Verisure J2 Header
 
-This document details the wiring, pinout, and flashing routine for programming the **Texas Instruments CC1110F32** microcontroller on the Verisure sensor PCB using an **ESP32 running ESP_CC_Flasher** (Aaron Christophel's open-source CC-Debugger implementation).
+This document details the wiring, pinout, and flashing routine for programming the **Texas Instruments CC1110F32** microcontroller on the Verisure sensor PCB using an **ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)** (Aaron Christophel's open-source CC-Debugger implementation).
 
 ---
 
@@ -25,22 +25,22 @@ The flashing and debug interface consists of 7 through-hole/test pads situated a
 
 ## 🔌 Wiring: ESP32 Flasher to Verisure J2
 
-| ESP32 Flasher Pin | Default Flasher GPIO | Verisure J2 Pin | Recommended Wire Color |
+| ESP32 Flasher Pin | Default Flasher GPIO | Verisure J2 Pin | Function |
 | :---: | :---: | :---: | :---: |
-| **3V3** | 3.3V Power Out | **`J2-3` (VCC)** | Red |
-| **GND** | Ground | **`J2-7` (GND)** | Black |
-| **GPIO 18** | Debug Clock (`DC`) | **`J2-4` (DC)** | Yellow |
-| **GPIO 19** | Debug Data (`DD`) | **`J2-5` (DD)** | Blue |
-| **GPIO 23** | Debug Reset (`RESET`)| **`J2-6` (RESET)** | Green |
+| **3V3** | 3.3V Power Out | **`J2-3` (VCC)** | 3.3V Target Power |
+| **GND** | Ground | **`J2-7` (GND)** | Ground |
+| **GPIO 19** | Debug Clock (`CC_DC`)| **`J2-4` (DC)** | Debug Clock |
+| **GPIO 23** | Debug Data (`CC_DD`) | **`J2-5` (DD)** | Bidirectional Debug Data |
+| **GPIO 33** | Debug Reset (`CC_RST`)| **`J2-6` (RESET)** | Active-Low Debug Reset |
 
 ```mermaid
 flowchart LR
-    subgraph FLASHER["ESP32 CC-Flasher (COM12 / http://192.168.0.80)"]
+    subgraph FLASHER["ESP32 CC-Flasher (http://cc.local)"]
         F3V3["3V3 (Power Out)"]
         FGND["GND"]
-        FDC["GPIO 18 (DC Out)"]
-        FDD["GPIO 19 (DD I/O)"]
-        FRST["GPIO 23 (RESET Out)"]
+        FDC["GPIO 19 (DC Out)"]
+        FDD["GPIO 23 (DD I/O)"]
+        FRST["GPIO 33 (RESET Out)"]
     end
 
     subgraph J2["Verisure J2 Header (PCB Rear)"]
@@ -77,7 +77,7 @@ All compilation and flashing steps are fully automated via the Python script [`b
    makebin -p build/main.ihx build/main.bin
    ```
 2. **Chip Detection:**
-   Sends `POST http://192.168.0.80/cc_init`. The ESP32 generates debug initialization waveforms on `DC` and `RESET_N`.
+   Sends `POST http://cc.local/cc_init`. The ESP32 generates debug initialization waveforms on `DC` and `RESET_N`.
    The CC1110 responds with `Device id: 0104 Status: B2` (0104 = CC1110F32, 32 kB Flash).
 3. **Upload & Flash:**
    Uploads `main.bin` via `POST /edit`, programs and erases flash via `POST /flash_cc?file=main.bin`, and verifies every sector.

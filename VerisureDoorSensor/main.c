@@ -65,6 +65,12 @@
 #define PACKET_LEN       24
 
 /**
+ * @def HEARTBEAT_INTERVAL_SEC
+ * @brief Telemetry heartbeat interval in seconds when no events occur (1 hour = 3600 seconds).
+ */
+#define HEARTBEAT_INTERVAL_SEC 3600
+
+/**
  * @brief True address of FSCAL0 in XDATA space.
  * @details According to CC1110 datasheet SWRU105, 0xDF26 contains FSCAL0.
  * Writing 0xC2 here disables the frequency synthesizer. Must always remain 0x1F.
@@ -558,6 +564,7 @@ void main(void) {
     uint8_t last_reed = P1_7;
     uint8_t last_tamper = P0_1;
     uint16_t shock_hold_ms = 0;
+    bool prev_safe = (last_reed == 0 && last_tamper == 0);
     bool first_packet = true;
 
     while (1) {
@@ -566,52 +573,56 @@ void main(void) {
 
         // First packet after boot/reset is transmitted immediately
         if (!first_packet) {
-            // Monitor sensors in real-time during the 1000 ms interval.
+            // Monitor sensors in real-time until heartbeat timeout (1 hour = 3600 seconds).
             // If any sensor changes state, break immediately to transmit within < 2 ms!
-            for (uint16_t ms = 0; ms < 1000; ms++) {
-                // 1. Check Magnetic Reed Switch (P1_7)
-                uint8_t curr_reed = P1_7;
-                if (curr_reed != last_reed) {
-                    last_reed = curr_reed;
-                    send_immediate = true;
-                    break;
-                }
-
-                // 2. Check Tamper / Sabotage switch (P0_1)
-                // 1 = Cover removed / Alarm, 0 = Cover installed / Secured
-                uint8_t curr_tamper = P0_1;
-                if (curr_tamper != last_tamper) {
-                    last_tamper = curr_tamper;
-                    send_immediate = true;
-                    break;
-                }
-
-                // 3. Check Vibration / Shock Sensor (P1_2) with rapid oversampling
-                for (uint8_t s = 0; s < 10; s++) {
-                    uint8_t curr_p1_2 = P1_2;
-                    if (curr_p1_2 != p1_2_prev) {
-                        p1_2_prev = curr_p1_2;
-                        shock_event = true;
-                        shock_hold_ms = 1000; // Hold shock state for 1 second
+            for (uint16_t sec = 0; sec < HEARTBEAT_INTERVAL_SEC; sec++) {
+                for (uint16_t ms = 0; ms < 1000; ms++) {
+                    // 1. Check Magnetic Reed Switch (P1_7)
+                    uint8_t curr_reed = P1_7;
+                    if (curr_reed != last_reed) {
+                        last_reed = curr_reed;
                         send_immediate = true;
                         break;
                     }
+
+                    // 2. Check Tamper / Sabotage switch (P0_1)
+                    // 1 = Cover removed / Alarm, 0 = Cover installed / Secured
+                    uint8_t curr_tamper = P0_1;
+                    if (curr_tamper != last_tamper) {
+                        last_tamper = curr_tamper;
+                        send_immediate = true;
+                        break;
+                    }
+
+                    // 3. Check Vibration / Shock Sensor (P1_2) with rapid oversampling
+                    for (uint8_t s = 0; s < 10; s++) {
+                        uint8_t curr_p1_2 = P1_2;
+                        if (curr_p1_2 != p1_2_prev) {
+                            p1_2_prev = curr_p1_2;
+                            shock_event = true;
+                            shock_hold_ms = 1000; // Hold shock state for 1 second
+                            send_immediate = true;
+                            break;
+                        }
+                    }
+                    if (send_immediate) {
+                        break;
+                    }
+
+                    // Decrement shock hold timer; send clear packet to HA when hold expires
+                    if (shock_hold_ms > 0) {
+                        shock_hold_ms--;
+                        if (shock_hold_ms == 0) {
+                            send_immediate = true;
+                            break;
+                        }
+                    }
+
+                    delay_ms(1);
                 }
                 if (send_immediate) {
                     break;
                 }
-
-                // Decrement shock hold timer
-                if (shock_hold_ms > 0) shock_hold_ms--;
-
-                // Real-time LED feedback: Red LED lights up if door is open, shock active, or cover off
-                if (curr_reed != 0 || shock_hold_ms > 0 || curr_tamper != 0) {
-                    P0_2 = 1;
-                } else {
-                    P0_2 = 0;
-                }
-
-                delay_ms(1);
             }
         } else {
             first_packet = false;
@@ -623,12 +634,12 @@ void main(void) {
         bool is_shock = (shock_event || shock_hold_ms > 0);
         bool is_tamper = (P0_1 != 0);
 
-        // Update Red LED status
-        if (is_open || is_shock || is_tamper) {
-            P0_2 = 1;
-        } else {
-            P0_2 = 0;
-        }
+        bool is_currently_safe = (!is_open && !is_shock && !is_tamper);
+        bool is_heartbeat = !send_immediate;
+        bool returned_to_safe = (send_immediate && is_currently_safe && !prev_safe);
+        bool entered_alert = (send_immediate && !is_currently_safe);
+
+        prev_safe = is_currently_safe;
 
         // Measure battery voltage and calculate percentage
         uint16_t batt_mv = read_battery_mv();
@@ -675,8 +686,16 @@ void main(void) {
         aes_encrypt_block(plain, &tx_buf[8]);
         seq++;
 
-        // 4. Visual & Hardware pulse during transmission
-        P0_4 = 1;      // Turn on Green LED during RF pulse
+        // 4. Visual & Hardware pulse during transmission:
+        // - Green LED (P0_4) blinks on periodic heartbeat or when sensor returns to safe state
+        // - Red LED (P0_2) blinks briefly when entering an alert/alarm state (open, shock, tamper)
+        // - Both LEDs remain completely OFF during quiescent standby to maximize battery life
+        if (is_heartbeat || returned_to_safe) {
+            P0_4 = 1; // Green LED ON
+        } else if (entered_alert) {
+            P0_2 = 1; // Red LED ON
+        }
+
         P2_1 = !P2_1;  // Toggle DD pin for oscilloscope / logic analyzer hookup
 
         bool ok = radio_send();
@@ -684,13 +703,7 @@ void main(void) {
 
         delay_ms(40);
         P0_4 = 0;      // Turn off Green LED
-
-        // Re-evaluate Red LED state
-        if (P1_7 != 0 || shock_hold_ms > 0 || P0_1 != 0) {
-            P0_2 = 1;
-        } else {
-            P0_2 = 0;
-        }
+        P0_2 = 0;      // Turn off Red LED
 
         // For immediate trigger events, apply a short 60 ms refractory period to prevent RF channel flooding
         if (send_immediate) {

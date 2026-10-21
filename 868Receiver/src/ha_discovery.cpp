@@ -180,7 +180,7 @@ String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, con
     p += "\"device\":{";
     p += "\"identifiers\":[\"verisure_" + String(deviceId) + "\"],";
     p += "\"name\":\"Verisure Sensor " + String(deviceId) + "\",";
-    p += "\"model\":\"Door/Window Magnetic & Vibration Sensor\",";
+    p += "\"model\":\"GW-MC-SHOCK (Door/Window & Shock)\",";
     p += "\"manufacturer\":\"Verisure\",";
     p += "\"sw_version\":\"2.0-CC1110\",";
     p += "\"via_device\":\"verisure_gateway\"";

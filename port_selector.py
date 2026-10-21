@@ -148,7 +148,7 @@ def select_com_port(
             choice = input(f"Select port [1-{len(ports)}] or enter port name (default: {default_num}): ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\nCancelled by user.")
-            return None
+            sys.exit(130)
 
         # User pressed Enter without typing -> accept default
         if not choice:

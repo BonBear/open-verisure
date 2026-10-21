@@ -1,6 +1,6 @@
 # Verisure Sensor PCB: Hardware Mapping & Silicon Analysis (TI CC1110F32)
 
-This document provides the complete physical and logical hardware mapping of the Verisure wireless door and window sensor (`SD-MAG-VIB`), based on the Texas Instruments **CC1110F32** (SoC featuring an 8051 core and integrated Sub-1GHz radio).
+This document provides the complete physical and logical hardware mapping of the Verisure wireless door and window sensor (Model: **`GW-MC-SHOCK`**), based on the Texas Instruments **CC1110F32** (SoC featuring an 8051 core and integrated Sub-1GHz radio).
 
 ---
 
