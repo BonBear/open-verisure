@@ -42,17 +42,37 @@ struct HaEntityDef {
 };
 
 /**
- * @brief Get total number of entity definitions exposed per sensor node.
+ * @brief Check if a sensor ID belongs to a Verisure Motion Detector Camera (GW MD CAM2).
+ * @param deviceId 8-character sensor identifier.
+ * @return True if device is a motion detector camera (e.g. "2NCE...").
+ */
+bool haIsMotionCameraSensor(const char* deviceId);
+
+/**
+ * @brief Get total number of entity definitions exposed per door/window sensor node.
  * @return Number of sensor entities (typically 6).
  */
 int haDiscoveryGetSensorEntityCount();
 
 /**
- * @brief Get entity definition by zero-based index.
+ * @brief Get door/window entity definition by zero-based index.
  * @param idx Index from 0 to count-1.
  * @return Pointer to HaEntityDef structure.
  */
 const HaEntityDef* haDiscoveryGetSensorEntityDef(int idx);
+
+/**
+ * @brief Get total number of entity definitions exposed per motion camera sensor node.
+ * @return Number of motion sensor entities (5).
+ */
+int haDiscoveryGetMotionSensorEntityCount();
+
+/**
+ * @brief Get motion camera entity definition by zero-based index.
+ * @param idx Index from 0 to count-1.
+ * @return Pointer to HaEntityDef structure.
+ */
+const HaEntityDef* haDiscoveryGetMotionSensorEntityDef(int idx);
 
 /**
  * @brief Construct MQTT config discovery topic for a sensor entity.

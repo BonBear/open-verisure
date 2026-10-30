@@ -85,6 +85,72 @@ static const HaEntityDef S_SENSOR_ENTITIES[] = {
 };
 
 /**
+ * @brief Motion Detector Camera (GW MD CAM2) entity configuration table.
+ */
+static const HaEntityDef S_MOTION_SENSOR_ENTITIES[] = {
+    {
+        "motion",
+        "binary_sensor",
+        "Motion",
+        "motion",
+        nullptr,
+        nullptr,
+        "{{ value_json.contact }}",
+        "OPEN",
+        "CLOSED",
+        nullptr
+    },
+    {
+        "button",
+        "binary_sensor",
+        "Tamper",
+        "tamper",
+        nullptr,
+        nullptr,
+        "{{ value_json.button }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
+        "battery",
+        "sensor",
+        "Battery",
+        "battery",
+        "measurement",
+        "%",
+        "{{ value_json.battery_pct }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "voltage",
+        "sensor",
+        "Battery Voltage",
+        "voltage",
+        "measurement",
+        "mV",
+        "{{ value_json.battery_mv }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "rssi",
+        "sensor",
+        "Signal Strength",
+        "signal_strength",
+        "measurement",
+        "dBm",
+        "{{ value_json.rssi }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    }
+};
+
+/**
  * @brief Gateway health and diagnostics entity configuration table.
  */
 static const HaEntityDef S_GATEWAY_ENTITIES[] = {
@@ -127,7 +193,12 @@ static const HaEntityDef S_GATEWAY_ENTITIES[] = {
 };
 
 static const int NUM_SENSOR_ENTITIES = sizeof(S_SENSOR_ENTITIES) / sizeof(S_SENSOR_ENTITIES[0]);
+static const int NUM_MOTION_SENSOR_ENTITIES = sizeof(S_MOTION_SENSOR_ENTITIES) / sizeof(S_MOTION_SENSOR_ENTITIES[0]);
 static const int NUM_GATEWAY_ENTITIES = sizeof(S_GATEWAY_ENTITIES) / sizeof(S_GATEWAY_ENTITIES[0]);
+
+bool haIsMotionCameraSensor(const char* deviceId) {
+    return deviceId && strncmp(deviceId, "2NCE", 4) == 0;
+}
 
 int haDiscoveryGetSensorEntityCount() {
     return NUM_SENSOR_ENTITIES;
@@ -138,6 +209,15 @@ const HaEntityDef* haDiscoveryGetSensorEntityDef(int idx) {
     return &S_SENSOR_ENTITIES[idx];
 }
 
+int haDiscoveryGetMotionSensorEntityCount() {
+    return NUM_MOTION_SENSOR_ENTITIES;
+}
+
+const HaEntityDef* haDiscoveryGetMotionSensorEntityDef(int idx) {
+    if (idx < 0 || idx >= NUM_MOTION_SENSOR_ENTITIES) return nullptr;
+    return &S_MOTION_SENSOR_ENTITIES[idx];
+}
+
 String haDiscoveryBuildTopic(const char* deviceId, const HaEntityDef* def) {
     return "homeassistant/" + String(def->component) + "/verisure_" + String(deviceId) + "_" + String(def->key) + "/config";
 }
@@ -145,6 +225,7 @@ String haDiscoveryBuildTopic(const char* deviceId, const HaEntityDef* def) {
 String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, const char* baseTopic) {
     String stateTopic = haStateBuildTopic(deviceId, baseTopic);
     String uniqueId = "verisure_" + String(deviceId) + "_" + String(def->key);
+    bool isMotionCam = haIsMotionCameraSensor(deviceId);
 
     String p = "{";
     p += "\"name\":\"" + String(def->name) + "\",";
@@ -179,8 +260,13 @@ String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, con
     // Home Assistant Device Registry Block
     p += "\"device\":{";
     p += "\"identifiers\":[\"verisure_" + String(deviceId) + "\"],";
-    p += "\"name\":\"Verisure Sensor " + String(deviceId) + "\",";
-    p += "\"model\":\"GW-MC-SHOCK (Door/Window & Shock)\",";
+    if (isMotionCam) {
+        p += "\"name\":\"Verisure Motion Camera " + String(deviceId) + "\",";
+        p += "\"model\":\"GW MD CAM2 (Motion Detector & Camera)\",";
+    } else {
+        p += "\"name\":\"Verisure Sensor " + String(deviceId) + "\",";
+        p += "\"model\":\"GW-MC-SHOCK (Door/Window & Shock)\",";
+    }
     p += "\"manufacturer\":\"Verisure\",";
     p += "\"sw_version\":\"2.0-CC1110\",";
     p += "\"via_device\":\"verisure_gateway\"";
@@ -196,6 +282,7 @@ String haStateBuildTopic(const char* deviceId, const char* baseTopic) {
 String haStateBuildPayload(const VerisureTelemetry& telem) {
     String p = "{";
     p += "\"contact\":\"" + String(telem.isOpen ? "OPEN" : "CLOSED") + "\",";
+    p += "\"motion\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";
     p += "\"vibration\":\"" + String(telem.isShock ? "ON" : "OFF") + "\",";
     p += "\"button\":\"" + String(telem.isButton ? "ON" : "OFF") + "\",";
     p += "\"power_on\":\"" + String(telem.isPowerOn ? "ON" : "OFF") + "\",";

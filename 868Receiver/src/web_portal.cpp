@@ -443,6 +443,10 @@ static void handleApiStatus() {
         json += "\"battery_pct\":" + String(rec->lastTelem.batteryPct) + ",";
         json += "\"rssi\":" + String(rec->lastTelem.rssi) + ",";
         json += "\"lqi\":" + String(rec->lastTelem.lqi) + ",";
+        json += "\"p0\":" + String(rec->lastTelem.rawP0) + ",";
+        json += "\"p1\":" + String(rec->lastTelem.rawP1) + ",";
+        json += "\"p2\":" + String(rec->lastTelem.rawP2) + ",";
+        json += "\"rst\":" + String(rec->lastTelem.rawRst) + ",";
         json += "\"last_seen_sec\":" + String(ageSec) + ",";
         json += "\"packets\":" + String(rec->packetCount);
         json += "}";

@@ -45,23 +45,45 @@ static void markDeviceDiscovered(const char* deviceId) {
 }
 
 /**
- * @brief Publish Home Assistant discovery configs for all 6 entities of a sensor.
+ * @brief Publish Home Assistant discovery configs for all entities of a sensor.
  * @param deviceId Sensor identifier.
  * @param baseTopic Gateway base MQTT topic prefix.
  */
 static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) {
-    int count = haDiscoveryGetSensorEntityCount();
-    for (int i = 0; i < count; i++) {
-        const HaEntityDef* def = haDiscoveryGetSensorEntityDef(i);
-        if (!def) continue;
+    bool isMotionCam = haIsMotionCameraSensor(deviceId);
+    if (isMotionCam) {
+        // Clear any legacy Door/Vibration discovery topics for this Motion Camera ID
+        String oldContact = "homeassistant/binary_sensor/verisure_" + String(deviceId) + "_contact/config";
+        String oldVib     = "homeassistant/binary_sensor/verisure_" + String(deviceId) + "_vibration/config";
+        s_mqttClient.publish(oldContact.c_str(), "", true);
+        s_mqttClient.publish(oldVib.c_str(), "", true);
 
-        String topic = haDiscoveryBuildTopic(deviceId, def);
-        String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic);
+        int count = haDiscoveryGetMotionSensorEntityCount();
+        for (int i = 0; i < count; i++) {
+            const HaEntityDef* def = haDiscoveryGetMotionSensorEntityDef(i);
+            if (!def) continue;
 
-        s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
+            String topic = haDiscoveryBuildTopic(deviceId, def);
+            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic);
+
+            s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
+        }
+        markDeviceDiscovered(deviceId);
+        Serial.printf("[MQTT] Published Home Assistant Discovery for Motion Camera \"%s\" (%d entities retained)\n", deviceId, count);
+    } else {
+        int count = haDiscoveryGetSensorEntityCount();
+        for (int i = 0; i < count; i++) {
+            const HaEntityDef* def = haDiscoveryGetSensorEntityDef(i);
+            if (!def) continue;
+
+            String topic = haDiscoveryBuildTopic(deviceId, def);
+            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic);
+
+            s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
+        }
+        markDeviceDiscovered(deviceId);
+        Serial.printf("[MQTT] Published Home Assistant Discovery for sensor \"%s\" (%d entities retained)\n", deviceId, count);
     }
-    markDeviceDiscovered(deviceId);
-    Serial.printf("[MQTT] Published Home Assistant Discovery for sensor \"%s\" (6 entities retained)\n", deviceId);
 }
 
 /**
@@ -140,6 +162,18 @@ static void checkMqttConnection() {
 
         // Publish Gateway Online Status (Retained)
         s_mqttClient.publish(statusTopic.c_str(), "online", true);
+
+        // Clean up the accidental test ID 2NCEKT3X (Board #2's ID used during initial test) from HA discovery
+        const char* staleKeys[] = {"contact", "vibration", "motion", "button"};
+        for (int k = 0; k < 4; k++) {
+            String t = "homeassistant/binary_sensor/verisure_2NCEKT3X_" + String(staleKeys[k]) + "/config";
+            s_mqttClient.publish(t.c_str(), "", true);
+        }
+        const char* staleSensors[] = {"battery", "voltage", "rssi"};
+        for (int k = 0; k < 3; k++) {
+            String t = "homeassistant/sensor/verisure_2NCEKT3X_" + String(staleSensors[k]) + "/config";
+            s_mqttClient.publish(t.c_str(), "", true);
+        }
 
         // Immediately publish gateway discovery and announce all known sensors
         publishGatewayDiscovery(cfg.mqttTopic);
