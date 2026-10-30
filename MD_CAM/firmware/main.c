@@ -1173,65 +1173,58 @@ static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
 
     *out_len = 0;
 
-    // STEG 1: Strömsätt Blackfin och sensorskenor med Blackfin i RESET
-    P0DIR |= 0x85; // P0_0 (/RESET), P0_2 (1.2V), P0_7 (Aux) = Utgångar
-    P1DIR |= 0x07; // P1_0 (3.3V), P1_1 (Bus Switch), P1_2 (DSP /SS) = Utgångar
-    P1DIR &= ~0x40; // P1_6 är SW3 Tamper - HÅLL ALLTID SOM INGÅNG!
+    // STEG 1: Stromsatt Blackfin och sensorskenor med Blackfin i RESET
+    // Sekvensering: VDDEXT (3.3V) MASTE slas pa FORE eller samtidigt med VDDINT (1.2V)
+    // enligt ADSP-BF512 EE-274 for att undvika felaktig lasning av POR/PLL!
+    P0DIR |= 0x85; // P0_0 (/RESET), P0_2 (1.2V), P0_7 (Aux) = Utgangar
+    P1DIR |= 0x01; // P1_0 (3.3V switched) = Utgang
+    P1DIR &= ~0x40; // P1_6 ar SW3 Tamper - HALL ALLTID SOM INGANG!
     P1INP &= ~0x40;
 
-    // Håll P1_7 som ingång (PIR)
+    // Hall P1_7 som ingang (PIR)
     P1DIR &= ~0x80;
     P1INP &= ~0x80;
 
-    // Strömsätt kameran och Blackfin i mjuk stegvis sekvens (Blackfin i RESET)
-    P0_0 = 0;      // Håll Blackfin i RESET medan spänningarna stabiliseras
-    P0_2 = 1;      // 1.2V Core rail (Q13) först
-    delay_ms(50);
-    P1_0 = 1;      // 3.3V switched rail (Q7 - SDRAM & Sensor & Flash)
-    delay_ms(50);
-    P0_7 = 1;      // 3.27V aux/sensor analog rail (Röda dioden lyser!)
-    delay_ms(50);
+    // Stromsatt i korrekt sekvens med Blackfin hallen i hardvarureset
+    P0_0 = 0;      // Hall Blackfin i RESET medan spanningarna stabiliseras
+    P1_0 = 1;      // 1. 3.3V switched rail (Q7 - VDDEXT, SDRAM, Sensor, Flash) FORST!
+    delay_ms(30);
+    P0_2 = 1;      // 2. 1.2V Core rail (Q13 - VDDINT) DAREFTER!
+    delay_ms(30);
+    P0_7 = 1;      // 3. 3.27V aux/sensor analog rail
+    delay_ms(30);
 
-    // Kritiskt för Blackfin SPI Master Boot:
-    // P1_1 (Bus Switch Enable) MÅSTE drivas HÖG (1) för att koppla bussen!
-    // P1_2 (Blackfin /SPISS)   MÅSTE drivas HÖG (1) så Blackfin inte får SPI Mode Fault!
-    P1SEL &= ~0x06;
-    P1DIR |= 0x06;
-    P1_1 = 1;
-    P1_2 = 1;
+    // Kritiskt for Blackfin Boot ROM (BMODE=011 SPI Master fran U3 Flash):
+    // Samtliga fem SPI-linjer (P1_1=SS_Undre, P1_2=SS_Ovre, P1_3=SCK, P1_4=MISO, P1_5=MOSI)
+    // MASTE hallas i akta 3-state (High-Z utan pull-motstand) sa Blackfin ostort kan klocka
+    // U3 Flash vid 2.0 MHz utan busskollision eller SPI Mode Fault (MODF)!
+    P1SEL &= ~0x3E; // P1_1..P1_5 som GPIO
+    P1DIR &= ~0x3E; // P1_1..P1_5 som INGANGAR
+    P1INP |= 0x3E;  // Akta 3-state (inga pull-motstand)
 
-    // Sätt CC1110 SPI-pinnar (P1_3=SCK, P1_4=MISO, P1_5=MOSI) i äkta 3-state
-    // så Blackfin har ostörd tillgång till U3 Flash (EN25F40) vid 2.0 MHz!
-    P1SEL &= ~0x38; // P1_3..P1_5 som GPIO
-    P1DIR &= ~0x38; // P1_3..P1_5 som INGÅNGAR
-    P1INP |= 0x38;  // Äkta 3-state (inga pull-motstånd)
+    // Hall aven UART-pinnar (P0_4=TX, P0_5=RX) i 3-state under bootfasen
+    P0SEL &= ~0x30;
+    P0DIR &= ~0x30;
+    P0INP |= 0x30;
     delay_ms(20);
 
-    // Initiera UART1 vid 57600 baud INNAN Blackfin släpps ur reset så vi fångar ALL boot-trafik
+    // STEG 2: Slapp Blackfin ur reset ostort (Blackfin kor Boot ROM fran U3 Flash vid 2.0 MHz!)
+    P0_0 = 1; // SLAPP RESET! Blackfin bootar fran U3 Flash!
+
+    // Lyssna och ge Blackfin 1000 ms for flash-boot (20.7 ms), initiering och exponering
+    delay_ms(1000);
+
+    // Initiera UART1 vid 57600 baud for kontrollplan
     uart1_init_57600();
     g_uart_rx_count = 0;
 
-    // STEG 2: Släpp Blackfin ur reset ostört (Blackfin kör Boot ROM från U3 Flash vid 2.0 MHz!)
-    P0_0 = 1; // SLÄPP RESET! Blackfin bootar från U3 Flash!
-
-    // Lyssna aktivt på UART RX (P0_5) under hela 1200 ms boot-fasen
-    for (uint16_t ms = 0; ms < 1200; ms++) {
-        if (U1CSR & 0x04) {
-            uint8_t b = U1DBUF;
-            if (g_uart_rx_count < 32) {
-                g_uart_rx_buf[g_uart_rx_count++] = b;
-            }
-        }
-        delay_ms(1);
-    }
-
-    // Skicka triggers över UART
+    // Skicka triggers over UART
     uart1_tx_str("SNAP\r\n");
     uart1_tx_byte(0x04);
     uart1_tx_byte(0x01);
     delay_ms(20);
 
-    // Läs av eventuellt svar på triggern
+    // Las av eventuellt svar pa triggern
     for (uint16_t ms = 0; ms < 100; ms++) {
         if (U1CSR & 0x04) {
             uint8_t b = U1DBUF;
@@ -1242,9 +1235,9 @@ static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
         delay_ms(1);
     }
 
-    // STEG 3: Nu tar CC1110 över som SPI Master Mode 0
+    // STEG 3: Nu tar CC1110 over som SPI Master Mode 0
     spi0_master_init();
-    P1DIR |= 0x2E;  // P1_1, P1_2, P1_3, P1_5 = Utgångar
+    P1DIR |= 0x2E;  // P1_1, P1_2, P1_3, P1_5 = Utgangar
     P1_1 = 1;       // SS idle HIGH
     P1_2 = 1;
     delay_ms(10);

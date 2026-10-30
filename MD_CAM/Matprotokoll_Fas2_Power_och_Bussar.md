@@ -141,3 +141,12 @@ Mät med multimetern om någon av de 4 CC1110-kandidatpinnarna (`P1_0`, `P0_0`, 
   - CC1110 tar därefter över som **SPI Master** i Mode 0 / Mode 3 med 16-bitars word framing och togglar `/SPISS` (`P1_2`).
   - Strömförbrukning vid 3.00 V: **3.0 mA** i viloläge, **73–75 mA** under bildtagning/DSP-fas.
 
+* **Live-Avtryckartest med knapp SW3 på Kort #1 (2026-10-30):**
+  - **Avtryckartrigger:** Tryckning på SW3 detekterades direkt av CC1110 (100 Hz micro-pull scan på `P1_6`).
+  - **RF-telemetri:** Skickade omedelbart opcode `0xEE` ("button":"ON") till ESP32-S2 Gateway (`seq: 25429`, RSSI -34 dBm, LQI 116).
+  - **Spänningssekvensering & Strömprofil:** Labbaggregatet (COM5, 3.00 V) hoppade från 3.0 mA viloström till **75.0–76.0 mA** under exakt **1.84 sekunder** (44–46 aktiva samplingar), och återgick därefter deterministiskt till 3.0 mA.
+  - **SPI-kommunikation:** CC1110 genererade 16384 klockpulser i 844 kHz (2048 bytes utläsning) samt skickade kommandosvep (0x0004, 0x0003, 0x0001, 0x0100, 0x0002, 0x0200, 0x8001, 0x55AA).
+  - **DSP MISO-beteende:** Blackfin svarade med stabil logisk nolla (`0x00`, `SENDZ=1`) under samtliga utläsningar.
+  - **Bussisolering:** Analys bekräftade att `P1_1` måste drivas aktivt HÖG (1) för att öppna bussomkopplaren; när `P1_1` är flytande eller 0 klampas bussen mot 0V.
+  - **LED & Debug Halt:** "Detect CC" på ESP CC-Flasher sätter CC1110 i debug-halt (interna pull-ups) vilket drar `P0_7` hög och tänder den röda dioden `LD1` via `Q2`. Vid "Reset / RunCC" (`/cc_exit_dbg`) jordar firmwarens `io_init()` pinnen `P0_7` till 0V och släcker dioden.
+

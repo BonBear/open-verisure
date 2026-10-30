@@ -31,6 +31,10 @@ Här sparas **verifierade tekniska insikter**, **hårdvarubegränsningar**, **k�
 - [2026-10-28] [MD_CAM/BUS_SWITCH]: P1_1 fungerar som aktiv-hög Bus Switch Enable. När P1_1 = 1 är bussen helt öppen mot Blackfin och CC1110 kan klocka 4096 klockor kontinuerligt. När P1_1 = 0 klampas bussen låg.
 - [2026-10-28] [MD_CAM/BLACKFIN_SPI]: Blackfin ADSP-BF512 kör stabilt vid 73–97 mA (P0_0 = 1). Dess SPI-slavhårdvara är aktiv och driver MISO till 0x00 (SENDZ = 1) under hela den 512 bytes långa utklockningen i väntan på att DSP-applikationen ska ladda sändbufferten. U3 Pin 2 piper direkt (0 ohm) mot CC1110 Pin 35 (MISO).
 - [2026-10-28] [MD_CAM/FLASH_LED]: LED-blixtkortet (P/N3302042 C) har en röd indikator-LED som lyser när kortet strömsätts. Blixt-lysdioderna (4 st IR/högeffekts-LEDs) styrs via kombinerad logik (Blackfin/P0_7/ljussensor).
+- [2026-10-30] [MD_CAM/POWER_SEQ]: ADSP-BF512 kräver strikt VDDEXT (3.3V switched via P1_0/Q7) före VDDINT (1.2V core via P0_2/Q13) enligt Analog Devices EE-274. Inverterad spänningssättning låser DSP:ns interna Power-On Reset/PLL.
+- [2026-10-30] [MD_CAM/BUS_SWITCH]: P1_1 är en aktiv-hög Bus Switch Enable. När P1_1 = 0 eller flytande i tristate är bussen fysiskt isolerad och alla linjer (MOSI/MISO/SS/SCK) klampas mot 0V. För att bussen ska vara ansluten och mätbar måste P1_1 drivas aktivt HÖG (1).
+- [2026-10-30] [MD_CAM/DEBUG_HALT]: Vid "Detect CC" (/cc_init) går CC1110 in i Debug Halt och samtliga I/O-pinnar återgår till interna pull-ups. Detta drar P0_7 hög vilket öppnar transistor Q2 och tänder den röda dioden LD1 fast. Vid "Reset / RunCC" (/cc_exit_dbg) exekverar firmwarens io_init(), jordar P0_7 aktivt till 0V och släcker dioden omedelbart (3.0 mA viloström).
+- [2026-10-30] [MD_CAM/GIT_PRIVACY]: Repots lokala git-konfiguration använder GitHubs anonyma noreply-adress (67042137+BonBear@users.noreply.github.com) och samtliga lokala unpushade commits har tvättats med --reset-author.
 
 ---
 
