@@ -1425,6 +1425,137 @@ static void stream_buffer_rf(const uint8_t *buf, uint16_t len, uint16_t *p_seq) 
     }
 }
 
+/* ============================================================================
+ * U3 Flash-dump över RF (U3 /CS = inverterad P1_1, uppmätt 2026-10-30)
+ * Blackfin hålls i reset. Varje block på 256 bytes skickas som en egen "bild":
+ * huvudchunk [0xA5, 'U', addr23..16, addr15..8, addr7..0, JEDEC0..2] + 32 datachunkar.
+ * Mottagaren känner igen tappade paket på att längden inte blir 264 bytes.
+ * Först skannas hela U3 (2048 sidor à 256 B) och en bitmapp över sidor som inte
+ * är 0xFF skickas med typ 'B'; därefter skickas de första U3_MAX_PAGES sådana sidor.
+ * ============================================================================ */
+#define U3_DUMP_AT_BOOT 1
+#define U3_SEG_LEN      256
+#define U3_PAGES        2048
+#define U3_MAX_PAGES    64
+
+static void u3_select(bool on) {
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_1 = on ? 1 : 0; // P1_1 = 1 -> U3 /CS låg
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+}
+
+static void u3_send_segment(uint8_t type, uint32_t addr, const uint8_t *jedec,
+                            const uint8_t *data, uint16_t *p_seq) {
+    uint8_t hdr[8];
+    uint16_t i;
+
+    hdr[0] = 0xA5;
+    hdr[1] = type;
+    hdr[2] = (uint8_t)(addr >> 16);
+    hdr[3] = (uint8_t)(addr >> 8);
+    hdr[4] = (uint8_t)addr;
+    hdr[5] = jedec[0];
+    hdr[6] = jedec[1];
+    hdr[7] = jedec[2];
+    transmit_image_chunk((*p_seq)++, 0, 8, true, false, hdr);
+    delay_ms(15);
+    for (i = 0; i < U3_SEG_LEN; i += 8) {
+        bool is_last = (i + 8 >= U3_SEG_LEN);
+        transmit_image_chunk((*p_seq)++, (uint16_t)(1 + i / 8), 8, false, is_last, &data[i]);
+        delay_ms(15);
+    }
+    delay_ms(300); // låt gatewayen publicera blocket på MQTT
+}
+
+static void dump_u3_rf(uint16_t *p_seq) {
+    uint8_t jedec[3];
+    __xdata uint8_t *bitmap = &g_spi_rx_buf[0];          // 2048 bitar = 256 B
+    __xdata uint8_t *page   = &g_spi_rx_buf[U3_SEG_LEN];
+    uint16_t pg, i;
+    uint8_t sent = 0;
+
+    // Blackfin i reset, /SPISS inaktiv, U3 avvald
+    P0DIR |= 0x05;  // P0_0 (/RESET), P0_2 (1.2V)
+    P0_0 = 0;
+    P1SEL &= ~0x07;
+    P1DIR |= 0x07;  // P1_0 (3.3V), P1_1 (U3 /CS), P1_2 (Blackfin /SPISS)
+    P1_2 = 1;
+    P1_1 = 0;
+
+    // VDDEXT före VDDINT (EE-274). 3.3V-skenan matar U3.
+    P1_0 = 1;
+    delay_ms(10);
+    P0_2 = 1;
+    delay_ms(50);
+
+    spi0_master_init();
+    P1_1 = 0;
+    P1_2 = 1;
+    delay_ms(5);
+
+    u3_select(true);
+    spi0_master_txrx(0x9F);
+    jedec[0] = spi0_master_txrx(0x00);
+    jedec[1] = spi0_master_txrx(0x00);
+    jedec[2] = spi0_master_txrx(0x00);
+    u3_select(false);
+
+    // Skanna hela flashen i en kontinuerlig läsning från 0x000000
+    for (i = 0; i < U3_SEG_LEN; i++) bitmap[i] = 0;
+    u3_select(true);
+    spi0_master_txrx(0x03);
+    spi0_master_txrx(0x00);
+    spi0_master_txrx(0x00);
+    spi0_master_txrx(0x00);
+    for (pg = 0; pg < U3_PAGES; pg++) {
+        uint8_t all = 0xFF;
+        for (i = 0; i < U3_SEG_LEN; i++) {
+            all &= spi0_master_txrx(0x00);
+        }
+        if (all != 0xFF) bitmap[pg >> 3] |= (uint8_t)(1 << (pg & 7));
+    }
+    u3_select(false);
+
+    u3_send_segment('B', 0, jedec, bitmap, p_seq);
+
+    for (pg = 0; pg < U3_PAGES && sent < U3_MAX_PAGES; pg++) {
+        uint32_t addr = (uint32_t)pg * U3_SEG_LEN;
+        if (!(bitmap[pg >> 3] & (uint8_t)(1 << (pg & 7)))) continue;
+
+        u3_select(true);
+        spi0_master_txrx(0x9F);
+        jedec[0] = spi0_master_txrx(0x00);
+        jedec[1] = spi0_master_txrx(0x00);
+        jedec[2] = spi0_master_txrx(0x00);
+        u3_select(false);
+
+        u3_select(true);
+        spi0_master_txrx(0x03);
+        spi0_master_txrx((uint8_t)(addr >> 16));
+        spi0_master_txrx((uint8_t)(addr >> 8));
+        spi0_master_txrx((uint8_t)addr);
+        for (i = 0; i < U3_SEG_LEN; i++) {
+            page[i] = spi0_master_txrx(0x00);
+        }
+        u3_select(false);
+
+        u3_send_segment('U', addr, jedec, page, p_seq);
+        sent++;
+    }
+
+    // Stäng av skenorna och återgå till 3.0 mA viloläge
+    P1SEL &= ~0x38;
+    P1DIR &= ~0x38;
+    P1_1 = 0;
+    P1_0 = 0;
+    P0_2 = 0;
+    P0SEL = 0x00;
+    P0DIR |= 0xCF;
+    P0 &= ~0xCF;
+    P2DIR |= 0x01;
+    P2_0 = 0;
+}
+
 void main(void) {
     uint16_t seq = 25000;
     uint8_t cur_p1;
@@ -1446,6 +1577,10 @@ void main(void) {
     transmit(seq++, false, false, true, 0, 0, 0, 0);
     delay_ms(100);
 
+#if U3_DUMP_AT_BOOT
+    delay_ms(1500); // ge mottagarskriptet tid att ansluta efter kallstart
+    dump_u3_rf(&seq);
+#else
     // STEG H: UNCLAMPED BLACKFIN BOOT (P0_0=1 FÖRST, SEDAN P1_2: 0 -> 1) + SALEAE CAPTURE + SPI/CS-SVEP!
     {
         uint16_t log_idx = 64;
@@ -1475,16 +1610,22 @@ void main(void) {
         // H1: Slå på P1_0=1, P0_2=1, P0_7=1, P0_0=1 MED P1_2 = 0 (och P1_1 = 0)!
         //     Vänta ~50 ms och släpp sedan P1_2 = 1! Logga P1-flanker!
         // =====================================================================
-        P1_2 = 0;
-        P1_1 = 0;
+        // Boot-krav (memory BLACKFIN_BOOT_FIX): P1_1 = 1 (bussomkopplare öppen mot U3) och
+        // P1_2 = 1 (/SPISS inaktiv, annars Mode Fault i Boot ROM) INNAN reset släpps.
+        // P1_3..P1_5 är ingångar utan pull så Blackfin kan driva SCK/MOSI mot U3.
+        P1INP |= 0x38;
+        P1_2 = 1;
+        P1_1 = 1;
         P1_0 = 1;
         delay_ms(10);
         P0_2 = 1;
         delay_ms(10);
         P0_7 = 1;
         P0_4 = 1;
+        delay_ms(100);
         P0_0 = 1;
-        delay_ms(20); // ~52 ms stabilisering med P0_0=1 och P1_2=0!
+        delay_ms(300); // Saleae: förvänta 0x05/0x9F/0x0B-läsningar mot U3 här (ref. kort #2)
+        P1_2 = 0;
 
         g_spi_rx_buf[0] = P1; // P1 vid P0_0=1, P1_2=0, P1_1=0
         prev_p1 = P1;
@@ -1657,6 +1798,7 @@ void main(void) {
         stream_buffer_rf(g_spi_rx_buf, 512, &seq);
         delay_ms(200);
     }
+#endif
 
     // Arm motion and button detection
     cur_p1 = P1;

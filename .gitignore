@@ -66,3 +66,4 @@ Desktop.ini
 # --- Antigravity & Local Agent Tools ---
 .antigravity/
 .agents/*.json
+.mcp.json
