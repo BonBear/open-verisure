@@ -33,6 +33,15 @@ void mqttLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets);
 void mqttPublishTelemetry(const VerisureTelemetry& telem);
 
 /**
+ * @brief Publish a camera JPEG binary image to Home Assistant.
+ * @param deviceId 8-character sensor identifier.
+ * @param jpegBuf Pointer to JPEG byte array.
+ * @param len Size of JPEG in bytes.
+ * @return True if published successfully.
+ */
+bool mqttPublishCameraImage(const char* deviceId, const uint8_t* jpegBuf, size_t len);
+
+/**
  * @brief Check if the gateway is currently connected to the MQTT broker.
  * @return True if connected.
  */

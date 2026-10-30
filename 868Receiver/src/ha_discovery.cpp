@@ -222,6 +222,32 @@ String haDiscoveryBuildTopic(const char* deviceId, const HaEntityDef* def) {
     return "homeassistant/" + String(def->component) + "/verisure_" + String(deviceId) + "_" + String(def->key) + "/config";
 }
 
+String haDiscoveryBuildCameraTopic(const char* deviceId) {
+    return "homeassistant/camera/verisure_" + String(deviceId) + "_camera/config";
+}
+
+String haDiscoveryBuildCameraPayload(const char* deviceId, const char* baseTopic) {
+    String imageTopic = String(baseTopic) + "/" + String(deviceId) + "/image";
+    String uniqueId = "verisure_" + String(deviceId) + "_camera";
+
+    String p = "{";
+    p += "\"name\":\"Camera\",";
+    p += "\"unique_id\":\"" + uniqueId + "\",";
+    p += "\"topic\":\"" + imageTopic + "\",";
+    p += "\"availability_topic\":\"" + String(baseTopic) + "/status\",";
+    p += "\"payload_available\":\"online\",";
+    p += "\"payload_not_available\":\"offline\",";
+    p += "\"device\":{";
+    p += "\"identifiers\":[\"verisure_" + String(deviceId) + "\"],";
+    p += "\"name\":\"Verisure Motion Camera " + String(deviceId) + "\",";
+    p += "\"model\":\"GW MD CAM2 (Motion Detector & Camera)\",";
+    p += "\"manufacturer\":\"Verisure\",";
+    p += "\"sw_version\":\"2.0-CC1110\",";
+    p += "\"via_device\":\"verisure_gateway\"";
+    p += "}}";
+    return p;
+}
+
 String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, const char* baseTopic) {
     String stateTopic = haStateBuildTopic(deviceId, baseTopic);
     String uniqueId = "verisure_" + String(deviceId) + "_" + String(def->key);

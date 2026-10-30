@@ -5,6 +5,7 @@
 
 #include "crypto.h"
 #include "mbedtls/aes.h"
+#include "image_receiver.h"
 #include <string.h>
 
 /** @brief Maximum number of distinct sensor nodes tracked simultaneously in RAM. */
@@ -103,6 +104,26 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     uint8_t plain[16] = {0};
     if (!cryptoDecryptPayload(devKey, &rxBuf24[8], plain)) {
         return false;
+    }
+
+    // 3b. Check for RF Camera Image Chunk (plain[2] == 0x80, plain[14..15] == 'V', 'S')
+    if (plain[2] == 0x80 && plain[14] == 'V' && plain[15] == 'S') {
+        uint16_t seq = ((uint16_t)plain[0] << 8) | plain[1];
+        uint16_t chunkIdx = ((uint16_t)plain[3] << 8) | plain[4];
+        uint8_t chunkFlags = plain[5];
+        uint8_t chunkLen = chunkFlags & 0x0F;
+        bool isFirst = (chunkFlags & 0x80) != 0;
+        bool isLast  = (chunkFlags & 0x40) != 0;
+
+        DeviceSession* sess = getOrCreateSession(devId);
+        if (sess) {
+            sess->lastSeq = seq;
+            sess->hasLastSeq = true;
+            sess->lastSeen = millis();
+        }
+
+        imageReceiverProcessChunk(devId, chunkIdx, chunkLen, isFirst, isLast, &plain[6]);
+        return false; // Handled directly as image stream, not a telemetry packet
     }
 
     // 4. Authenticate Magic Bytes (plain[10..11] == 'V', 'S')

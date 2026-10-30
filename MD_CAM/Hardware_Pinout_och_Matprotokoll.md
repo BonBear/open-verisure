@@ -18,7 +18,10 @@ Dina mätningar gav **100 % träff** och stämmer exakt överens både med mikro
    * Går direkt till **CC1110 Pin 32 (`P1_7`)** – exakt samma pinne som Verisure använde för magnetkontakten på dörrsensorn!
    * **Aktiv LÅG:** Ligger på **`3.08 V`** i vila och dyker till **`0 V`** vid detekterad rörelse.
 3. **Sabotagebrytaren på baksidan (`SW3`):**
-   * Ena sidan går till **`VBAT+`** och andra sidan går direkt till **CC1110 Pin 12 (`P0_6`)**.
+   * Ena sidan går till **`VBAT+`** och andra sidan går direkt till **CC1110 Pin 33 (`P1_6`)**! *(Tidigare felaktigt antagen som P0_6)*.
+   * **Polaritet:** 
+     * **Kåpa av (Tamper Alarm):** Knappen öppen -> Intern pull-down drar `P1_6` till **`0 V`**.
+     * **Monterad på vägg (Säkrad):** Knappen sluten mot `VBAT+` -> `P1_6` blir **`3.0 V`** (`1`).
 4. **Varför `3.3V`, `2.5V`, `1.8V` och `1.2V` var `0 V` vid batterimätningen:**
    * De 3 batterierna (3V CR123A/litium) ligger **parallellt (`VBAT = 3.12 V`)** och matar **endast CC1110 och PIR-sensorn** i viloläge!
    * Alla spänningsregulatorer för kameran, Blackfin DSP, SDRAM och blixt-LED-kortet (`3.3V`, `2.5V`, `1.8V`, `1.2V`) är **helt avstängda (0 V)** tills CC1110 aktivt väljer att slå på dem! Att de inte slogs på när du viftade beror på att Verisures originalfirmware i CC1110 är "avlarmad" och ignorerar PIR-larm tills larmcentralen begär bild.
@@ -68,7 +71,7 @@ När du läser texten (*"CC1110 F32 TI..."*) rättvänd sitter **Pin 1 uppe till
 | **Pin 9** | **`P0_4`** | Testpad **`TX`** | UART TX (`USART1 Alt. 1`) till Blackfin DSP |
 | **Pin 10** | `DVDD` | Kondensator `C91` (+ 1 kΩ mot `J6-1`) | Digital 3V-matning |
 | **Pin 11** | **`P0_5`** | Testpad **`RX`** | UART RX (`USART1 Alt. 1`) från Blackfin DSP |
-| **Pin 12** | **`P0_6`** | **`SW3`** (Fjäderbrytare baksida) | **Sabotagebrytare (Tamper)** – sluter mot `VBAT+` |
+| **Pin 12** | **`P0_6`** | *(Ej ansluten / Oanvänd)* | Oanvänd |
 | **Pin 13** | **`P0_7`** | Kontakt **`J2 Pin 4`** / DSP rail | **Power-Enable / Switched Auxiliary rail** (6 kΩ till J2-4) |
 | **Pin 14** | `P2_0` | *(Ej ansluten)* | Oanvänd |
 | **Pin 15** | **`P2_1` (`DD`)** | **`J6-2`** | **Debug Data (`DD`)** för CC-Flasher |
@@ -79,7 +82,7 @@ När du läser texten (*"CC1110 F32 TI..."*) rättvänd sitter **Pin 1 uppe till
 | **Pin 22–23** | `RF_P` / `RF_N` | Balun $\rightarrow$ Fjäderantenn | 868.950 MHz Sub-1GHz RF |
 | **Pin 31** | **`RESET_N`** | **`J6-4`** & **`SW1`** | **Hardware Reset** för CC-Flasher |
 | **Pin 32** | **`P1_7`** | Testpad **`ALARM`** (från PIR) | **PIR Rörelselarm** (`3.08V` = Vila, `0V` = Rörelse) |
-| **Pin 33** | **`P1_6`** | Ledningsbana till Blackfin DSP | **Trigger / DSP-interruptpinne** |
+| **Pin 33** | **`P1_6`** | **`SW3`** (Fjäderbrytare baksida) | **Sabotagebrytare (Tamper)** – sluter mot `VBAT+` (0V = Tamper, 3V = Säkrad) |
 | **Pin 34** | **`P1_5`** | Testpad **`MOSI`** | Delad SPI MOSI (CC1110 -> Blackfin & U3 Pin 5) |
 | **Pin 35** | **`P1_4`** | Testpad **`MISO`** | Delad SPI MISO (Blackfin & U3 Pin 2 -> CC1110) |
 | **Pin 36** | **`P1_3`** | Testpad **`SCK`** | Delad SPI SCK (CC1110 -> Blackfin & U3 Pin 6) |

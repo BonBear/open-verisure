@@ -83,6 +83,21 @@ const HaEntityDef* haDiscoveryGetMotionSensorEntityDef(int idx);
 String haDiscoveryBuildTopic(const char* deviceId, const HaEntityDef* def);
 
 /**
+ * @brief Construct MQTT config discovery topic for a Motion Detector Camera.
+ * @param deviceId 8-character sensor identifier.
+ * @return Full topic string: `homeassistant/camera/verisure_<deviceId>_camera/config`.
+ */
+String haDiscoveryBuildCameraTopic(const char* deviceId);
+
+/**
+ * @brief Construct JSON payload for Motion Detector Camera auto-discovery.
+ * @param deviceId 8-character sensor identifier.
+ * @param baseTopic Base MQTT topic (e.g. "verisure").
+ * @return JSON configuration string for Home Assistant MQTT Camera entity.
+ */
+String haDiscoveryBuildCameraPayload(const char* deviceId, const char* baseTopic);
+
+/**
  * @brief Construct JSON payload for sensor entity auto-discovery.
  * @param deviceId 8-character sensor identifier.
  * @param def Entity definition pointer.

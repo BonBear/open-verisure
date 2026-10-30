@@ -26,6 +26,7 @@
 #else
 #error "No config.h or config.h.example found! Please generate config.h with derive_key.py."
 #endif
+#include "camera_image.h"
 
 /** @brief Fixed packet length: 8B Header + 16B AES Ciphertext. */
 #define PACKET_LEN        24
@@ -52,8 +53,13 @@ typedef struct {
 static __xdata dma_desc_t dma_desc;
 static __xdata uint8_t tx_buf[PACKET_LEN];
 
-volatile __xdata uint16_t g_tx_count = 0;
-volatile __xdata uint16_t g_tx_fail = 0;
+volatile __xdata uint8_t g_tx_count = 0;
+volatile __xdata uint8_t g_tx_fail = 0;
+
+volatile __xdata uint8_t g_uart_rx_buf[64];
+volatile uint8_t g_uart_rx_count = 0;
+volatile __xdata uint8_t g_diag_p16 = 0;
+volatile __xdata uint8_t g_diag_p16_trans = 0;
 
 /** @brief Set by Sleep Timer ISR on every 0.5 s tick. */
 volatile __data uint8_t g_tick = 0;
@@ -78,6 +84,18 @@ void p1_isr(void) __interrupt(P1INT_VECTOR) {
     P1IFG = 0x00;
     P1IF = 0;
     g_pir_edge = 1;
+}
+
+volatile uint8_t g_uart_dummy;
+
+/** @brief USART1 RX Complete (Vector 3) - captures Blackfin UART responses without dropping bytes. */
+void urx1_isr(void) __interrupt(URX1_VECTOR) {
+    URX1IF = 0;
+    if (g_uart_rx_count < 64) {
+        g_uart_rx_buf[g_uart_rx_count++] = U1DBUF;
+    } else {
+        g_uart_dummy = U1DBUF; // Strikt tilldelning till volatile så SDCC genererar MOV-instruktion
+    }
 }
 
 /* ============================================================================
@@ -190,10 +208,16 @@ void uart1_init(uint8_t baud_e, uint8_t baud_m) {
 
 void uart1_init_57600(void) {
     uart1_init(0x0B, 0x18); // 57600 @ 27 MHz
+    URX1IF = 0;
+    URX1IE = 1;             // Enable UART1 RX interrupt
+    EA = 1;                 // Global interrupt enable
 }
 
 void uart1_init_115200(void) {
     uart1_init(0x0C, 0x18); // 115200 @ 27 MHz
+    URX1IF = 0;
+    URX1IE = 1;             // Enable UART1 RX interrupt
+    EA = 1;                 // Global interrupt enable
 }
 
 uint8_t uart1_rx_ready(void) {
@@ -252,31 +276,66 @@ static void spi_read_jedec_id(uint8_t *id) {
  * ============================================================================ */
 
 void spi0_master_init(void) {
-    PERCFG |= 0x01;  // USART0 Alt. 2
-    P1SEL |= 0x38;   // P1_3 (SCK), P1_4 (MISO), P1_5 (MOSI) peripheral
-    P1SEL &= ~0x06;  // P1_1 (SS2), P1_2 (SS1) GPIO
+    PERCFG |= 0x01;      // Route USART0 to Alternative 2 (P1_2..P1_5)
+    P1SEL |= 0x38;       // P1_3 (SCK), P1_4 (MISO), P1_5 (MOSI) = Peripheral function
+    P1SEL &= ~0x06;      // P1_1 (Bus Switch) & P1_2 (SS) = GPIO outputs
+    P1DIR |= 0x2E;       // P1_1, P1_2, P1_3, P1_5 = Outputs
+    P1DIR &= ~0x10;      // P1_4 (MISO) = Input
+    P1INP &= ~0x10;      // Pull-up on P1_4
 
-    P1DIR |= 0x2F;   // P1_0 (3.3V), P1_1 (SS2), P1_2 (SS1), P1_3 (SCK), P1_5 (MOSI) = Outputs
-    P1DIR &= ~0x10;  // P1_4 (MISO) = Input
-    P1INP &= ~0x10;  // Enable pull-up on P1_4
+    P1_3 = 1;            // SCK idle HIGH i Mode 3!
+    U0CSR = 0x00;        // SPI Master mode
+    // Mode 3: CPOL=1, CPHA=1 (0xC0), MSB-first (0x20) -> 0xE0
+    // BAUD_E = 13, BAUD_M = 173 -> Exakt 353.5 kHz (Verisure originalfrekvens från Kort #2!)
+    U0GCR = 0xE0 | (13 & 0x1F);
+    U0BAUD = 173;
+}
 
-    P1_1 = 1;        // SS2 idle HIGH
-    P1_2 = 1;        // SS1 idle HIGH
-    P1_3 = 0;        // SCK idle LOW (Mode 0)
-
-    U0CSR = 0x40;        // MODE=0 (SPI), SLAVE=0 (Master), RE=1 (Receiver enable)
-    U0GCR = 0x20 | 0x0F; // ORDER=1 (MSB first), CPOL=0, CPHA=0, BAUD_E=15
-    U0BAUD = 0x00;       // BAUD_M=0 -> ~844 kHz SPI clock @ 27 MHz
+void spi0_master_config(uint8_t mode, uint8_t baud_e) {
+    uint8_t gcr = 0x20 | (baud_e & 0x1F); // ORDER=1 (MSB first)
+    PERCFG |= 0x01;      // Ensure Alt. 2
+    P1SEL |= 0x38;
+    if (mode == 0) {
+        P1_3 = 0; // Mode 0: CPOL=0, CPHA=0
+    } else if (mode == 1) {
+        P1_3 = 0; // Mode 1: CPOL=0, CPHA=1
+        gcr |= 0x40;
+    } else if (mode == 2) {
+        P1_3 = 1; // Mode 2: CPOL=1, CPHA=0
+        gcr |= 0x80;
+    } else {
+        P1_3 = 1; // Mode 3: CPOL=1, CPHA=1
+        gcr |= 0xC0;
+    }
+    U0GCR = gcr;
+    U0BAUD = 0x00;
 }
 
 uint8_t spi0_master_txrx(uint8_t b) {
     uint16_t timeout = 10000;
-    UTX0IF = 0;
+    URX0IF = 0;
     U0CSR |= 0x40; // RE = 1
     U0DBUF = b;
-    while (!UTX0IF && --timeout);
-    UTX0IF = 0;
+    while (!URX0IF && --timeout);
+    URX0IF = 0;
     return U0DBUF;
+}
+
+uint16_t spi0_transfer_word16(uint16_t out_word) {
+    uint8_t hi, lo;
+
+    P1_1 = 1; // Bus Switch MÅSTE förbli HÖG (Aktiv) för att koppla bussen!
+    P1_2 = 0; // Assert Blackfin /SPISS
+    for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
+
+    hi = spi0_master_txrx((uint8_t)(out_word >> 8));
+    lo = spi0_master_txrx((uint8_t)(out_word & 0xFF));
+
+    for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
+    P1_2 = 1; // Deassert Blackfin /SPISS
+    for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
+
+    return ((uint16_t)hi << 8) | lo;
 }
 
 /* ============================================================================
@@ -284,34 +343,31 @@ uint8_t spi0_master_txrx(uint8_t b) {
  * ============================================================================ */
 
 void setup_gpio(void) {
-    // Port 0:
-    // P0_0 = DSP_RESET (hold low initially)
-    // P0_2 = 1.2V core power switch (Q13)
-    // P0_7 = Switched rail enable
+    // Port 0 & Port 1 baskonfiguration
     P0SEL = 0x00;
-    P0DIR = 0x85; // P0_0, P0_2, P0_7 = Outputs
-    P0_2 = 1;     // Enable 1.2V core
-    P0_7 = 1;     // Enable switched rail
-    P0_0 = 0;     // Hold Blackfin in RESET
-
-    // Port 1:
-    // P1_0 = 3.3V power switch (Q7)
-    // P1_6 = Power rail / DSP enable
-    // P1_1 = Bus switch enable
-    // P1_2, P1_3, P1_4, P1_5 = Tri-state initially so Blackfin can boot
     P1SEL = 0x00;
-    P1DIR = 0x43; // P1_0, P1_1, P1_6 = Outputs; P1_2..P1_5 = Inputs
-    P1INP = 0x3C; // Tri-state P1_2, P1_3, P1_4, P1_5
-    P1_0 = 1;     // Turn ON 3.3V (Q7)
-    P1_1 = 1;     // Enable bus switch
-    P1_6 = 1;     // Turn ON switched rail / DSP enable
-
-    // Port 2: keep P2_1 (DD) / P2_2 (DC) as inputs for the J6 debugger
     P2SEL &= ~0x07;
-    P2DIR &= ~0x07;
 
-    // Default: Port 0 pull-DOWN, Port 1 & 2 pull-UP (P1_7 PIR is active LOW)
-    P2INP = (P2INP & ~0xC0) | 0x20;
+    // CC1110 SPI-pinnar hålls i 3-state så att U3 Flash inte belastas
+    P1DIR &= ~0x38;
+    P1INP |= 0x38;
+
+    // Alla styr- och kandidatpinnar på Port 0 och Port 2 sätts som utgångar och drivs LÅGA (0V)
+    // för att släcka eventuella pull-ups som driver transistorn Q2 till den röda dioden LD1:
+    P0DIR |= 0xCF;  // P0_0, P0_1, P0_2, P0_3, P0_6, P0_7 som utgångar
+    P0 &= ~0xCF;    // Alla drivs till 0.0 V
+    P2DIR |= 0x01;  // P2_0 som utgång
+    P2_0 = 0;       // Drivs till 0.0 V
+
+    P1DIR |= 0x07;  // P1_0 (3.3V), P1_1 (Bus Switch), P1_2 (SS) = Utgångar
+    P1_0 = 0;       // 3.3V Switched rail OFF
+    P1_1 = 0;       // Bus Switch frånkopplad
+    P1_2 = 1;       // SS idle HIGH
+
+    // Håll knappen SW3 (P1_6) och PIR (P1_7) strikt som ingångar med pull-UP:
+    P1DIR &= ~0xC0;
+    P1INP &= ~0xC0; // Enable pull
+    P2INP &= ~0x40; // Port 1 pull-UP (PIR P1_7 kräver pull-up!)
 }
 
 /**
@@ -320,30 +376,52 @@ void setup_gpio(void) {
  */
 static void read_gpio_scan(uint8_t *p0_pu, uint8_t *p0_pd, uint8_t *p1_pu, uint8_t *p1_pd, uint8_t *p2_packed) {
     uint8_t d;
-    uint8_t p2_u, p2_d;
 
     P2INP &= ~0xE0; // All ports pull-UP
     for (d = 0; d < 20; d++) {
         __asm nop __endasm;
     }
-    *p0_pu = P0 & 0xC1;
-    *p1_pu = P1 & 0xC0;
-    p2_u = P2 & 0x01;
+    *p0_pu = P0;
+    *p1_pu = P1;
+    uint8_t p2_u = P2;
 
     P2INP |= 0xE0;  // All ports pull-DOWN
     for (d = 0; d < 20; d++) {
         __asm nop __endasm;
     }
-    *p0_pd = P0 & 0xC1;
-    *p1_pd = P1 & 0xC0;
-    p2_d = P2 & 0x01;
+    *p0_pd = P0;
+    *p1_pd = P1;
+    uint8_t p2_d = P2;
 
     P2INP = (P2INP & ~0xC0) | 0x20; // Restore default
     for (d = 0; d < 20; d++) {
         __asm nop __endasm;
     }
 
-    *p2_packed = (uint8_t)((p2_u << 4) | p2_d);
+    *p2_packed = p2_u;
+}
+
+static bool read_tamper(void) {
+    uint8_t d;
+    bool tamper;
+
+    // Set Port 0 to pull-DOWN mode (P2INP bit 5 = 1)
+    P2INP |= 0x20;
+    for (d = 0; d < 20; d++) {
+        __asm nop __endasm;
+    }
+
+    // SW3 connects P0_6 to VBAT+. If pressed/shorted -> P0_6 is HIGH (Secure).
+    // If open/disconnected -> pull-down pulls P0_6 to LOW (Tamper Alarm).
+    tamper = ((P0 & 0x40) == 0);
+
+    // Restore Port 0 to pull-UP mode (P2INP bit 5 = 0)
+    P2INP &= ~0x20;
+    for (d = 0; d < 20; d++) {
+        __asm nop __endasm;
+    }
+
+    return tamper;
 }
 
 /* ============================================================================
@@ -576,17 +654,10 @@ static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
     plain[9]  = (uint8_t)DEVICE_ID[3];
     plain[10] = 'V';
     plain[11] = 'S';
-    if (g_dsp_rx[0] != 0 || g_dsp_rx[1] != 0 || g_dsp_rx[2] != 0 || g_dsp_rx[3] != 0) {
-        plain[12] = g_dsp_rx[0];
-        plain[13] = g_dsp_rx[1];
-        plain[14] = g_dsp_rx[2];
-        plain[15] = g_dsp_rx[3];
-    } else {
-        plain[12] = p0_pu;
-        plain[13] = p0_pd;
-        plain[14] = p1_pu;
-        plain[15] = p2_packed;
-    }
+    plain[12] = p0_pu;
+    plain[13] = p0_pd;
+    plain[14] = p1_pu;
+    plain[15] = p2_packed;
 
     aes_encrypt_block(plain, &tx_buf[8]);
 
@@ -632,9 +703,6 @@ static uint8_t scan_cmd(uint8_t ss_sel, uint8_t cmd) {
     return resp;
 }
 
-
-static uint8_t __xdata g_uart_rx_buf[32];
-static uint8_t g_uart_rx_count = 0;
 
 static void spi_set_mode(uint8_t mode) {
     if (mode == 0) {
@@ -781,69 +849,551 @@ static int16_t trigger_and_read_image(uint16_t cmd, uint8_t p16_level) {
     return jpeg_offset;
 }
 
-void main(void) {
-    setup_gpio();
-    clock_xosc(); // Full 27 MHz speed
-    delay_ms(50);
+static void sweep_read_commands(void) {
+    const uint8_t read_cmds[8] = {0x03, 0x3D, 0x81, 0x84, 0x02, 0x04, 0x01, 0x9F};
 
-    // Initialize UART1 @ 57600 baud
-    uart1_init_57600();
+    for (uint8_t c = 0; c < 8; c++) {
+        uint8_t cmd = read_cmds[c];
 
-    // Configure GPIOs
-    P1DIR |= 0x47; // P1_0, P1_1, P1_2, P1_6 = Outputs
-    P0DIR |= 0x85; // P0_0, P0_2, P0_7 = Outputs
-    P1_0 = 1;      // 3.3V switched rail ON (Powers camera & SDRAM)
-    P1_1 = 1;      // Bus Switch ENABLED
-    P1_2 = 1;      // Blackfin /SPISS idle HIGH
-    P1_6 = 1;      // DSP trigger idle HIGH
+        // Assert Blackfin /SPISS
+        P1_2 = 0;
+        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
 
-    // Power up Blackfin Core (1.2V via Q13) and auxiliary rails
-    P0_2 = 1;      // 1.2V Core ON
-    P0_7 = 0;      // LED board start LOW
+        // Send candidate read command byte
+        spi0_master_txrx(cmd);
+        // Send 3 dummy address/control bytes
+        spi0_master_txrx(0x00);
+        spi0_master_txrx(0x00);
+        spi0_master_txrx(0x00);
 
-    // Release Blackfin RESET! (P0_0 = 1)
+        // Clock out 64 bytes
+        for (uint8_t i = 0; i < 64; i++) {
+            g_spi_rx_buf[i] = spi0_master_txrx(0x00);
+        }
+
+        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+        // Deassert /SPISS
+        P1_2 = 1;
+        delay_ms(50);
+    }
+}
+
+static uint8_t test_single_cs(uint8_t pin_code) {
+    // Release all candidate pins HIGH
+    P1_2 = 1;
+    P1_1 = 1;
+    P1_6 = 1;
+    P0_0 = 1;
+    delay_ms(10);
+
+    // Assert chosen pin(s)
+    if (pin_code == 1) P1_2 = 0;                      // P1_2 only
+    else if (pin_code == 2) P1_1 = 0;                 // P1_1 only
+    else if (pin_code == 3) P1_6 = 0;                 // P1_6 only
+    else if (pin_code == 4) P0_0 = 0;                 // P0_0 only (Blackfin Reset)
+    else if (pin_code == 5) { P1_2 = 0; P0_0 = 0; }   // P1_2 + P0_0
+    else if (pin_code == 6) { P1_1 = 0; P0_0 = 0; }   // P1_1 + P0_0
+    else if (pin_code == 7) { P1_2 = 0; P1_1 = 0; }   // P1_2 + P1_1
+    else if (pin_code == 8) { P1_6 = 0; P0_0 = 0; }   // P1_6 + P0_0
+
+    for (uint8_t d = 0; d < 50; d++) { __asm nop __endasm; }
+
+    // Send 0x9F (Read JEDEC ID)
+    spi0_master_txrx(0x9F);
+    uint8_t b0 = spi0_master_txrx(0x00);
+    uint8_t b1 = spi0_master_txrx(0x00);
+    uint8_t b2 = spi0_master_txrx(0x00);
+
+    for (uint8_t d = 0; d < 50; d++) { __asm nop __endasm; }
+
+    // Release all
+    P1_2 = 1;
+    P1_1 = 1;
+    P1_6 = 1;
+    P0_0 = 1;
+    delay_ms(10);
+
+    // Check if 0x1C 0x31 0x13 returned
+    if (b0 == 0x1C && b1 == 0x31 && b2 == 0x13) {
+        return 1; // MATCH!
+    }
+    return 0;
+}
+
+static __xdata uint8_t s_img_plain[16];
+static __xdata uint8_t s_img_chunk[8];
+static __xdata uint32_t s_flash_addr;
+static __xdata uint32_t s_flash_len;
+static __xdata uint32_t s_found_addr;
+
+static void transmit_image_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk_len,
+                                 bool is_first, bool is_last, const uint8_t *data) {
+    uint8_t i;
+
+    aes_load_key(DEVICE_AES_KEY);
+
+    for (i = 0; i < 8; i++) {
+        tx_buf[i] = (uint8_t)DEVICE_ID[i];
+    }
+
+    s_img_plain[0] = (uint8_t)(seq >> 8);
+    s_img_plain[1] = (uint8_t)(seq & 0xFF);
+    s_img_plain[2] = 0x80; // Image chunk packet flag
+    s_img_plain[3] = (uint8_t)(chunk_idx >> 8);
+    s_img_plain[4] = (uint8_t)(chunk_idx & 0xFF);
+
+    uint8_t flags = chunk_len & 0x0F;
+    if (is_first) flags |= 0x80;
+    if (is_last)  flags |= 0x40;
+    s_img_plain[5] = flags;
+
+    for (i = 0; i < 8; i++) {
+        s_img_plain[6 + i] = (i < chunk_len) ? data[i] : 0x00;
+    }
+
+    s_img_plain[14] = 'V';
+    s_img_plain[15] = 'S';
+
+    aes_encrypt_block(s_img_plain, &tx_buf[8]);
+
+    radio_send_dma();
+}
+
+
+
+static uint32_t scan_flash_for_jpeg(uint32_t *out_jpeg_len) {
+    uint8_t prev = 0;
+    s_found_addr = 0xFFFFFFFF;
+    s_flash_len = 0;
+
+    P0_0 = 0; // Hold Blackfin in RESET
+    P1_1 = 1; // Bus Switch ON
+    spi0_master_init();
+    P1DIR |= 0x40; // P1_6 = Output (/CS to U3 Flash)
+    P1_6 = 1;      // Idle HIGH
+    delay_ms(10);
+
+    // Read JEDEC ID first to verify contact
+    P1_6 = 0;
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    spi0_master_txrx(0x9F);
+    uint8_t id0 = spi0_master_txrx(0x00);
+    uint8_t id1 = spi0_master_txrx(0x00);
+    uint8_t id2 = spi0_master_txrx(0x00);
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_6 = 1;
+    delay_ms(5);
+
+    if (id0 != 0x1C) {
+        *out_jpeg_len = 0;
+        return 0xFFFFFFFF;
+    }
+
+    // Now start Read Data (0x03) from address 0x000000
+    P1_6 = 0;
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    spi0_master_txrx(0x03);
+    spi0_master_txrx(0x00);
+    spi0_master_txrx(0x00);
+    spi0_master_txrx(0x00);
+
+    for (s_flash_addr = 0; s_flash_addr < 0x080000; s_flash_addr++) {
+        uint8_t b = spi0_master_txrx(0x00);
+        if (s_found_addr == 0xFFFFFFFF) {
+            if (prev == 0xFF && b == 0xD8) {
+                s_found_addr = s_flash_addr - 1;
+            }
+        } else {
+            if (prev == 0xFF && b == 0xD9) {
+                s_flash_len = (s_flash_addr - s_found_addr) + 1;
+                break;
+            }
+        }
+        prev = b;
+    }
+
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_6 = 1;
+
+    *out_jpeg_len = s_flash_len;
+    return s_found_addr;
+}
+
+static void stream_flash_range(uint32_t start_addr, uint32_t length, uint16_t *p_seq) {
+    uint32_t offset = 0;
+    uint16_t chunk_idx = 0;
+
+    clock_xosc();
+    radio_init();
+    delay_ms(5);
+
+    while (offset < length) {
+        uint8_t chunk_len = 0;
+        uint32_t cur_addr = start_addr + offset;
+
+        P1_6 = 0; // Assert U3 /CS
+        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+
+        spi0_master_txrx(0x03);
+        spi0_master_txrx((uint8_t)(cur_addr >> 16));
+        spi0_master_txrx((uint8_t)(cur_addr >> 8));
+        spi0_master_txrx((uint8_t)(cur_addr & 0xFF));
+
+        while (chunk_len < 8 && (offset + chunk_len) < length) {
+            s_img_chunk[chunk_len++] = spi0_master_txrx(0x00);
+        }
+
+        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+        P1_6 = 1;
+
+        bool is_first = (chunk_idx == 0);
+        bool is_last = (offset + chunk_len >= length);
+
+        transmit_image_chunk((*p_seq)++, chunk_idx++, chunk_len, is_first, is_last, s_img_chunk);
+        offset += chunk_len;
+
+        delay_ms(15); // Clean 15 ms pacing between RF packets
+    }
+}
+
+static void stream_buffer_rf(const uint8_t *buf, uint16_t len, uint16_t *p_seq);
+
+static void test_blackfin_boot_uart(uint16_t *p_seq) {
+    uint8_t rx_buf[16];
+    uint8_t rx_count = 0;
+    uint16_t timeout;
+
+    // Strömsätt rails med Blackfin i RESET
+    P0DIR |= 0x85;
+    P1DIR |= 0x07;
+    P0_0 = 0; // RESET
+    P0_2 = 1; // 1.2V
+    P0_7 = 1; // Aux
+    P1_0 = 1; // 3.3V
+    P1_1 = 1; // Bus Switch
+
+    // Tristatera SPI-pinnar så Blackfin kan ladda U3 Flash
+    P1SEL &= ~0x38;
+    P1DIR &= ~0x38;
+    P1INP &= ~0x38;
+
+    // Konfigurera UART1 Alt 1 (P0_4=TX, P0_5=RX)
+    PERCFG &= ~0x02; // Alt 1
+    P0SEL |= 0x30;   // Peripheral funktion på P0_4 & P0_5
+    P0DIR |= 0x10;   // P0_4 = Utgång (TX)
+    P0DIR &= ~0x20;  // P0_5 = Ingång (RX)
+    P0INP &= ~0x20;  // Pull-up på P0_5
+
+    U1CSR = 0x80 | 0x40; // UART Mode, RE=1
+    U1GCR = 11;
+    U1BAUD = 216; // 57600 @ 27 MHz
+
+    delay_ms(150);
+
+    // Släpp Blackfin ur reset!
     P0_0 = 1;
 
-    // Wait 500 ms while Blackfin boots up (current ~95 mA)
+    // Lyssna i 1 sekund vid 57600 baud
+    for (timeout = 0; timeout < 1000; timeout++) {
+        if (U1CSR & 0x04) {
+            uint8_t b = U1DBUF;
+            if (rx_count < 16) rx_buf[rx_count++] = b;
+        }
+        delay_ms(1);
+    }
+
+    // Om inga bytes vid 57600, prova lyssna vid 115200 baud
+    if (rx_count == 0) {
+        U1GCR = 12;
+        U1BAUD = 216; // 115200 @ 27 MHz
+        // Skicka trigger-sträng
+        U1DBUF = 'S'; while (!(U1CSR & 0x02));
+        U1DBUF = 'N'; while (!(U1CSR & 0x02));
+        U1DBUF = 'A'; while (!(U1CSR & 0x02));
+        U1DBUF = 'P'; while (!(U1CSR & 0x02));
+        U1DBUF = '\r'; while (!(U1CSR & 0x02));
+        U1DBUF = '\n'; while (!(U1CSR & 0x02));
+
+        for (timeout = 0; timeout < 500; timeout++) {
+            if (U1CSR & 0x04) {
+                uint8_t b = U1DBUF;
+                if (rx_count < 16) rx_buf[rx_count++] = b;
+            }
+            delay_ms(1);
+        }
+    }
+
+    // Annonsera resultat via telemetri:
+    // opcode 0xCC, rx_count, rx_buf[0], rx_buf[1]
+    transmit((*p_seq)++, true, false, false, 0xCC, rx_count, 
+             rx_count > 0 ? rx_buf[0] : 0, 
+             rx_count > 1 ? rx_buf[1] : 0);
+    delay_ms(50);
+}
+
+static void stream_code_image_rf(uint16_t *p_seq) {
+    uint16_t offset = 0;
+    uint16_t chunk_idx = 0;
+    uint8_t chunk[8];
+    uint8_t i;
+
+    clock_xosc();
+    radio_init();
+    delay_ms(5);
+
+    while (offset < CAMERA_IMAGE_LEN) {
+        uint8_t chunk_len = (CAMERA_IMAGE_LEN - offset > 8) ? 8 : (uint8_t)(CAMERA_IMAGE_LEN - offset);
+        bool is_first = (chunk_idx == 0);
+        bool is_last = (offset + chunk_len >= CAMERA_IMAGE_LEN);
+
+        for (i = 0; i < chunk_len; i++) {
+            chunk[i] = CAMERA_IMAGE_DATA[offset + i]; // Strikt MOVC-läsning från Flash ROM
+        }
+
+        transmit_image_chunk((*p_seq)++, chunk_idx++, chunk_len, is_first, is_last, chunk);
+        offset += chunk_len;
+
+        delay_ms(15);
+    }
+}
+
+static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
+    int16_t jpeg_start = -1;
+    uint16_t i;
+    uint16_t total_len = 0;
+
+    *out_len = 0;
+
+    // STEG 1: Strömsätt Blackfin och sensorskenor med Blackfin i RESET
+    P0DIR |= 0x85; // P0_0 (/RESET), P0_2 (1.2V), P0_7 (Aux) = Utgångar
+    P1DIR |= 0x07; // P1_0 (3.3V), P1_1 (Bus Switch), P1_2 (DSP /SS) = Utgångar
+    P1DIR &= ~0x40; // P1_6 är SW3 Tamper - HÅLL ALLTID SOM INGÅNG!
+    P1INP &= ~0x40;
+
+    // Håll P1_7 som ingång (PIR)
+    P1DIR &= ~0x80;
+    P1INP &= ~0x80;
+
+    // STEG 1: Nollställ först eventuell restspänning på skenorna (äkta ren kallstart)
+    P0_0 = 0; // Håll Blackfin i RESET
+    P0_2 = 0; // 1.2V Core rail OFF
+    P0_7 = 0; // Aux rail OFF
+    P1_0 = 0; // 3.3V switched OFF
+    P1_1 = 0; // Bus switch OFF
+    P1_2 = 1; // DSP /SS idle HIGH
+    delay_ms(200); // Ladda ur kondensatorer så kamerasensorn och SDRAM nollställs
+
+    // Nu: Strömsätt kameran och Blackfin (RÖDA DIODEN TÄNDS!)
+    P0_2 = 1;      // 1.2V Core rail (Q13) ON
+    P0_7 = 1;      // 3.27V aux/sensor analog rail ON (Röda dioden lyser!)
+    P1_0 = 1;      // 3.3V switched rail (Q7 - SDRAM & Sensor) ON
+
+    // Sätt CC1110 SPI-pinnar i äkta 3-state (P1INP bit=1 stänger av pull-resistorer!)
+    P1SEL &= ~0x38;
+    P1DIR &= ~0x38; // Ingångar
+    P1INP |= 0x38;  // Äkta 3-state (high impedance) utan pull-up/pull-down!
+
+    // Vänta 150 ms medan matningarna stabiliseras
+    delay_ms(150);
+
+    // STEG 2: Släpp Blackfin ur reset ostört (utan att CC1110 belastar varken SPI eller UART)
+    P0_0 = 1; // SLÄPP RESET! Blackfin bootar från U3 Flash ostört!
+
+    // Vänta 750 ms medan Blackfin kör bootrom, laddar firmware och stabiliserar I/O
+    delay_ms(750);
+
+    // Aktivera nu Bus Switch mot Blackfin
+    P1_1 = 1;
+
+    // NU NÄR BLACKFIN HAR BOOTAT: Initiera UART1 RX med ren nollställd buffert
+    URX1IE = 0;
+    URX1IF = 0;
+    g_uart_rx_count = 0;
+    uart1_init_57600();
+    delay_ms(10);
+
+    // STEG 3: Skicka UART-kameratriggers på TX (P0_4) vid 57600 baud
+    uart1_tx_str("\r\nSNAP\r\n");
+    uart1_tx_str("\x02\x01\x00\x03");
+    delay_ms(200); // Ge Blackfin tid att svara på UART!
+
+    // Om vi inte fick något svar vid 57600 baud, testa 115200 baud!
+    if (g_uart_rx_count == 0) {
+        uart1_init_115200();
+        delay_ms(10);
+        uart1_tx_str("\r\nSNAP\r\n");
+        uart1_tx_str("\x02\x01\x00\x03");
+        delay_ms(200);
+    }
+
+    // Stäng av UART RX interrupt innan SPI-läsning
+    URX1IE = 0;
+
+    // STEG 4: Initiera CC1110 som SPI Master i Mode 3 vid 354 kHz
+    spi0_master_init();
+    P1_1 = 1;
+    P1_2 = 1;
+    delay_ms(10);
+
+    // STEG 5: Vänta 500 ms medan kamerasensorn exponerar och JPEG komprimeras i SDRAM
     delay_ms(500);
 
-    // Initialize SPI0 Master @ 844 kHz in Mode 0
-    spi0_master_init();
-    P1_1 = 1; // Bus switch ON
-    P1_2 = 1;
+    // STEG 6: Kontinuerlig burst-läsning av bildströmmen i Mode 3!
+    P1_2 = 0; // Håll /SPISS låg oavbrutet
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
 
-    // Transmit initial telemetry to Gateway
-    transmit(0, false, false, true, 0xAA, 0xBB, 0xCC, 0xDD);
+    spi0_master_txrx(0x03); // Read Stream Command
+    for (i = 0; i < 2048; i++) {
+        g_spi_rx_buf[i] = spi0_master_txrx(0x00);
+    }
 
-    // Continuous loop: test flash trigger on P0_7 and camera trigger on P1_6!
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_2 = 1; // Deassert /SPISS
+
+    // Sök efter JPEG SOI (0xFF 0xD8)
+    for (i = 0; i < 2047; i++) {
+        if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i + 1] == 0xD8) {
+            jpeg_start = (int16_t)i;
+            break;
+        }
+    }
+
+    // Om vi inte hittade JPEG på första läsningen med 0x03, prova en direktläsning utan 0x03!
+    if (jpeg_start < 0) {
+        P1_2 = 0;
+        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+        for (i = 0; i < 2048; i++) {
+            uint8_t b = spi0_master_txrx(0x00);
+            if (b != 0x00) {
+                g_spi_rx_buf[i] = b;
+            }
+        }
+        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+        P1_2 = 1;
+
+        for (i = 0; i < 2047; i++) {
+            if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i + 1] == 0xD8) {
+                jpeg_start = (int16_t)i;
+                break;
+            }
+        }
+    }
+
+    // Om vi mottog UART-bytes från Blackfin och SPI fortfarande är tomt,
+    // bädda in UART-svaret i början så vi kan läsa av Blackfins boot-logg/diagnostik!
+    if (jpeg_start < 0 && g_uart_rx_count > 0) {
+        g_spi_rx_buf[0] = 'U';
+        g_spi_rx_buf[1] = 'A';
+        g_spi_rx_buf[2] = 'R';
+        g_spi_rx_buf[3] = 'T';
+        g_spi_rx_buf[4] = ':';
+        g_spi_rx_buf[5] = g_uart_rx_count;
+        for (i = 0; i < g_uart_rx_count && i < 58; i++) {
+            g_spi_rx_buf[6 + i] = g_uart_rx_buf[i];
+        }
+    }
+
+    if (jpeg_start >= 0) {
+        for (i = (uint16_t)jpeg_start + 2; i < 2047; i++) {
+            if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i + 1] == 0xD9) {
+                total_len = (i + 2) - (uint16_t)jpeg_start;
+                break;
+            }
+        }
+        if (total_len == 0) total_len = 2048 - (uint16_t)jpeg_start;
+    }
+
+    *out_len = total_len;
+
+    // Återställ SPI-pinnar och behåll Port 1 i Pull-UP läge (dra ALDRIG Port 1 till pull-down, det nollar PIR P1_7!)
+    P1SEL &= ~0x38;
+    P1DIR &= ~0x38;
+    P2INP &= ~0x40; // Port 1 Pull-UP
+
+    // Stäng OMEDELBART av spänningarna till Blackfin och kamerasensorn (RÖDA DIODEN SLÄCKS DIREKT!)
+    P0_0 = 0; // Blackfin i reset
+    P0_2 = 0; // 1.2V Core rail OFF
+    P0_7 = 0; // 3.27V Aux rail OFF (Röda dioden släcks!)
+    P1_0 = 0; // 3.3V switched rail OFF
+    P1_1 = 0; // Bus switch OFF
+    P1_2 = 1; // SS HIGH
+    P0 &= ~0xCF; // Släck alla eventuella LED-pinnar (P0_1, P0_3, P0_6)
+    P2_0 = 0;
+
+    // Strömma sedan JPEG till Gateway och Home Assistant över RF i lugn och ro
+    if (jpeg_start >= 0 && total_len > 0) {
+        stream_buffer_rf(&g_spi_rx_buf[jpeg_start], total_len, p_seq);
+    } else {
+        // Strömma den faktiska SPI-bufferten (2048 bytes) så vi ser resultatet direkt
+        stream_buffer_rf(&g_spi_rx_buf[0], 2048, p_seq);
+    }
+
+    return jpeg_start;
+}
+
+static void stream_buffer_rf(const uint8_t *buf, uint16_t len, uint16_t *p_seq) {
+    uint16_t offset = 0;
+    uint16_t chunk_idx = 0;
+
+    clock_xosc();
+    radio_init();
+    delay_ms(5);
+
+    while (offset < len) {
+        uint8_t chunk_len = (len - offset > 8) ? 8 : (uint8_t)(len - offset);
+        bool is_first = (chunk_idx == 0);
+        bool is_last = (offset + chunk_len >= len);
+
+        transmit_image_chunk((*p_seq)++, chunk_idx++, chunk_len, is_first, is_last, &buf[offset]);
+        offset += chunk_len;
+
+        delay_ms(15);
+    }
+}
+
+void main(void) {
+    uint16_t seq = 25000;
+    uint8_t p1_val;
+    bool motion;
+    bool prev_motion = false;
+    uint16_t img_len = 0;
+
+    setup_gpio();
+    clock_xosc();
+    radio_init();
+    delay_ms(50);
+
+    // Initial announce packet
+    transmit(seq++, false, false, true, 0, 0, P1, 0);
+    delay_ms(100);
+
+    // Initial POST capture on boot: red LED illuminates for ~1.5s then turns off!
+    capture_blackfin_jpeg(&img_len, &seq);
+    delay_ms(500);
+
+    // Arm motion detection (P1_7 active LOW)
+    p1_val = P1;
+    prev_motion = ((p1_val & 0x80) == 0);
+
     while (1) {
-        // --- PHASE 1: Pulse P0_7 HIGH (LED/Flash rail enable) ---
-        P0_7 = 1;
-        delay_ms(200);
+        p1_val = P1;
+        motion = ((p1_val & 0x80) == 0); // Aktiv LÅG på P1_7
 
-        // Send hardware shutter interrupt on P1_6 (LOW pulse)
-        P1_6 = 0;
-        delay_ms(50);
-        P1_6 = 1;
+        if (motion && !prev_motion) {
+            // PIR-rörelse detekterad! Skicka larmpaket och ta bild!
+            transmit(seq++, motion, false, false, 0xEE, 0, p1_val, 0);
+            delay_ms(50);
+            capture_blackfin_jpeg(&img_len, &seq);
+            delay_ms(2000); // PIR sensor vila och stabilisering
 
-        // Send Snapshot Commands over SPI and UART
-        trigger_and_read_image(0x0004, 1);
-        trigger_and_read_image(0x0001, 1);
-
-        // Turn off P0_7
-        P0_7 = 0;
-        delay_ms(300);
-
-        // --- PHASE 2: Alternate pulse with P1_6 held LOW ---
-        P0_7 = 1;
-        P1_6 = 0;
-        delay_ms(200);
-
-        trigger_and_read_image(0x0004, 0);
-        trigger_and_read_image(0x0002, 0);
-
-        P0_7 = 0;
-        P1_6 = 1;
-        delay_ms(500);
+            // Läs av färsk nivå efter vila så vi inte loopar
+            p1_val = P1;
+            prev_motion = ((p1_val & 0x80) == 0);
+        } else {
+            // Normal telemetri till Home Assistant var 1 sekund
+            transmit(seq++, motion, false, false, 0, 0, p1_val, 0);
+            prev_motion = motion;
+            delay_ms(1000);
+        }
     }
 }

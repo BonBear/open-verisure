@@ -68,8 +68,14 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
 
             s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
         }
+
+        // Publish Home Assistant Camera entity discovery
+        String camTopic = haDiscoveryBuildCameraTopic(deviceId);
+        String camPayload = haDiscoveryBuildCameraPayload(deviceId, baseTopic);
+        s_mqttClient.publish(camTopic.c_str(), camPayload.c_str(), true); // Retained message
+
         markDeviceDiscovered(deviceId);
-        Serial.printf("[MQTT] Published Home Assistant Discovery for Motion Camera \"%s\" (%d entities retained)\n", deviceId, count);
+        Serial.printf("[MQTT] Published Home Assistant Discovery for Motion Camera \"%s\" (%d sensor entities + 1 camera retained)\n", deviceId, count);
     } else {
         int count = haDiscoveryGetSensorEntityCount();
         for (int i = 0; i < count; i++) {
@@ -229,4 +235,24 @@ void mqttPublishTelemetry(const VerisureTelemetry& telem) {
     } else {
         Serial.printf("[MQTT] Error publishing to %s\n", topic.c_str());
     }
+}
+
+bool mqttPublishCameraImage(const char* deviceId, const uint8_t* jpegBuf, size_t len) {
+    if (!s_mqttClient.connected() || !jpegBuf || len == 0) return false;
+
+    const GatewayConfig& cfg = ConfigManager::get();
+    String topic = String(cfg.mqttTopic) + "/" + String(deviceId) + "/image";
+
+    // Use PubSubClient streaming publish to support images larger than MQTT_MAX_PACKET_SIZE
+    bool ok = s_mqttClient.beginPublish(topic.c_str(), len, true);
+    if (ok) {
+        size_t written = s_mqttClient.write(jpegBuf, len);
+        ok = s_mqttClient.endPublish();
+        if (ok && written == len) {
+            Serial.printf("[MQTT] >> Successfully published Camera Image (%u bytes) to %s\n", (unsigned int)len, topic.c_str());
+            return true;
+        }
+    }
+    Serial.printf("[MQTT] Error publishing Camera Image (%u bytes) to %s\n", (unsigned int)len, topic.c_str());
+    return false;
 }

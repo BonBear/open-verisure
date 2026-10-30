@@ -58,7 +58,7 @@ def sync_key_from_gateway() -> bool:
 def compile_firmware() -> None:
     os.makedirs(BUILD_DIR, exist_ok=True)
     cmd_c = [
-        "sdcc", "-mmcs51", "--model-small",
+        "sdcc", "-mmcs51", "--model-large",
         "--code-size", "0x8000", "--xram-loc", "0xF000", "--xram-size", "0x0E00",
         "-c", "main.c", "-o", "build/"
     ]
@@ -68,7 +68,7 @@ def compile_firmware() -> None:
         sys.exit(1)
 
     cmd_l = [
-        "sdcc", "-mmcs51", "--model-small",
+        "sdcc", "-mmcs51", "--model-large",
         "--code-size", "0x8000", "--xram-loc", "0xF000", "--xram-size", "0x0E00",
         "build/main.rel", "-o", "build/main.ihx"
     ]
