@@ -1,36 +1,18 @@
 /**
  * @file main.c
- * @brief Verisure Motion Detector Camera (GW MD CAM2 / SECUR-PCAM-BLACKFIN) - CC1110F32 Firmware (Phase 1)
+ * @brief Verisure Motion Detector Camera (GW MD CAM2 / SECUR-PCAM-BLACKFIN) - CC1110F32 Firmware
  *
- * Implements the 868.950 MHz Sub-1GHz RF telemetry and motion/tamper alarm protocol
- * for the Verisure GW MD CAM2 sensor powered by a Texas Instruments CC1110F32 SoC.
+ * 868.950 MHz AES-128 telemetry with PM2 Deep Sleep:
+ *  - PIR Motion (P1_7, active LOW) wakes the CPU instantly via Port 1 interrupt.
+ *  - Sleep Timer wakes the CPU every 0.5 s to sample the rear tamper switch SW3
+ *    (dual pull-up/pull-down scan of P0_7/P0_6/P0_0/P1_6/P2_0 compared with the
+ *    boot baseline) and to count down the periodic heartbeat.
+ *  - 27 MHz XOSC + radio are only powered while transmitting.
  *
- * ============================================================================
- * VERIFIED HARDWARE PIN MAPPING (GW MD CAM2 - U15 CC1110F32):
- * ============================================================================
- * 1. Sensors & Switches:
- *    - P1_7 (Pin 32) : PIR Motion Sensor ('ALARM' test pad).
- *                      Active LOW: 1 (3.08V) = Idle/Clear, 0 (0.0V) = Motion Detected!
- *    - P0_6 (Pin 12) : Rear Tamper Switch (SW3 plunger against wall, closes to VBAT+).
- *    - P0_7 (Pin 13) : Front Tamper Switch / Auxiliary input candidate.
- *    - RESET_N (Pin 31): Connected to SW1 & J6-4 via 2.7 kOhm resistor.
+ * Tamper polarity (wall mount): batteries are ALWAYS inserted while the unit is off the
+ * wall, so the boot state = SW3 released = TAMPER. SW3 pressed against the wall = CLEAR.
  *
- * 2. Inter-IC Buses (Blackfin ADSP-BF512 U5 & SPI Flash U3):
- *    - P1_3 (Pin 36) : SPI SCK  (USART0 Alt. 2)
- *    - P1_4 (Pin 35) : SPI MISO (USART0 Alt. 2)
- *    - P1_5 (Pin 34) : SPI MOSI (USART0 Alt. 2)
- *    - P1_2 (Pin 1)  : SPI SS1  (Upper SS pad - USART0 Alt. 2)
- *    - P1_1 (Pin 3)  : SPI SS2  (Lower SS pad)
- *    - P0_4 (Pin 9)  : UART TX  (USART1 Alt. 1)
- *    - P0_5 (Pin 11) : UART RX  (USART1 Alt. 1)
- *
- * 3. Programming Header (J6):
- *    - J6-1 : VDD_SENSE (1 kOhm to DVDD Pin 10)
- *    - J6-2 : P2_1 / DD (Debug Data, Pin 15)
- *    - J6-3 : P2_2 / DC (Debug Clock, Pin 16)
- *    - J6-4 : RESET_N   (Pin 31 via 2.7 kOhm)
- *    - J6-5 : GND
- * ============================================================================
+ * Pin map: see Hardware_Pinout_och_Matprotokoll.md (J6: DD=P2_1, DC=P2_2, RESET_N).
  */
 
 #include <cc1110.h>
@@ -45,18 +27,16 @@
 #error "No config.h or config.h.example found! Please generate config.h with derive_key.py."
 #endif
 
-/** @brief Enable DMA-based radio transmission (1 = DMA Trigger 19, 0 = CPU polled). */
-#define USE_DMA                1
-
 /** @brief Fixed packet length: 8B Header + 16B AES Ciphertext. */
-#define PACKET_LEN             24
+#define PACKET_LEN        24
 
-/** @brief Telemetry heartbeat interval in seconds when no events occur (1 hour). */
-#define HEARTBEAT_INTERVAL_SEC 3600
+/** @brief Sleep Timer tick: WOR_RES=2 (1024 x 32 kHz periods = 31.25 ms) x 16 = 0.5 s. */
+#define ST_WOR_RES        0x02
+#define ST_WOREVT         16
 
-/**
- * @brief CC1110 DMA Channel Descriptor Structure (8 bytes, SWRU105 Table 46).
- */
+/** @brief Heartbeat interval in 0.5 s ticks (7200 = 1 hour). */
+#define HEARTBEAT_TICKS   7200
+
 typedef struct {
     uint8_t src_h;
     uint8_t src_l;
@@ -72,14 +52,39 @@ typedef struct {
 static __xdata dma_desc_t dma_desc;
 static __xdata uint8_t tx_buf[PACKET_LEN];
 
-volatile __xdata uint8_t g_last_marcstate = 0;
-volatile __xdata uint8_t g_last_rfif = 0;
 volatile __xdata uint16_t g_tx_count = 0;
 volatile __xdata uint16_t g_tx_fail = 0;
 
-/**
- * @brief Busy-wait software millisecond delay calibrated for 27 MHz XOSC.
- */
+/** @brief Set by Sleep Timer ISR on every 0.5 s tick. */
+volatile __data uint8_t g_tick = 0;
+/** @brief Set by Port 1 ISR on PIR edge. */
+volatile __data uint8_t g_pir_edge = 0;
+
+/* ============================================================================
+ * Interrupt Service Routines (PM2 wake-up sources) - kept minimal
+ * ============================================================================ */
+
+/** @brief Sleep Timer Event0 (Vector 5). */
+void st_isr(void) __interrupt(ST_VECTOR) {
+    SLEEP &= ~0x03;   // Cancel pending PM entry
+    WORIRQ &= ~0x01;  // Clear EVENT0_FLAG (keep EVENT0_MASK)
+    STIF = 0;
+    g_tick = 1;
+}
+
+/** @brief Port 1 (Vector 15) - PIR ALARM on P1_7. PxIFG must be cleared before PxIF. */
+void p1_isr(void) __interrupt(P1INT_VECTOR) {
+    SLEEP &= ~0x03;
+    P1IFG = 0x00;
+    P1IF = 0;
+    g_pir_edge = 1;
+}
+
+/* ============================================================================
+ * Delays
+ * ============================================================================ */
+
+/** @brief Busy-wait ms delay calibrated for 27 MHz (takes 2x longer on 13.5 MHz RCOSC). */
 void delay_ms(uint16_t ms) {
     while (ms--) {
         for (uint16_t i = 0; i < 2180; i++) {
@@ -89,12 +94,12 @@ void delay_ms(uint16_t ms) {
 }
 
 /* ============================================================================
- * Hardware Cryptographic Engine (AES-128 Coprocessor)
+ * AES-128 Coprocessor
  * ============================================================================ */
 
 void aes_load_key(const uint8_t __code *key) {
     uint16_t timeout = 50000;
-    ENCCS = (0x02 << 1) | 0x01; // CMD = Load Key (10b), ST = 1
+    ENCCS = (0x02 << 1) | 0x01; // CMD = Load Key, ST = 1
     for (uint8_t i = 0; i < 16; i++) {
         ENCDI = key[i];
     }
@@ -103,7 +108,7 @@ void aes_load_key(const uint8_t __code *key) {
 
 void aes_encrypt_block(const uint8_t *in, uint8_t *out) {
     uint16_t timeout = 50000;
-    ENCCS = 0x40 | 0x01; // MODE = ECB (100b), CMD = Encrypt (00b), ST = 1
+    ENCCS = 0x40 | 0x01; // MODE = ECB, CMD = Encrypt, ST = 1
     for (uint8_t i = 0; i < 16; i++) {
         ENCDI = in[i];
     }
@@ -114,17 +119,16 @@ void aes_encrypt_block(const uint8_t *in, uint8_t *out) {
 }
 
 /* ============================================================================
- * Battery Voltage Monitoring (Internal ADC VDD/3)
+ * Battery (VDD/3)
  * ============================================================================ */
 
 uint16_t read_battery_mv(void) {
-    ADCCON3 = 0x3F; // Internal 1.25V ref, 12-bit decimation, VDD/3 channel
+    ADCCON3 = 0x3F; // Internal 1.25V ref, 12-bit, VDD/3
     uint16_t timeout = 5000;
     while (!(ADCCON1 & 0x80) && --timeout);
 
     uint16_t adc = ((uint16_t)ADCL >> 4) | ((uint16_t)ADCH << 4);
-    uint32_t mv = ((uint32_t)adc * 3750UL) / 2047UL;
-    return (uint16_t)mv;
+    return (uint16_t)(((uint32_t)adc * 3750UL) / 2047UL);
 }
 
 uint8_t calculate_battery_pct(uint16_t mv) {
@@ -134,74 +138,100 @@ uint8_t calculate_battery_pct(uint16_t mv) {
 }
 
 /* ============================================================================
- * System Clock Initialization (27.000 MHz External Crystal Y1)
+ * Clock switching: 27 MHz XOSC (TX) <-> 13.5 MHz HS RCOSC (required before PM2)
  * ============================================================================ */
 
-void clock_init(void) {
+/** @brief Run on 27.000 MHz crystal Y1 (needed for radio). */
+static void clock_xosc(void) {
     uint16_t timeout;
-
-    // Power on both oscillators (OSC_PD = 0)
-    SLEEP &= ~0x04;
-
-    // Wait for 27 MHz crystal oscillator stability (XOSC_STB = bit 6)
+    SLEEP &= ~0x04;                               // Power up both HS oscillators
     timeout = 50000;
-    while (!(SLEEP & 0x40) && --timeout);
-
-    // Switch system clock to XOSC at full speed (27 MHz)
-    CLKCON &= ~0x47;
-
+    while (!(SLEEP & 0x40) && --timeout);         // XOSC_STB
+    CLKCON = (CLKCON & 0x80);                     // OSC=0 (XOSC), TICKSPD=0, CLKSPD=0
     timeout = 50000;
     while ((CLKCON & 0x40) && --timeout);
+    SLEEP |= 0x04;                                // Power down unused HS RCOSC
+}
 
-    // Power down internal HS RC oscillator to save power
-    if (SLEEP & 0x40) {
-        SLEEP |= 0x04;
-    }
+/** @brief Run on 13.5 MHz HS RCOSC and power down the 27 MHz crystal. */
+static void clock_rcosc(void) {
+    uint16_t timeout;
+    RFST = 0x04;                                  // Radio SIDLE
+    SLEEP &= ~0x04;
+    timeout = 50000;
+    while (!(SLEEP & 0x20) && --timeout);         // HFRC_STB
+    CLKCON = (CLKCON & 0x80) | 0x40 | 0x08 | 0x01; // OSC=1, TICKSPD=001, CLKSPD=001
+    timeout = 50000;
+    while (!(CLKCON & 0x40) && --timeout);
+    SLEEP |= 0x04;                                // Power down unused 27 MHz XOSC
 }
 
 /* ============================================================================
- * GPIO & Sensor Configuration (GW MD CAM2)
+ * GPIO
  * ============================================================================ */
 
-/**
- * @brief Configure CC1110 ports for PIR motion, Tamper switch, and safe idle state.
- *
- * - P1_7 (Pin 32): PIR ALARM input (Active LOW: 0 = Motion, 1 = Idle).
- * - P0_6 (Pin 12): Rear Tamper switch SW3 (closes to VBAT+). Configured with pull-down on Port 0.
- * - P2_1 / P2_2  : Kept as inputs so J6 Debug interface (DD/DC) is never blocked.
- */
 void setup_gpio(void) {
-    // All Port 0 pins as GPIO inputs; tristate UART pins P0_4..P0_5 (0x30) to unpowered DSP
+    // Port 0 inputs; tristate UART pins P0_4..P0_5 to the unpowered DSP
     P0SEL = 0x00;
     P0DIR = 0x00;
     P0INP = 0x30;
 
-    // All Port 1 pins as GPIO inputs; tristate SPI pins P1_0..P1_5 (0x3F) to unpowered DSP
+    // Port 1 inputs; tristate SPI pins P1_0..P1_5 to the unpowered DSP; pull-up on P1_6/P1_7
     P1SEL = 0x00;
     P1DIR = 0x00;
     P1INP = 0x3F;
 
-    // Port 2 pins as GPIO inputs (leave P2_1=DD and P2_2=DC free for J6 debugger)
+    // Port 2: keep P2_1 (DD) / P2_2 (DC) as inputs for the J6 debugger
     P2SEL &= ~0x07;
     P2DIR &= ~0x07;
 
-    // Default P2INP: Port 0 pull-DOWN (0x20), Port 1 & 2 pull-UP
+    // Default: Port 0 pull-DOWN, Port 1 & 2 pull-UP (P1_7 PIR is active LOW)
     P2INP = (P2INP & ~0xC0) | 0x20;
 }
 
+/**
+ * @brief Dual pull-up / pull-down scan of the candidate switch pins.
+ * Masks: P0 0xC1 (P0_7, P0_6, P0_0), P1 0xC0 (P1_7, P1_6), P2 0x01 (P2_0).
+ */
+static void read_gpio_scan(uint8_t *p0_pu, uint8_t *p0_pd, uint8_t *p1_pu, uint8_t *p1_pd, uint8_t *p2_packed) {
+    uint8_t d;
+    uint8_t p2_u, p2_d;
+
+    P2INP &= ~0xE0; // All ports pull-UP
+    for (d = 0; d < 20; d++) {
+        __asm nop __endasm;
+    }
+    *p0_pu = P0 & 0xC1;
+    *p1_pu = P1 & 0xC0;
+    p2_u = P2 & 0x01;
+
+    P2INP |= 0xE0;  // All ports pull-DOWN
+    for (d = 0; d < 20; d++) {
+        __asm nop __endasm;
+    }
+    *p0_pd = P0 & 0xC1;
+    *p1_pd = P1 & 0xC0;
+    p2_d = P2 & 0x01;
+
+    P2INP = (P2INP & ~0xC0) | 0x20; // Restore default
+    for (d = 0; d < 20; d++) {
+        __asm nop __endasm;
+    }
+
+    *p2_packed = (uint8_t)((p2_u << 4) | p2_d);
+}
+
 /* ============================================================================
- * Radio Transceiver Configuration (868.950 MHz @ 27.000 MHz Crystal Y1)
+ * Radio (868.950 MHz @ 27.000 MHz crystal Y1)
  * ============================================================================ */
 
 void radio_init(void) {
     RFST = 0x04; // SIDLE
-    delay_ms(2);
+    delay_ms(1);
 
-    // Verisure Sync Word: 0xD3 0x91
     SYNC1 = 0xD3;
     SYNC0 = 0x91;
 
-    // Fixed 24-byte packet + 2-byte hardware CRC
     PKTLEN   = PACKET_LEN;
     PKTCTRL1 = 0x04;
     PKTCTRL0 = 0x04;
@@ -210,13 +240,11 @@ void radio_init(void) {
     FSCTRL1 = 0x06;
     FSCTRL0 = 0x00;
 
-    // 868.950 MHz carrier for 27.000 MHz crystal Y1 (0x202EEF)
-    FREQ2 = 0x20;
+    FREQ2 = 0x20; // 868.950 MHz (0x202EEF)
     FREQ1 = 0x2E;
     FREQ0 = 0xEF;
 
-    // 38.383 kBaud, 2-FSK, 21.4 kHz deviation at 27.000 MHz crystal
-    MDMCFG4 = 0x8A;
+    MDMCFG4 = 0x8A; // 38.383 kBaud, 2-FSK
     MDMCFG3 = 0x75;
     MDMCFG2 = 0x03;
     MDMCFG1 = 0x22;
@@ -246,8 +274,7 @@ void radio_init(void) {
     TEST1 = 0x35;
     TEST0 = 0x09;
 
-    // +10 dBm Output Power
-    PA_TABLE0 = 0xC2;
+    PA_TABLE0 = 0xC2; // +10 dBm
     PA_TABLE1 = 0xC2;
     PA_TABLE2 = 0xC2;
     PA_TABLE3 = 0xC2;
@@ -256,10 +283,6 @@ void radio_init(void) {
     PA_TABLE6 = 0xC2;
     PA_TABLE7 = 0xC2;
 }
-
-/* ============================================================================
- * DMA Trigger 19 Radio Packet Transmission
- * ============================================================================ */
 
 bool radio_send_dma(void) {
     uint16_t timeout;
@@ -271,11 +294,11 @@ bool radio_send_dma(void) {
     dma_desc.src_h = (uint8_t)(((uint16_t)tx_buf) >> 8);
     dma_desc.src_l = (uint8_t)(((uint16_t)tx_buf) & 0xFF);
     dma_desc.dst_h = 0xDF;
-    dma_desc.dst_l = 0xD9;       // X_RFD = 0xDFD9
+    dma_desc.dst_l = 0xD9;       // X_RFD
     dma_desc.len_h = 0x00;
-    dma_desc.len_l = PACKET_LEN; // 24 bytes
-    dma_desc.cfg0  = 19;         // Trigger 19: DMA_TRIG_RADIO
-    dma_desc.cfg1  = 0x4A;       // SRCINC=1, DESTINC=0, High priority
+    dma_desc.len_l = PACKET_LEN;
+    dma_desc.cfg0  = 19;         // DMA_TRIG_RADIO
+    dma_desc.cfg1  = 0x4A;
 
     DMA0CFGH = (uint8_t)(((uint16_t)&dma_desc) >> 8);
     DMA0CFGL = (uint8_t)(((uint16_t)&dma_desc) & 0xFF);
@@ -284,7 +307,6 @@ bool radio_send_dma(void) {
     RFIF = 0;
     DMAIRQ &= ~0x01;
 
-    // Arm DMA Channel 0 followed by 9 NOPs (TI CC1110 datasheet requirement)
     DMAARM = 0x01;
     __asm
         nop
@@ -309,201 +331,214 @@ bool radio_send_dma(void) {
         }
     }
 
-    bool dma_done = (DMAIRQ & 0x01) != 0 || (RFIF & 0x10) != 0;
+    bool done = (DMAIRQ & 0x01) != 0 || (RFIF & 0x10) != 0;
 
     RFST = 0x04;
     RFTXRXIF = 0;
     RFIF = 0;
 
-    return (timeout > 0 && dma_done);
-}
-
-bool radio_send(void) {
-    g_tx_count++;
-    bool ok = radio_send_dma();
-    if (!ok) {
-        g_tx_fail++;
-        g_last_marcstate = MARCSTATE & 0x1F;
-        g_last_rfif = RFIF;
-    }
-    return ok;
+    return (timeout > 0 && done);
 }
 
 /* ============================================================================
- * Dual Pull-Up / Pull-Down GPIO Diagnostic Scanner
+ * Sleep Timer + PM2
  * ============================================================================ */
 
-static void read_gpio_scan(uint8_t *p0_pu, uint8_t *p0_pd, uint8_t *p1_pu, uint8_t *p1_pd, uint8_t *p2_packed) {
+/** @brief Start the periodic 0.5 s Sleep Timer Event0 (runs on 32 kHz RCOSC). */
+static void sleep_timer_init(void) {
+    uint8_t t0;
+    uint16_t timeout;
+
+    WORCTRL = 0x04 | ST_WOR_RES; // WOR_RESET + resolution
+
+    // Wait for 2 sleep-timer edges after reset (SWRS033), bounded so it can never hang
+    t0 = WORTIME0;
+    timeout = 60000;
+    while (WORTIME0 == t0 && --timeout);
+    t0 = WORTIME0;
+    timeout = 60000;
+    while (WORTIME0 == t0 && --timeout);
+
+    WOREVT1 = 0x00;
+    WOREVT0 = ST_WOREVT;
+
+    WORIRQ = 0x10; // EVENT0_MASK = 1, clear flag
+    STIF = 0;
+    STIE = 1;
+}
+
+/**
+ * @brief Enter PM2 until the Sleep Timer tick or a PIR edge on P1_7.
+ * @pre CPU runs on HS RCOSC (clock_rcosc()).
+ */
+static void enter_pm2(void) {
+    uint8_t pir_level;
     uint8_t d;
 
-    // 1. Enable internal Pull-UPs on Port 0, Port 1, Port 2 (PDUP0=0, PDUP1=0, PDUP2=0)
-    // Mask out unpowered DSP SPI/UART pins (P0 mask 0xC1 = P0_7,P0_6,P0_0; P1 mask 0xC0 = P1_7,P1_6; P2 mask 0x01 = P2_0)
-    P2INP &= ~0xE0;
-    for (d = 0; d < 40; d++) {
-        __asm nop __endasm;
-    }
-    *p0_pu = P0 & 0xC1;
-    *p1_pu = P1 & 0xC0;
-    uint8_t p2_u = P2 & 0x01;
+    EA = 0;
 
-    // 2. Enable internal Pull-DOWNs on Port 0, Port 1, Port 2 (PDUP0=1, PDUP1=1, PDUP2=1)
-    P2INP |= 0xE0;
-    for (d = 0; d < 40; d++) {
-        __asm nop __endasm;
+    // Arm P1_7 for the edge AWAY from the current level (P1ICON = PICTL bit 1)
+    pir_level = P1_7;
+    if (pir_level) {
+        PICTL |= 0x02;  // Falling edge: motion starts
+    } else {
+        PICTL &= ~0x02; // Rising edge: motion ends
     }
-    *p0_pd = P0 & 0xC1;
-    *p1_pd = P1 & 0xC0;
-    uint8_t p2_d = P2 & 0x01;
+    P1IEN = 0x80;
+    P1IFG = 0x00;
+    P1IF = 0;
+    IEN2 |= 0x10;       // P1IE
 
-    // Restore default: Port 0 pull-DOWN (0x20), Port 1 & 2 pull-UP
-    P2INP = (P2INP & ~0xC0) | 0x20;
-    for (d = 0; d < 20; d++) {
-        __asm nop __endasm;
+    // Race check: level changed while arming, or a tick is already pending
+    if (P1_7 != pir_level || g_tick || g_pir_edge) {
+        EA = 1;
+        return;
     }
 
-    *p2_packed = (uint8_t)((p2_u << 4) | p2_d);
+    // Give at least one 32 kHz period between wake-up and re-entering PM2
+    for (d = 0; d < 200; d++) {
+        __asm nop __endasm;
+    }
+
+    SLEEP = (SLEEP & ~0x03) | 0x02; // MODE = PM2
+    __asm
+        nop
+        nop
+        nop
+    __endasm;
+
+    EA = 1;
+    if (SLEEP & 0x03) {   // An ISR clears MODE if it fired in the meantime
+        PCON |= 0x01;     // Enter PM2
+        __asm nop __endasm;
+    }
 }
 
 /* ============================================================================
- * Main Application Loop
+ * Packet build + transmit
+ * ============================================================================ */
+
+static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
+                     uint8_t p0_pu, uint8_t p0_pd, uint8_t p1_pu, uint8_t p2_packed) {
+    uint8_t plain[16];
+    uint16_t batt_mv;
+    uint8_t flags = 0;
+
+    clock_xosc();
+    radio_init();
+    aes_load_key(DEVICE_AES_KEY);
+
+    batt_mv = read_battery_mv();
+
+    for (uint8_t i = 0; i < 8; i++) {
+        tx_buf[i] = (uint8_t)DEVICE_ID[i];
+    }
+
+    if (is_motion) flags |= 0x01;           // Bit 0: Motion
+    if (is_tamper) flags |= 0x04;           // Bit 2: Tamper
+    if (is_por)    flags |= 0x08;           // Bit 3: Power-on reset
+    if (batt_mv < 2400) flags |= 0x10;      // Bit 4: Low battery
+
+    plain[0]  = (uint8_t)(seq >> 8);
+    plain[1]  = (uint8_t)(seq & 0xFF);
+    plain[2]  = flags;
+    plain[3]  = calculate_battery_pct(batt_mv);
+    plain[4]  = (uint8_t)(batt_mv >> 8);
+    plain[5]  = (uint8_t)(batt_mv & 0xFF);
+    plain[6]  = (uint8_t)DEVICE_ID[0];
+    plain[7]  = (uint8_t)DEVICE_ID[1];
+    plain[8]  = (uint8_t)DEVICE_ID[2];
+    plain[9]  = (uint8_t)DEVICE_ID[3];
+    plain[10] = 'V';
+    plain[11] = 'S';
+    plain[12] = p0_pu;
+    plain[13] = p0_pd;
+    plain[14] = p1_pu;
+    plain[15] = p2_packed;
+
+    aes_encrypt_block(plain, &tx_buf[8]);
+
+    g_tx_count++;
+    if (!radio_send_dma()) {
+        g_tx_fail++;
+    }
+
+    clock_rcosc();
+}
+
+/* ============================================================================
+ * Main
  * ============================================================================ */
 
 void main(void) {
-    uint8_t boot_sleep = SLEEP;
-    uint8_t rst_cause = (boot_sleep >> 3) & 0x03;
-    // Set POR flag on Power-On Reset (0x00) or External Reset via RESET_N/J6-4/SW1 (0x01)
-    // so the Gateway resets its replay sequence counter after reflashing or rebooting.
+    uint8_t rst_cause = (SLEEP >> 3) & 0x03;
     bool is_por_reset = (rst_cause == 0x00 || rst_cause == 0x01);
 
-    // 1. Initialize GPIO pins
-    setup_gpio();
-
-    // 2. Switch system clock to 27.000 MHz crystal Y1
-    clock_init();
-    delay_ms(50);
-
-    // 3. Initialize 868.950 MHz radio core
-    radio_init();
-
-    // 4. Load derived device AES-128 key into hardware coprocessor
-    aes_load_key(DEVICE_AES_KEY);
-    delay_ms(50);
-
-    static uint16_t seq = 0;
     uint8_t p0_pu, p0_pd, p1_pu, p1_pd, p2_packed;
+    uint8_t base_p0_pu, base_p0_pd, base_p1_pu, base_p1_pd, base_p2;
+    uint16_t seq = 0;
+    uint16_t ticks = 0;
+    bool last_motion, last_tamper;
+
+    setup_gpio();
+    clock_xosc();
+    delay_ms(50);
+
+    // Boot baseline = SW3 released (unit off the wall)
     read_gpio_scan(&p0_pu, &p0_pd, &p1_pu, &p1_pd, &p2_packed);
+    base_p0_pu = p0_pu;
+    base_p0_pd = p0_pd;
+    base_p1_pu = p1_pu & 0x7F;
+    base_p1_pd = p1_pd & 0x7F;
+    base_p2    = p2_packed;
 
-    // Record boot idle baseline for all non-PIR pins to detect SW3 regardless of pin/polarity
-    uint8_t idle_p0_pu = p0_pu;
-    uint8_t idle_p0_pd = p0_pd;
-    uint8_t idle_p1_pu = p1_pu & 0x7F;
-    uint8_t idle_p1_pd = p1_pd & 0x7F;
-    uint8_t idle_p2    = p2_packed;
+    last_motion = ((p1_pu & 0x80) == 0);
+    last_tamper = true; // Released at boot = Tamper
 
-    uint8_t last_p0_pu = p0_pu;
-    uint8_t last_p0_pd = p0_pd;
-    uint8_t last_p1_pu = p1_pu;
-    uint8_t last_p1_pd = p1_pd;
-    uint8_t last_p2    = p2_packed;
-    bool first_packet  = true;
+    sleep_timer_init();
+    EA = 1;
+
+    // Boot packet (Seq #0)
+    transmit(seq++, last_motion, last_tamper, is_por_reset, p0_pu, p0_pd, p1_pu, p2_packed);
 
     while (1) {
-        bool send_immediate = false;
+        bool motion, tamper, sw3_pressed, heartbeat;
 
-        if (!first_packet) {
-            uint8_t debounce = 0;
-            // Poll sensors every 1 ms; transmit immediately on any PIR or switch transition
-            for (uint16_t sec = 0; sec < HEARTBEAT_INTERVAL_SEC; sec++) {
-                for (uint16_t ms = 0; ms < 1000; ms++) {
-                    read_gpio_scan(&p0_pu, &p0_pd, &p1_pu, &p1_pd, &p2_packed);
+        enter_pm2();
 
-                    if (p0_pu != last_p0_pu || p0_pd != last_p0_pd ||
-                        p1_pu != last_p1_pu || p1_pd != last_p1_pd ||
-                        p2_packed != last_p2) {
-                        debounce++;
-                        if (debounce >= 5) {
-                            last_p0_pu = p0_pu;
-                            last_p0_pd = p0_pd;
-                            last_p1_pu = p1_pu;
-                            last_p1_pd = p1_pd;
-                            last_p2    = p2_packed;
-                            send_immediate = true;
-                            break;
-                        }
-                    } else {
-                        debounce = 0;
-                    }
+        // Woken by Sleep Timer tick and/or PIR edge
+        if (g_tick) {
+            g_tick = 0;
+            ticks++;
+        }
+        g_pir_edge = 0;
 
-                    delay_ms(1);
-                }
-                if (send_immediate) {
-                    break;
-                }
-            }
-        } else {
+        read_gpio_scan(&p0_pu, &p0_pd, &p1_pu, &p1_pd, &p2_packed);
+        motion = ((p1_pu & 0x80) == 0);
+        sw3_pressed = (p0_pu != base_p0_pu) || (p0_pd != base_p0_pd) ||
+                      ((p1_pu & 0x7F) != base_p1_pu) || ((p1_pd & 0x7F) != base_p1_pd) ||
+                      (p2_packed != base_p2);
+        tamper = !sw3_pressed;
+
+        // Debounce tamper changes with a second sample (~10 ms later on RCOSC)
+        if (tamper != last_tamper) {
+            delay_ms(5);
             read_gpio_scan(&p0_pu, &p0_pd, &p1_pu, &p1_pd, &p2_packed);
-            last_p0_pu = p0_pu;
-            last_p0_pd = p0_pd;
-            last_p1_pu = p1_pu;
-            last_p1_pd = p1_pd;
-            last_p2    = p2_packed;
-            first_packet = false;
+            sw3_pressed = (p0_pu != base_p0_pu) || (p0_pd != base_p0_pd) ||
+                          ((p1_pu & 0x7F) != base_p1_pu) || ((p1_pd & 0x7F) != base_p1_pd) ||
+                          (p2_packed != base_p2);
+            tamper = !sw3_pressed;
+            motion = ((p1_pu & 0x80) == 0);
         }
 
-        // Sample sensor states:
-        // PIR ALARM (P1_7): Active LOW (0 = Motion Detected, 1 = Idle)
-        bool is_motion = ((p1_pu & 0x80) == 0);
-        // Rear Tamper SW3: True whenever any non-PIR pin on P0, P1, or P2 deviates from its idle state
-        bool is_tamper = (p0_pu != idle_p0_pu) ||
-                         (p0_pd != idle_p0_pd) ||
-                         ((p1_pu & 0x7F) != idle_p1_pu) ||
-                         ((p1_pd & 0x7F) != idle_p1_pd) ||
-                         (p2_packed != idle_p2);
+        heartbeat = (ticks >= HEARTBEAT_TICKS);
 
-        uint16_t batt_mv = read_battery_mv();
-        uint8_t batt_pct = calculate_battery_pct(batt_mv);
-
-        // 1. Plaintext Header (Bytes 0..7): 8-char ASCII Device ID ("2NCEKS3T")
-        for (uint8_t i = 0; i < 8; i++) {
-            tx_buf[i] = (uint8_t)DEVICE_ID[i];
-        }
-
-        // 2. Plaintext Payload (16 Bytes)
-        uint8_t plain[16];
-        plain[0] = (uint8_t)(seq >> 8);
-        plain[1] = (uint8_t)(seq & 0xFF);
-
-        uint8_t flags = 0;
-        if (is_motion) flags |= 0x01;                     // Bit 0: Motion Detected (PIR ALARM = 0V)
-        if (is_tamper) flags |= 0x04;                     // Bit 2: Tamper / Sabotage (SW3)
-        if (is_por_reset && seq < 3) flags |= 0x08;       // Bit 3: Power-On Reset
-        if (batt_mv < 2400) flags |= 0x10;                // Bit 4: Low Battery (<2.4V)
-
-        plain[2]  = flags;
-        plain[3]  = batt_pct;
-        plain[4]  = (uint8_t)(batt_mv >> 8);
-        plain[5]  = (uint8_t)(batt_mv & 0xFF);
-        plain[6]  = (uint8_t)DEVICE_ID[0];
-        plain[7]  = (uint8_t)DEVICE_ID[1];
-        plain[8]  = (uint8_t)DEVICE_ID[2];
-        plain[9]  = (uint8_t)DEVICE_ID[3];
-        plain[10] = 'V';
-        plain[11] = 'S';
-        plain[12] = p0_pu;                // Live diagnostic: Port 0 with Pull-UP
-        plain[13] = p0_pd;                // Live diagnostic: Port 0 with Pull-DOWN
-        plain[14] = p1_pu;                // Live diagnostic: Port 1 with Pull-UP (bit 7 = PIR)
-        plain[15] = p2_packed;            // Live diagnostic: Port 2 (hi nibble=PU, lo nibble=PD)
-
-        // 3. Hardware AES-128-ECB encryption
-        aes_encrypt_block(plain, &tx_buf[8]);
-        seq++;
-
-        // 4. Transmit over 868.950 MHz Sub-1GHz RF via DMA Trigger 19
-        radio_send();
-
-        // Short debounce delay after immediate sensor triggers
-        if (send_immediate) {
-            delay_ms(80);
+        if (motion != last_motion || tamper != last_tamper || heartbeat) {
+            ticks = 0;
+            last_motion = motion;
+            last_tamper = tamper;
+            transmit(seq, motion, tamper, (is_por_reset && seq < 3), p0_pu, p0_pd, p1_pu, p2_packed);
+            seq++;
         }
     }
 }
