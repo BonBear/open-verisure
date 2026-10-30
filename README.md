@@ -6,7 +6,10 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20Discovery-41BDF5.svg)](https://www.home-assistant.io/)
 [![Sub-1GHz](https://img.shields.io/badge/RF-868.950%20MHz-green.svg)](https://www.ti.com/product/CC1101)
 
-Repurpose and liberate your **Verisure Sub-1GHz (868.950 MHz) Door & Window Sensors** with custom, high-performance open-source firmware and bridge them directly into **Home Assistant** via an **ESP32-S2 + CC1101 Gateway** with zero cloud dependencies and zero subscriptions.
+Repurpose and liberate your **Verisure Sub-1GHz (868.950 MHz) Door & Window Sensors** (and Motion Cameras) with custom, high-performance open-source firmware and bridge them directly into **Home Assistant** via an **ESP32-S2 + CC1101 Gateway** with zero cloud dependencies and zero subscriptions.
+
+> [!NOTE]
+> **Minska elavfall (Reducing E-Waste):** Detta projekt startades i grunden för att minska elavfall (e-waste) och ge nytt liv åt överbliven larmhårdvara som annars bara låg hemma och skräpade i en byrålåda. Istället för att slängas förvandlas sensorerna till pålitliga, lokala och abonnemangsfria komponenter i det smarta hemmet.
 
 ---
 

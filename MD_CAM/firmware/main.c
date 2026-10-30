@@ -174,7 +174,7 @@ __xdata uint8_t g_spi_rx_buf[2048];
  * UART1 (USART1 Alt. 1: P0_4=TX, P0_5=RX @ 57600 baud)
  * ============================================================================ */
 
-void uart1_init_57600(void) {
+void uart1_init(uint8_t baud_e, uint8_t baud_m) {
     PERCFG &= ~0x02;     // U1CFG = 0 (Alt. 1: P0_4=TX, P0_5=RX)
     P0SEL |= 0x30;       // Peripheral function on P0_4 and P0_5
     P0DIR |= 0x10;       // P0_4 = Output (TX)
@@ -184,8 +184,16 @@ void uart1_init_57600(void) {
 
     U1CSR = 0x80 | 0x40; // MODE=1 (UART), RE=1 (Receive enable)
     U1UCR = 0x02;        // 8N1, high stop bit
-    U1GCR = 0x0B;        // BAUD_E = 11
-    U1BAUD = 0x18;       // BAUD_M = 24 -> 57600 baud @ 27 MHz
+    U1GCR = baud_e;
+    U1BAUD = baud_m;
+}
+
+void uart1_init_57600(void) {
+    uart1_init(0x0B, 0x18); // 57600 @ 27 MHz
+}
+
+void uart1_init_115200(void) {
+    uart1_init(0x0C, 0x18); // 115200 @ 27 MHz
 }
 
 uint8_t uart1_rx_ready(void) {
@@ -198,8 +206,9 @@ uint8_t uart1_rx_byte(void) {
 }
 
 void uart1_tx_byte(uint8_t b) {
+    uint16_t timeout = 10000;
     U1DBUF = b;
-    while (!(U1CSR & 0x02));
+    while (!(U1CSR & 0x02) && --timeout);
     U1CSR &= ~0x02;
 }
 
@@ -261,10 +270,11 @@ void spi0_master_init(void) {
 }
 
 uint8_t spi0_master_txrx(uint8_t b) {
+    uint16_t timeout = 10000;
     UTX0IF = 0;
     U0CSR |= 0x40; // RE = 1
     U0DBUF = b;
-    while (!UTX0IF);
+    while (!UTX0IF && --timeout);
     UTX0IF = 0;
     return U0DBUF;
 }
@@ -585,7 +595,8 @@ static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
         g_tx_fail++;
     }
 
-    clock_rcosc();
+    // Keep 27 MHz crystal running for high-speed SPI with Blackfin DSP
+    // clock_rcosc();
 }
 
 /* ============================================================================
@@ -622,11 +633,155 @@ static uint8_t scan_cmd(uint8_t ss_sel, uint8_t cmd) {
 }
 
 
-void main(void) {
-    uint8_t p1_1_before, p1_1_after;
-    uint8_t uart_rx_byte_val = 0;
-    bool uart_has_data = false;
+static uint8_t __xdata g_uart_rx_buf[32];
+static uint8_t g_uart_rx_count = 0;
 
+static void spi_set_mode(uint8_t mode) {
+    if (mode == 0) {
+        // Mode 0: CPOL=0, CPHA=0, SCK idle LOW
+        P1_3 = 0;
+        U0GCR = 0x20 | 0x0F; // ORDER=1 (MSB), CPOL=0, CPHA=0, BAUD_E=15
+    } else {
+        // Mode 3: CPOL=1, CPHA=1, SCK idle HIGH
+        P1_3 = 1;
+        U0GCR = 0xE0 | 0x0F; // ORDER=1 (MSB), CPOL=1, CPHA=1, BAUD_E=15
+    }
+}
+
+static uint16_t spi_txrx_16bit(uint16_t word) {
+    uint8_t hi = spi0_master_txrx((uint8_t)(word >> 8));
+    uint8_t lo = spi0_master_txrx((uint8_t)(word & 0xFF));
+    return ((uint16_t)hi << 8) | lo;
+}
+
+static uint16_t test_dsp_16bit(uint8_t ss_pin, uint8_t spi_mode, uint16_t cmd) {
+    uint16_t resp = 0;
+
+    spi_set_mode(spi_mode);
+
+    // Assert Chip Select (drive both SS1 and SS2 low if needed so both Saleae and DSP see it)
+    if (ss_pin == 1) {
+        P1_2 = 0;
+    } else if (ss_pin == 2) {
+        P1_1 = 0;
+    } else {
+        P1_2 = 0;
+        P1_1 = 0;
+    }
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+
+    // Send 16-bit command word
+    spi_txrx_16bit(cmd);
+    // Read 16-bit response word
+    resp = spi_txrx_16bit(0x0000);
+
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    // Deassert Chip Select
+    P1_2 = 1;
+    P1_1 = 1;
+    delay_ms(10);
+
+    return resp;
+}
+
+static int16_t read_camera_stream(uint8_t ss_pin, uint8_t spi_mode, uint16_t cmd) {
+    int16_t jpeg_offset = -1;
+
+    spi_set_mode(spi_mode);
+
+    // 1. Assert SS and send command to trigger snapshot / query stream
+    if (ss_pin == 1) P1_2 = 0;
+    else if (ss_pin == 2) P1_1 = 0;
+    else { P1_2 = 0; P1_1 = 0; }
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+
+    spi_txrx_16bit(cmd);
+
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_2 = 1;
+    P1_1 = 1;
+
+    // 2. Wait 600 ms for Sunny camera exposure and Blackfin JPEG compression
+    delay_ms(600);
+
+    // 3. Assert SS to read out stream
+    if (ss_pin == 1) P1_2 = 0;
+    else if (ss_pin == 2) P1_1 = 0;
+    else { P1_2 = 0; P1_1 = 0; }
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+
+    // Read 256 bytes from Blackfin DSP
+    for (uint16_t i = 0; i < 256; i++) {
+        g_spi_rx_buf[i] = spi0_master_txrx(0x00);
+    }
+
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_2 = 1;
+    P1_1 = 1;
+
+    // Search for JPEG Start-Of-Image marker (0xFF 0xD8)
+    for (uint16_t i = 0; i < 255; i++) {
+        if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i+1] == 0xD8) {
+            jpeg_offset = (int16_t)i;
+            break;
+        }
+    }
+
+    return jpeg_offset;
+}
+
+static int16_t trigger_and_read_image(uint16_t cmd, uint8_t p16_level) {
+    int16_t jpeg_offset = -1;
+
+    // Set hardware trigger pin P1_6
+    P1_6 = p16_level;
+    delay_ms(10);
+
+    // Ensure bus switch is enabled
+    P1_1 = 1;
+
+    // 1. Assert Blackfin /SPISS (P1_2 = 0)
+    P1_2 = 0;
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+
+    // Send 16-bit command to Blackfin DSP
+    spi_txrx_16bit(cmd);
+
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_2 = 1;
+
+    // Send UART trigger in parallel
+    uart1_tx_byte((uint8_t)(cmd >> 8));
+    uart1_tx_byte((uint8_t)(cmd & 0xFF));
+    uart1_tx_str("snap\r\n");
+
+    // 2. Wait 500 ms for Sunny camera exposure and Blackfin JPEG compression
+    delay_ms(500);
+
+    // 3. Assert Blackfin /SPISS to read out JPEG stream
+    P1_2 = 0;
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+
+    // Read 512 bytes from Blackfin DSP
+    for (uint16_t i = 0; i < 512; i++) {
+        g_spi_rx_buf[i] = spi0_master_txrx(0x00);
+    }
+
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_2 = 1;
+
+    // Search for JPEG Start-Of-Image marker (0xFF 0xD8)
+    for (uint16_t i = 0; i < 511; i++) {
+        if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i+1] == 0xD8) {
+            jpeg_offset = (int16_t)i;
+            break;
+        }
+    }
+
+    return jpeg_offset;
+}
+
+void main(void) {
     setup_gpio();
     clock_xosc(); // Full 27 MHz speed
     delay_ms(50);
@@ -634,75 +789,61 @@ void main(void) {
     // Initialize UART1 @ 57600 baud
     uart1_init_57600();
 
-    delay_ms(50);
+    // Configure GPIOs
+    P1DIR |= 0x47; // P1_0, P1_1, P1_2, P1_6 = Outputs
+    P0DIR |= 0x85; // P0_0, P0_2, P0_7 = Outputs
+    P1_0 = 1;      // 3.3V switched rail ON (Powers camera & SDRAM)
+    P1_1 = 1;      // Bus Switch ENABLED
+    P1_2 = 1;      // Blackfin /SPISS idle HIGH
+    P1_6 = 1;      // DSP trigger idle HIGH
 
-    // Release Blackfin RESET!
+    // Power up Blackfin Core (1.2V via Q13) and auxiliary rails
+    P0_2 = 1;      // 1.2V Core ON
+    P0_7 = 0;      // LED board start LOW
+
+    // Release Blackfin RESET! (P0_0 = 1)
     P0_0 = 1;
 
-    // Wait 500 ms while Blackfin boots from U3 Flash into SDRAM
+    // Wait 500 ms while Blackfin boots up (current ~95 mA)
     delay_ms(500);
 
-    // Take over SPI as Master
+    // Initialize SPI0 Master @ 844 kHz in Mode 0
     spi0_master_init();
-    P1DIR |= 0x47;
-    P1_1 = 1;
-    P1_2 = 1;
-    P1_6 = 1;
-
-    // Sample P1_1 level
-    p1_1_before = P1_1;
-
-    // Send a 10 ms trigger pulse on P1_6 (DSP interrupt)
-    P1_6 = 0;
-    delay_ms(10);
-    P1_6 = 1;
-
-    // Also send a 10 ms trigger pulse on P0_7
-    P0_7 = 0;
-    delay_ms(10);
-    P0_7 = 1;
-
-    // Also send SNAP trigger over UART
-    uart1_tx_byte(0x01);
-    uart1_tx_str("\r\nSNAP\r\n");
-
-    // Wait 400 ms for Blackfin to react
-    for (uint16_t w = 0; w < 400; w++) {
-        delay_ms(1);
-        if (uart1_rx_ready() && !uart_has_data) {
-            uart_rx_byte_val = uart1_rx_byte();
-            uart_has_data = true;
-        }
-    }
-
-    p1_1_after = P1_1;
-
-    // Now try reading with P1_2 (SS1)
-    P1_2 = 0;
-    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
-    g_dsp_rx[0] = spi0_master_txrx(0x02); // Status
-    g_dsp_rx[1] = spi0_master_txrx(0x00);
-    g_dsp_rx[2] = spi0_master_txrx(0x00);
-    g_dsp_rx[3] = spi0_master_txrx(0x00);
-    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_1 = 1; // Bus switch ON
     P1_2 = 1;
 
-    // Transmit telemetry to Gateway
-    transmit(0, false, false, true, p1_1_before, p1_1_after, uart_rx_byte_val, g_dsp_rx[1]);
+    // Transmit initial telemetry to Gateway
+    transmit(0, false, false, true, 0xAA, 0xBB, 0xCC, 0xDD);
 
-    // Keep pulsing trigger and status read for Logic 4
+    // Continuous loop: test flash trigger on P0_7 and camera trigger on P1_6!
     while (1) {
+        // --- PHASE 1: Pulse P0_7 HIGH (LED/Flash rail enable) ---
+        P0_7 = 1;
+        delay_ms(200);
+
+        // Send hardware shutter interrupt on P1_6 (LOW pulse)
         P1_6 = 0;
-        delay_ms(5);
+        delay_ms(50);
         P1_6 = 1;
 
-        P1_2 = 0;
-        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
-        spi0_master_txrx(0x02);
-        spi0_master_txrx(0x00);
-        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
-        P1_2 = 1;
+        // Send Snapshot Commands over SPI and UART
+        trigger_and_read_image(0x0004, 1);
+        trigger_and_read_image(0x0001, 1);
 
-        delay_ms(250);
+        // Turn off P0_7
+        P0_7 = 0;
+        delay_ms(300);
+
+        // --- PHASE 2: Alternate pulse with P1_6 held LOW ---
+        P0_7 = 1;
+        P1_6 = 0;
+        delay_ms(200);
+
+        trigger_and_read_image(0x0004, 0);
+        trigger_and_read_image(0x0002, 0);
+
+        P0_7 = 0;
+        P1_6 = 1;
+        delay_ms(500);
     }
 }
