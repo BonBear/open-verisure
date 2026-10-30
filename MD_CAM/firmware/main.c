@@ -166,20 +166,135 @@ static void clock_rcosc(void) {
     SLEEP |= 0x04;                                // Power down unused 27 MHz XOSC
 }
 
+volatile __xdata uint8_t g_dsp_rx[4] = {0, 0, 0, 0};
+volatile __xdata uint8_t g_image_chunk[64];
+__xdata uint8_t g_spi_rx_buf[2048];
+
+/* ============================================================================
+ * UART1 (USART1 Alt. 1: P0_4=TX, P0_5=RX @ 57600 baud)
+ * ============================================================================ */
+
+void uart1_init_57600(void) {
+    PERCFG &= ~0x02;     // U1CFG = 0 (Alt. 1: P0_4=TX, P0_5=RX)
+    P0SEL |= 0x30;       // Peripheral function on P0_4 and P0_5
+    P0DIR |= 0x10;       // P0_4 = Output (TX)
+    P0DIR &= ~0x20;      // P0_5 = Input (RX)
+    P0INP &= ~0x30;      // Enable pull-up on P0_5
+    P2INP &= ~0x20;      // Port 0 pull-UP mode
+
+    U1CSR = 0x80 | 0x40; // MODE=1 (UART), RE=1 (Receive enable)
+    U1UCR = 0x02;        // 8N1, high stop bit
+    U1GCR = 0x0B;        // BAUD_E = 11
+    U1BAUD = 0x18;       // BAUD_M = 24 -> 57600 baud @ 27 MHz
+}
+
+uint8_t uart1_rx_ready(void) {
+    return (U1CSR & 0x04) != 0; // URX1IF
+}
+
+uint8_t uart1_rx_byte(void) {
+    U1CSR &= ~0x04;
+    return U1DBUF;
+}
+
+void uart1_tx_byte(uint8_t b) {
+    U1DBUF = b;
+    while (!(U1CSR & 0x02));
+    U1CSR &= ~0x02;
+}
+
+void uart1_tx_str(const char *str) {
+    while (*str) {
+        uart1_tx_byte((uint8_t)*str++);
+    }
+}
+
+static void spi_read_jedec_id(uint8_t *id) {
+    uint8_t i, b;
+    uint8_t cmd = 0x9F; // Read JEDEC ID
+
+    P1DIR |= 0x28;  // P1_3 (SCK) and P1_5 (MOSI) = Outputs
+    P1DIR &= ~0x10; // P1_4 (MISO) = Input
+    P1INP &= ~0x10; // Enable pull-up on P1_4
+    P1_3 = 0;       // SCK idle low
+
+    // Send command 0x9F
+    for (b = 0; b < 8; b++) {
+        P1_5 = (cmd & 0x80) ? 1 : 0;
+        cmd <<= 1;
+        P1_3 = 1;
+        P1_3 = 0;
+    }
+
+    // Read 3 ID bytes
+    for (i = 0; i < 3; i++) {
+        uint8_t val = 0;
+        for (b = 0; b < 8; b++) {
+            P1_3 = 1;
+            val = (val << 1) | (P1_4 ? 1 : 0);
+            P1_3 = 0;
+        }
+        id[i] = val;
+    }
+}
+
+/* ============================================================================
+ * SPI0 Master (USART0 Alt. 2: P1_3=SCK, P1_4=MISO, P1_5=MOSI; P1_2=SS1, P1_1=SS2)
+ * ============================================================================ */
+
+void spi0_master_init(void) {
+    PERCFG |= 0x01;  // USART0 Alt. 2
+    P1SEL |= 0x38;   // P1_3 (SCK), P1_4 (MISO), P1_5 (MOSI) peripheral
+    P1SEL &= ~0x06;  // P1_1 (SS2), P1_2 (SS1) GPIO
+
+    P1DIR |= 0x2F;   // P1_0 (3.3V), P1_1 (SS2), P1_2 (SS1), P1_3 (SCK), P1_5 (MOSI) = Outputs
+    P1DIR &= ~0x10;  // P1_4 (MISO) = Input
+    P1INP &= ~0x10;  // Enable pull-up on P1_4
+
+    P1_1 = 1;        // SS2 idle HIGH
+    P1_2 = 1;        // SS1 idle HIGH
+    P1_3 = 0;        // SCK idle LOW (Mode 0)
+
+    U0CSR = 0x40;        // MODE=0 (SPI), SLAVE=0 (Master), RE=1 (Receiver enable)
+    U0GCR = 0x20 | 0x0F; // ORDER=1 (MSB first), CPOL=0, CPHA=0, BAUD_E=15
+    U0BAUD = 0x00;       // BAUD_M=0 -> ~844 kHz SPI clock @ 27 MHz
+}
+
+uint8_t spi0_master_txrx(uint8_t b) {
+    UTX0IF = 0;
+    U0CSR |= 0x40; // RE = 1
+    U0DBUF = b;
+    while (!UTX0IF);
+    UTX0IF = 0;
+    return U0DBUF;
+}
+
 /* ============================================================================
  * GPIO
  * ============================================================================ */
 
 void setup_gpio(void) {
-    // Port 0 inputs; tristate UART pins P0_4..P0_5 to the unpowered DSP
+    // Port 0:
+    // P0_0 = DSP_RESET (hold low initially)
+    // P0_2 = 1.2V core power switch (Q13)
+    // P0_7 = Switched rail enable
     P0SEL = 0x00;
-    P0DIR = 0x00;
-    P0INP = 0x30;
+    P0DIR = 0x85; // P0_0, P0_2, P0_7 = Outputs
+    P0_2 = 1;     // Enable 1.2V core
+    P0_7 = 1;     // Enable switched rail
+    P0_0 = 0;     // Hold Blackfin in RESET
 
-    // Port 1 inputs; tristate SPI pins P1_0..P1_5 to the unpowered DSP; pull-up on P1_6/P1_7
+    // Port 1:
+    // P1_0 = 3.3V power switch (Q7)
+    // P1_6 = Power rail / DSP enable
+    // P1_1 = Bus switch enable
+    // P1_2, P1_3, P1_4, P1_5 = Tri-state initially so Blackfin can boot
     P1SEL = 0x00;
-    P1DIR = 0x00;
-    P1INP = 0x3F;
+    P1DIR = 0x43; // P1_0, P1_1, P1_6 = Outputs; P1_2..P1_5 = Inputs
+    P1INP = 0x3C; // Tri-state P1_2, P1_3, P1_4, P1_5
+    P1_0 = 1;     // Turn ON 3.3V (Q7)
+    P1_1 = 1;     // Enable bus switch
+    P1_6 = 1;     // Turn ON switched rail / DSP enable
 
     // Port 2: keep P2_1 (DD) / P2_2 (DC) as inputs for the J6 debugger
     P2SEL &= ~0x07;
@@ -451,10 +566,17 @@ static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
     plain[9]  = (uint8_t)DEVICE_ID[3];
     plain[10] = 'V';
     plain[11] = 'S';
-    plain[12] = p0_pu;
-    plain[13] = p0_pd;
-    plain[14] = p1_pu;
-    plain[15] = p2_packed;
+    if (g_dsp_rx[0] != 0 || g_dsp_rx[1] != 0 || g_dsp_rx[2] != 0 || g_dsp_rx[3] != 0) {
+        plain[12] = g_dsp_rx[0];
+        plain[13] = g_dsp_rx[1];
+        plain[14] = g_dsp_rx[2];
+        plain[15] = g_dsp_rx[3];
+    } else {
+        plain[12] = p0_pu;
+        plain[13] = p0_pd;
+        plain[14] = p1_pu;
+        plain[15] = p2_packed;
+    }
 
     aes_encrypt_block(plain, &tx_buf[8]);
 
@@ -470,75 +592,117 @@ static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
  * Main
  * ============================================================================ */
 
-void main(void) {
-    uint8_t rst_cause = (SLEEP >> 3) & 0x03;
-    bool is_por_reset = (rst_cause == 0x00 || rst_cause == 0x01);
+static uint8_t scan_cmd(uint8_t ss_sel, uint8_t cmd) {
+    uint8_t resp = 0;
 
-    uint8_t p0_pu, p0_pd, p1_pu, p1_pd, p2_packed;
-    uint8_t base_p0_pu, base_p0_pd, base_p1_pu, base_p1_pd, base_p2;
-    uint16_t seq = 0;
-    uint16_t ticks = 0;
-    bool last_motion, last_tamper;
+    // Assert chosen SS
+    if (ss_sel == 1) {
+        P1_2 = 0; // Assert P1_2 (SS1 - Upper)
+    } else if (ss_sel == 2) {
+        P1_1 = 0; // Assert P1_1 (SS2 - Lower)
+    } else {
+        P1_2 = 0;
+        P1_1 = 0; // Both
+    }
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+
+    spi0_master_txrx(cmd);
+    resp = spi0_master_txrx(0x00);
+    spi0_master_txrx(0x00);
+    spi0_master_txrx(0x00);
+
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+
+    // Deassert SS
+    P1_2 = 1;
+    P1_1 = 1;
+    delay_ms(10);
+
+    return resp;
+}
+
+
+void main(void) {
+    uint8_t p1_1_before, p1_1_after;
+    uint8_t uart_rx_byte_val = 0;
+    bool uart_has_data = false;
 
     setup_gpio();
-    clock_xosc();
+    clock_xosc(); // Full 27 MHz speed
     delay_ms(50);
 
-    // Boot baseline = SW3 released (unit off the wall)
-    read_gpio_scan(&p0_pu, &p0_pd, &p1_pu, &p1_pd, &p2_packed);
-    base_p0_pu = p0_pu;
-    base_p0_pd = p0_pd;
-    base_p1_pu = p1_pu & 0x7F;
-    base_p1_pd = p1_pd & 0x7F;
-    base_p2    = p2_packed;
+    // Initialize UART1 @ 57600 baud
+    uart1_init_57600();
 
-    last_motion = ((p1_pu & 0x80) == 0);
-    last_tamper = true; // Released at boot = Tamper
+    delay_ms(50);
 
-    sleep_timer_init();
-    EA = 1;
+    // Release Blackfin RESET!
+    P0_0 = 1;
 
-    // Boot packet (Seq #0)
-    transmit(seq++, last_motion, last_tamper, is_por_reset, p0_pu, p0_pd, p1_pu, p2_packed);
+    // Wait 500 ms while Blackfin boots from U3 Flash into SDRAM
+    delay_ms(500);
 
+    // Take over SPI as Master
+    spi0_master_init();
+    P1DIR |= 0x47;
+    P1_1 = 1;
+    P1_2 = 1;
+    P1_6 = 1;
+
+    // Sample P1_1 level
+    p1_1_before = P1_1;
+
+    // Send a 10 ms trigger pulse on P1_6 (DSP interrupt)
+    P1_6 = 0;
+    delay_ms(10);
+    P1_6 = 1;
+
+    // Also send a 10 ms trigger pulse on P0_7
+    P0_7 = 0;
+    delay_ms(10);
+    P0_7 = 1;
+
+    // Also send SNAP trigger over UART
+    uart1_tx_byte(0x01);
+    uart1_tx_str("\r\nSNAP\r\n");
+
+    // Wait 400 ms for Blackfin to react
+    for (uint16_t w = 0; w < 400; w++) {
+        delay_ms(1);
+        if (uart1_rx_ready() && !uart_has_data) {
+            uart_rx_byte_val = uart1_rx_byte();
+            uart_has_data = true;
+        }
+    }
+
+    p1_1_after = P1_1;
+
+    // Now try reading with P1_2 (SS1)
+    P1_2 = 0;
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    g_dsp_rx[0] = spi0_master_txrx(0x02); // Status
+    g_dsp_rx[1] = spi0_master_txrx(0x00);
+    g_dsp_rx[2] = spi0_master_txrx(0x00);
+    g_dsp_rx[3] = spi0_master_txrx(0x00);
+    for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+    P1_2 = 1;
+
+    // Transmit telemetry to Gateway
+    transmit(0, false, false, true, p1_1_before, p1_1_after, uart_rx_byte_val, g_dsp_rx[1]);
+
+    // Keep pulsing trigger and status read for Logic 4
     while (1) {
-        bool motion, tamper, sw3_pressed, heartbeat;
+        P1_6 = 0;
+        delay_ms(5);
+        P1_6 = 1;
 
-        enter_pm2();
+        P1_2 = 0;
+        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+        spi0_master_txrx(0x02);
+        spi0_master_txrx(0x00);
+        for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
+        P1_2 = 1;
 
-        // Woken by Sleep Timer tick and/or PIR edge
-        if (g_tick) {
-            g_tick = 0;
-            ticks++;
-        }
-        g_pir_edge = 0;
-
-        read_gpio_scan(&p0_pu, &p0_pd, &p1_pu, &p1_pd, &p2_packed);
-        motion = ((p1_pu & 0x80) == 0);
-        sw3_pressed = (p0_pu != base_p0_pu) || (p0_pd != base_p0_pd) ||
-                      ((p1_pu & 0x7F) != base_p1_pu) || ((p1_pd & 0x7F) != base_p1_pd) ||
-                      (p2_packed != base_p2);
-        tamper = !sw3_pressed;
-
-        // Debounce tamper changes with a second sample (~10 ms later on RCOSC)
-        if (tamper != last_tamper) {
-            delay_ms(5);
-            read_gpio_scan(&p0_pu, &p0_pd, &p1_pu, &p1_pd, &p2_packed);
-            sw3_pressed = (p0_pu != base_p0_pu) || (p0_pd != base_p0_pd) ||
-                          ((p1_pu & 0x7F) != base_p1_pu) || ((p1_pd & 0x7F) != base_p1_pd) ||
-                          (p2_packed != base_p2);
-            tamper = !sw3_pressed;
-            motion = ((p1_pu & 0x80) == 0);
-        }
-
-        heartbeat = (ticks >= HEARTBEAT_TICKS);
-
-        if (motion != last_motion || tamper != last_tamper || heartbeat) {
-            ticks = 0;
-            last_motion = motion;
-            last_tamper = tamper;
-            transmit(seq, motion, tamper, (is_por_reset && seq < 3), p0_pu, p0_pd, p1_pu, p2_packed);
-            seq++;
-        }
+        delay_ms(250);
     }
 }
