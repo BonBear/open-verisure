@@ -108,9 +108,25 @@ Mät med multimetern om någon av de 4 CC1110-kandidatpinnarna (`P1_0`, `P0_0`, 
 
 ---
 
-## 📝 Resultat & Sammanfattning (Fylls i när mätningarna är klara)
+## 📝 Resultat & Sammanfattning (100 % Verifierat & Kartlagt)
 
-* **Vilken CC1110-pinne verkar styra spänningspåslaget:** `____________________`
-* **Delar CC1110 och Blackfin samma SPI-flash (`U3`):** `____________________`
-* **Övriga iakttagelser (komponentmärkningar på transistorer/regulatorer):**
-  `__________________________________________________________________________________`
+* **Power-Enable & Spänningsstyrning till Blackfin DSP (`U5`):**
+  - **`P0_2` (Pin 7):** Aktiverar transistorn `Q13` för **1.2V Blackfin Core rail**.
+  - **`P1_0` (Pin 4):** Aktiverar transistorn `Q7` för **3.3V switched peripheral rail**.
+  - **`P1_6` (Pin 33) & `P0_7` (Pin 13):** Aktiverar auxiliary rails / trigger.
+  - **`P0_0` (Pin 5):** **Blackfin Hardware Reset (`/RESET`, aktiv låg)**.
+    - Vid `P0_0 = 0` hålls Blackfin i reset och kortet drar endast **20–22 mA**.
+    - Vid `P0_0 = 1` släpps Blackfin ur reset och kör fabriksfirmware med en stabil strömförbrukning på **92–95 mA**.
+
+* **U3 SPI Flashminne (`DSP V175`):**
+  - **Krets:** EON Silicon Solution (cFeon) `EN25F40` 4 Megabit / 512 KB Serial NOR Flash.
+  - **JEDEC ID:** **`0x1C 0x31 0x13`** (Avläst och bekräftat via Logic 4 och CC1110 SPI Master).
+  - **Chip Select (`/CS`, Pin 1):** Styrs **internt av Blackfin DSP:ns `SPI0_SEL1`**, inte direkt från CC1110.
+    - När Blackfin hålls i reset (`P0_0 = 0`) hålls dess pinnar låga vilket aktiverar U3 (/CS = 0V), vilket möjliggör för CC1110 att läsa ut JEDEC ID.
+    - När Blackfin startar (`P0_0 = 1`) driver DSP:n `SPI0_SEL1` hög och lägger U3 i standby så att MISO tri-state:as.
+
+* **Inter-Processor Bussen (CC1110 <-> Blackfin ADSP-BF512):**
+  - **SPI Master (`USART0 Alt. 2`):** `SCK` = `P1_3`, `MISO` = `P1_4`, `MOSI` = `P1_5`.
+  - **Chip Selects:** Testpaddarna **`SS (Övre)` (`P1_2`)** och **`SS (Undre)` (`P1_1`)** är kopplade direkt till Blackfin DSP:ns Slave Select / kontrollpinnar.
+  - **Triggerrespons:** När initieringskommandot `0x04` skickas på `P1_2` svarar MISO omedelbart och klampas från 0xFF till 0x00.
+

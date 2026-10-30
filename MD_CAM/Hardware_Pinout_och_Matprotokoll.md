@@ -57,18 +57,20 @@ När du läser texten (*"CC1110 F32 TI..."*) rättvänd sitter **Pin 1 uppe till
 
 | CC1110 Pin # | Port / Namn | Uppmätt Anslutning på Kretskortet | Funktion |
 | :---: | :---: | :--- | :--- |
-| **Pin 1** | **`P1_2`** | Testpad **`SS` (Övre)** | SPI Chip Select 1 (`USART0 Alt. 2`) |
+| **Pin 1** | **`P1_2`** | Testpad **`SS` (Övre)** | SPI Slave Select 1 (`/SPISS`) till Blackfin DSP |
 | **Pin 2** | `DVDD` | Kondensator `C77` | Matningsavkoppling |
-| **Pin 3** | **`P1_1`** | Testpad **`SS` (Undre)** | SPI Chip Select 2 (GPIO) |
-| **Pin 4** | **`P1_0`** | *(Har ledningsbana på PCB)* | Trolig Power-Enable för kamera/DSP eller LED-blixt |
-| **Pin 5** | **`P0_0`** | *(Har ledningsbana på PCB)* | Trolig Power-Enable / ljussensor / kontrollpinne |
-| **Pin 6–8** | `P0_1..P0_3` | *Ej anslutna (inga banor på PCB)* | Oanvända |
-| **Pin 9** | **`P0_4`** | Testpad **`TX`** | UART TX (`USART1 Alt. 1`) |
+| **Pin 3** | **`P1_1`** | Testpad **`SS` (Undre)** | SPI Slave Select 2 / Handskakningskontroll till Blackfin DSP |
+| **Pin 4** | **`P1_0`** | Transistor **`Q7`** | **Power-Enable för 3.3V switched rail** (Kamera/SDRAM) |
+| **Pin 5** | **`P0_0`** | Blackfin Reset-krets | **Blackfin Hardware Reset (`/RESET`)** (0=Reset 20mA, 1=Kör 92mA) |
+| **Pin 6** | `P0_1` | *(Ej ansluten)* | Oanvänd |
+| **Pin 7** | **`P0_2`** | Transistor **`Q13`** | **Power-Enable för 1.2V Core rail** (Blackfin VDDINT) |
+| **Pin 8** | `P0_3` | *(Ej ansluten)* | Oanvänd |
+| **Pin 9** | **`P0_4`** | Testpad **`TX`** | UART TX (`USART1 Alt. 1`) till Blackfin DSP |
 | **Pin 10** | `DVDD` | Kondensator `C91` (+ 1 kΩ mot `J6-1`) | Digital 3V-matning |
-| **Pin 11** | **`P0_5`** | Testpad **`RX`** | UART RX (`USART1 Alt. 1`) |
+| **Pin 11** | **`P0_5`** | Testpad **`RX`** | UART RX (`USART1 Alt. 1`) från Blackfin DSP |
 | **Pin 12** | **`P0_6`** | **`SW3`** (Fjäderbrytare baksida) | **Sabotagebrytare (Tamper)** – sluter mot `VBAT+` |
-| **Pin 13** | **`P0_7`** | *(Har ledningsbana på PCB)* | Trolig `SW2` eller kontrollpinne |
-| **Pin 14** | `P2_0` | *Ingen synlig yttre bana* | — |
+| **Pin 13** | **`P0_7`** | Kontakt **`J2 Pin 4`** / DSP rail | **Power-Enable / Switched Auxiliary rail** (6 kΩ till J2-4) |
+| **Pin 14** | `P2_0` | *(Ej ansluten)* | Oanvänd |
 | **Pin 15** | **`P2_1` (`DD`)** | **`J6-2`** | **Debug Data (`DD`)** för CC-Flasher |
 | **Pin 16** | **`P2_2` (`DC`)** | **`J6-3`** | **Debug Clock (`DC`)** för CC-Flasher |
 | **Pin 17** | `P2_3` (`XOSC32K_Q1`) | Kristall `Y2` (32.768 kHz) | Sleep Timer-kristall |
@@ -77,10 +79,10 @@ När du läser texten (*"CC1110 F32 TI..."*) rättvänd sitter **Pin 1 uppe till
 | **Pin 22–23** | `RF_P` / `RF_N` | Balun $\rightarrow$ Fjäderantenn | 868.950 MHz Sub-1GHz RF |
 | **Pin 31** | **`RESET_N`** | **`J6-4`** & **`SW1`** | **Hardware Reset** för CC-Flasher |
 | **Pin 32** | **`P1_7`** | Testpad **`ALARM`** (från PIR) | **PIR Rörelselarm** (`3.08V` = Vila, `0V` = Rörelse) |
-| **Pin 33** | **`P1_6`** | *(Har ledningsbana på PCB)* | Trolig Power-Enable / DSP-kontrollpinne |
-| **Pin 34** | **`P1_5`** | Testpad **`MOSI`** | SPI MOSI (`USART0 Alt. 2`) |
-| **Pin 35** | **`P1_4`** | Testpad **`MISO`** | SPI MISO (`USART0 Alt. 2`) |
-| **Pin 36** | **`P1_3`** | Testpad **`SCK`** | SPI SCK (`USART0 Alt. 2`) |
+| **Pin 33** | **`P1_6`** | Ledningsbana till Blackfin DSP | **Trigger / DSP-interruptpinne** |
+| **Pin 34** | **`P1_5`** | Testpad **`MOSI`** | Delad SPI MOSI (CC1110 -> Blackfin & U3 Pin 5) |
+| **Pin 35** | **`P1_4`** | Testpad **`MISO`** | Delad SPI MISO (Blackfin & U3 Pin 2 -> CC1110) |
+| **Pin 36** | **`P1_3`** | Testpad **`SCK`** | Delad SPI SCK (CC1110 -> Blackfin & U3 Pin 6) |
 
 ---
 
