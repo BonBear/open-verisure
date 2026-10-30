@@ -161,6 +161,10 @@ def main():
         sys.exit(1)
 
     print("[+] FLASHING & VERIFICATION SUCCEEDED!")
+    try:
+        session.post(f"{CC_HOST}/cc_exit_dbg", timeout=5)
+    except Exception:
+        pass
 
     # 4. Poll Gateway HTTP /api/status to verify 2NCEKT3X registration!
     print(f"[*] Polling {GATEWAY_HTTP}/api/status for sensor {DEVICE_ID} telemetry...")

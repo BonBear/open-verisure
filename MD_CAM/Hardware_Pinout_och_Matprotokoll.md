@@ -60,9 +60,9 @@ När du läser texten (*"CC1110 F32 TI..."*) rättvänd sitter **Pin 1 uppe till
 
 | CC1110 Pin # | Port / Namn | Uppmätt Anslutning på Kretskortet | Funktion |
 | :---: | :---: | :--- | :--- |
-| **Pin 1** | **`P1_2`** | Testpad **`SS` (Övre)** | SPI Slave Select 1 (`/SPISS`) till Blackfin DSP |
+| **Pin 1** | **`P1_2`** | Testpad **`SS` (Övre)** | SPI Slave Select 1 (`/SPISS`) till Blackfin DSP (hålls HÖG under boot för att undvika Mode Fault) |
 | **Pin 2** | `DVDD` | Kondensator `C77` | Matningsavkoppling |
-| **Pin 3** | **`P1_1`** | Testpad **`SS` (Undre)** | SPI Slave Select 2 / Handskakningskontroll till Blackfin DSP |
+| **Pin 3** | **`P1_1`** | Testpad **`SS` (Undre)** | **Bus Switch Enable** (Aktiv HÖG; hålls HÖG för att öppna SPI-bussen mot DSP/Flash) |
 | **Pin 4** | **`P1_0`** | Transistor **`Q7`** | **Power-Enable för 3.3V switched rail** (Kamera/SDRAM) |
 | **Pin 5** | **`P0_0`** | Blackfin Reset-krets | **Blackfin Hardware Reset (`/RESET`)** (0=Reset 20mA, 1=Kör 92mA) |
 | **Pin 6** | `P0_1` | *(Ej ansluten)* | Oanvänd |

@@ -128,9 +128,16 @@ Mät med multimetern om någon av de 4 CC1110-kandidatpinnarna (`P1_0`, `P0_0`, 
 * **Inter-Processor Bussen (CC1110 <-> Blackfin ADSP-BF512):**
   - **SPI Master (`USART0 Alt. 2`):** `SCK` = `P1_3`, `MISO` = `P1_4`, `MOSI` = `P1_5`.
   - **Chip Select & Bus Switch:** 
-    - **`P1_2` (`SS Övre`):** Blackfin DSP:ns aktiva Slave Select (`/SPISS`, aktiv låg).
-    - **`P1_1` (`SS Undre`):** Aktiv-hög **Bus Switch Enable**. När `P1_1 = 1` är SPI-bussen helt öppen mot Blackfin och kan klocka 4096 klockor kontinuerligt i 844 kHz. När `P1_1 = 0` klampas bussen låg.
+    - **`P1_2` (`SS Övre`):** Blackfin DSP:ns aktiva Slave Select (`/SPISS`, aktiv låg). Under Blackfins bootfas måste denna hållas HÖG (1) för att förhindra SPI Mode Fault i DSP:n.
+    - **`P1_1` (`SS Undre`):** Aktiv-hög **Bus Switch Enable**. När `P1_1 = 1` är SPI-bussen helt öppen mot Blackfin och kan klocka 4096 klockor kontinuerligt i 844 kHz. När `P1_1 = 0` klampas bussen låg. Under boot måste `P1_1 = 1` hållas aktiv.
   - **Mätkontinuitet (Multimeter):** `U3 Pin 2` (`SO`) piper med direkt kontinuitet (0 Ω) mot `CC1110 Pin 35` (`MISO`), vilket garanterar att Saleae-probarna sitter direkt på bussen.
   - **DSP Slave-beteende:** Blackfin DSP driver aktivt MISO till `0x00` (`SENDZ = 1`) i väntan på att dess interna bildbehandlingspipeline ska fylla sändbufferten med en tagen bild.
   - **LED-kort (`P/N3302042 C`):** Inkopplat i `J2`/`J3`. Röd indikator-LED tänds vid strömsättning. Högeffekts-blixten styrs via kombinerad logik (Blackfin/P0_7/ljussensor).
+
+* **Verifierad Boot- och Signalsekvens från Referenskort #2 (Logic 4):**
+  - Vid kallstart startar Blackfin ADSP-BF512 som **SPI Master** vid 2.000 MHz.
+  - Under 20.7 ms läser Boot ROM ur U3 Flash (`EN25F40`) via opcodes `0x05` (RDSR), `0x9F` (RDID) och `0x0B` (Fast Read på 0x000000, 0x020000, 0x040000, 0x07F000, 0x07E200, 0x07E000).
+  - Efter 20.7 ms sätts U3 `/CS` hög och Blackfin konfigurerar SPI0 till **SPI Slave**.
+  - CC1110 tar därefter över som **SPI Master** i Mode 0 / Mode 3 med 16-bitars word framing och togglar `/SPISS` (`P1_2`).
+  - Strömförbrukning vid 3.00 V: **3.0 mA** i viloläge, **73–75 mA** under bildtagning/DSP-fas.
 
