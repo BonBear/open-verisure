@@ -150,3 +150,9 @@ Mät med multimetern om någon av de 4 CC1110-kandidatpinnarna (`P1_0`, `P0_0`, 
   - **Bussisolering:** Analys bekräftade att `P1_1` måste drivas aktivt HÖG (1) för att öppna bussomkopplaren; när `P1_1` är flytande eller 0 klampas bussen mot 0V.
   - **LED & Debug Halt:** "Detect CC" på ESP CC-Flasher sätter CC1110 i debug-halt (interna pull-ups) vilket drar `P0_7` hög och tänder den röda dioden `LD1` via `Q2`. Vid "Reset / RunCC" (`/cc_exit_dbg`) jordar firmwarens `io_init()` pinnen `P0_7` till 0V och släcker dioden.
 
+* **Steg E–H: Bussklampning, Oklampning och U3-läsning under Blackfin-drift (2026-10-30):**
+  - **Klampning:** Om Blackfin bootas med `P1_2 = 1` (/SPISS deasserted) driver dess interna SPI-slavhårdvara linjerna `SCK`, `MISO` och `MOSI` aktivt låga mot CC1110:s interna pull-ups (`0, 0, 0` -> `P1 = 0xC5`).
+  - **Oklampning:** Genom att dra `P1_2 = 0` (/SPISS aktiv låg) under reset release / spänningsrampning och därefter släppa `P1_2 = 1`, släpper Blackfin bussen till fullständigt High-Z (`P1 = 0xFD` med pull-ups).
+  - **U3 NOR Flash under Blackfin-drift:** I det oklampade läget kan CC1110 som SPI Master läsa `U3` JEDEC ID (`0x1C 0x31 0x13`) felfritt via `P1_1 = 1` även medan Blackfin körs på full effekt (71–75 mA).
+  - **U3 Deselect:** När `P1_1 = 0` tystas U3 fullständigt (`0xFF 0xFF 0xFF`), vilket lämnar Blackfin som enda slav på SPI-bussen.
+  - **Flasher-optimering:** I `build_and_flash_md_cam.py` laddas firmwarebinären nu upp *före* `cc_init` anropas, vilket minimerar tiden i debug halt och förhindrar onödig strömförbrukning och diodindikering.

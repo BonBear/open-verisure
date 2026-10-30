@@ -324,19 +324,35 @@ uint8_t spi0_master_txrx(uint8_t b) {
     return U0DBUF;
 }
 
-uint16_t spi0_transfer_word16(uint16_t out_word) {
+uint16_t spi0_transfer_dsp16(uint16_t out_word) {
     uint8_t hi, lo;
 
-    P1_1 = 0; // Assert Blackfin Chip Select / Handshake på BÅDA linjerna (Övre & Undre SS)
-    P1_2 = 0;
+    P1_2 = 1; // Deselect Flash (P1_2=1)!
+    P1_1 = 0; // Assert Blackfin /SPISS på SS Undre (P1_1=0)!
     for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
 
     hi = spi0_master_txrx((uint8_t)(out_word >> 8));
     lo = spi0_master_txrx((uint8_t)(out_word & 0xFF));
 
     for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
-    P1_1 = 1; // Deassert Chip Select
-    P1_2 = 1;
+    P1_1 = 1; // Deassert Blackfin /SPISS (P1_1=1)!
+    for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
+
+    return ((uint16_t)hi << 8) | lo;
+}
+
+uint16_t spi0_transfer_word16(uint16_t out_word) {
+    uint8_t hi, lo;
+
+    P1_1 = 1; 
+    P1_2 = 0; // Assert SS Övre (P1_2=0)
+    for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
+
+    hi = spi0_master_txrx((uint8_t)(out_word >> 8));
+    lo = spi0_master_txrx((uint8_t)(out_word & 0xFF));
+
+    for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
+    P1_2 = 1; // Deassert SS Övre (P1_2=1)
     for (uint8_t d = 0; d < 8; d++) { __asm nop __endasm; }
 
     return ((uint16_t)hi << 8) | lo;
@@ -352,19 +368,25 @@ void setup_gpio(void) {
     P1SEL = 0x00;
     P2SEL &= ~0x07;
 
-    // CC1110 SPI- och SS-pinnar hålls i tristate med pull-UP
-    P1DIR &= ~0x3E; // P1_1..P1_5 = Ingångar
-    P1INP &= ~0x3E; // Pull-UP aktiv
+    // CC1110 SPI-pinnar hålls i 3-state
+    P1DIR &= ~0x38; // P1_3..P1_5 = Ingångar
+    P1INP |= 0x38;  // 3-state utan pull-motstånd
 
-    // Alla styr- och kandidatpinnar på Port 0 och Port 2 sätts som utgångar och drivs LÅGA (0V)
-    // för att släcka eventuella pull-ups som driver transistorn Q2 till den röda dioden LD1:
-    P0DIR |= 0xCF;  // P0_0, P0_1, P0_2, P0_3, P0_6, P0_7 som utgångar
-    P0 &= ~0xCF;    // Alla drivs till 0.0 V
+    // Styrpinnar till spänningsregulatorer sätts som utgångar och drivs LÅGA (0V):
+    P0DIR |= 0x85;  // P0_0 (/RESET), P0_2 (1.2V Core), P0_7 (Aux/Q2) som utgångar
+    P0 &= ~0x85;    // Alla drivs till 0.0 V
     P2DIR |= 0x01;  // P2_0 som utgång
-    P2_0 = 0;       // Drivs till 0.0 V
+    P2_0 = 0;
 
-    P1DIR |= 0x01;  // P1_0 (3.3V Switched rail) = Utgång
+    // BMODE- och DSP-pinnar (P0_1, P0_3, P0_6) som INGÅNGAR med PULL-UP (exakt som vid verifierat JEDEC-test!):
+    P0DIR &= ~0x4A;
+    P0INP &= ~0x4A;
+    P2INP &= ~0x20;
+
+    P1DIR |= 0x07;  // P1_0 (3.3V), P1_1 (Bus Switch), P1_2 (SS) = Utgångar
     P1_0 = 0;       // 3.3V Switched rail OFF
+    P1_1 = 0;       // Bus Switch OFF (Isolerad i viloläge!)
+    P1_2 = 1;       // SS idle HIGH
 
     // Håll knappen SW3 (P1_6) och PIR (P1_7) strikt som ingångar med pull-UP:
     P1DIR &= ~0xC0;
@@ -1185,55 +1207,48 @@ static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
     P1DIR &= ~0x80;
     P1INP &= ~0x80;
 
-    // Stromsatt i korrekt sekvens med Blackfin hallen i hardvarureset
-    P0_0 = 0;      // Hall Blackfin i RESET medan spanningarna stabiliseras
+    // Kritiskt for Blackfin BMODE (Boot Mode) och NMI:
+    // P0_1, P0_3, P0_6 och P2_0 MASTE vara INGANGAR med PULL-UP sa att Blackfin
+    // laser fabrikskonfigurationen BMODE=011 (SPI Master Boot fran U3 Flash) och NMI=1!
+    P0DIR &= ~0x4A; // P0_1, P0_3, P0_6 = Ingangar
+    P0INP &= ~0x4A; // Pull-up aktiv
+    P2DIR &= ~0x01; // P2_0 = Ingang
+    P2INP &= ~0x20; // Port 0 Pull-UP aktiv
+
+    // Stromsatt i korrekt sekvens enligt Analog Devices EE-274:
+    P0_0 = 0;      // Hall Blackfin i RESET medan spanningarna stabiliseras (strikt 700 ms precis som referenskort #2!)
     P1_0 = 1;      // 1. 3.3V switched rail (Q7 - VDDEXT, SDRAM, Sensor, Flash) FORST!
-    delay_ms(30);
+    delay_ms(250);
     P0_2 = 1;      // 2. 1.2V Core rail (Q13 - VDDINT) DAREFTER!
-    delay_ms(30);
+    delay_ms(250);
     P0_7 = 1;      // 3. 3.27V aux/sensor analog rail
-    delay_ms(30);
+    delay_ms(200); // Totalt exakt 700 ms stabilisering!
 
     // Kritiskt for Blackfin Boot ROM (BMODE=011 SPI Master fran U3 Flash):
-    // Samtliga fem SPI-linjer (P1_1=SS_Undre, P1_2=SS_Ovre, P1_3=SCK, P1_4=MISO, P1_5=MOSI)
-    // MASTE hallas i akta 3-state (High-Z utan pull-motstand) sa Blackfin ostort kan klocka
-    // U3 Flash vid 2.0 MHz utan busskollision eller SPI Mode Fault (MODF)!
+    // Samtliga SPI-linjer (P1_1=SS_Undre, P1_2=SS_Ovre, P1_3=SCK, P1_4=MISO, P1_5=MOSI)
+    // MASTE vara i akta 3-state (INGANGAR utan pull-motstand) sa Blackfin ostort kan
+    // driva bussen och U3 Flash som SPI Master utan busskonflikt!
     P1SEL &= ~0x3E; // P1_1..P1_5 som GPIO
-    P1DIR &= ~0x3E; // P1_1..P1_5 som INGANGAR
-    P1INP |= 0x3E;  // Akta 3-state (inga pull-motstand)
+    P1DIR &= ~0x3E; // P1_1..P1_5 = ALLA INGANGAR (High-Z)!
+    P1INP |= 0x3E;  // Akta 3-state (inga pull-motstand)!
 
-    // Hall aven UART-pinnar (P0_4=TX, P0_5=RX) i 3-state under bootfasen
-    P0SEL &= ~0x30;
-    P0DIR &= ~0x30;
-    P0INP |= 0x30;
+    // 4. Initiera UART1 vid 57600 baud med RX-avbrott INNAN reset släpps så att ALLA bootmeddelanden fångas!
+    g_uart_rx_count = 0;
+    uart1_init_57600();
     delay_ms(20);
 
-    // STEG 2: Slapp Blackfin ur reset ostort (Blackfin kor Boot ROM fran U3 Flash vid 2.0 MHz!)
-    P0_0 = 1; // SLAPP RESET! Blackfin bootar fran U3 Flash!
+    // STEG 2: Slapp Blackfin ur reset (Blackfin bootar och startar kamera!)
+    P0_0 = 1; // SLAPP RESET! Blackfin startar!
 
-    // Lyssna och ge Blackfin 1000 ms for flash-boot (20.7 ms), initiering och exponering
-    delay_ms(1000);
+    // Ge Blackfin och sensorn 1200 ms för boot, I2C och exponering
+    delay_ms(1200);
 
-    // Initiera UART1 vid 57600 baud for kontrollplan
-    uart1_init_57600();
-    g_uart_rx_count = 0;
-
-    // Skicka triggers over UART
+    // Skicka trigger-kommandon över UART
     uart1_tx_str("SNAP\r\n");
+    uart1_tx_str("IMAGE\r\n");
     uart1_tx_byte(0x04);
     uart1_tx_byte(0x01);
-    delay_ms(20);
-
-    // Las av eventuellt svar pa triggern
-    for (uint16_t ms = 0; ms < 100; ms++) {
-        if (U1CSR & 0x04) {
-            uint8_t b = U1DBUF;
-            if (g_uart_rx_count < 32) {
-                g_uart_rx_buf[g_uart_rx_count++] = b;
-            }
-        }
-        delay_ms(1);
-    }
+    delay_ms(50);
 
     // STEG 3: Nu tar CC1110 over som SPI Master Mode 0
     spi0_master_init();
@@ -1247,17 +1262,52 @@ static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
     P1_1 = 1; // Bus switch AKTIV
     P1_2 = 1;
 
-    // 1. Skicka Snapshot Trigger 0x0004
+    // Skicka triggerstrobar på alla kanaler
+    spi0_transfer_dsp16(0x0004);
     spi0_transfer_word16(0x0004);
-    delay_ms(150); // Ge DSP och sensor tid att exponera
+    uart1_tx_str("SNAP\r\n");
 
-    // 2. Skicka Read Stream 0x0003
-    spi0_transfer_word16(0x0003);
-    delay_ms(30);
+    // Vänta och polla i upp till 2.5 sekunder medan DSP och sensor komprimerar bild
+    for (uint8_t poll = 0; poll < 25; poll++) {
+        delay_ms(100);
 
-    // 3. Läs ut 2048 bytes med strikt toggling av /SPISS mellan varje 16-bitars ord!
+        // Skicka Read Stream 0x0003
+        spi0_transfer_dsp16(0x0003);
+
+        for (i = 0; i < 64; i += 2) {
+            uint16_t w = spi0_transfer_dsp16(0x0000);
+            g_spi_rx_buf[i]     = (uint8_t)(w >> 8);
+            g_spi_rx_buf[i + 1] = (uint8_t)(w & 0xFF);
+        }
+
+        for (i = 0; i < 63; i++) {
+            if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i + 1] == 0xD8) {
+                jpeg_start = (int16_t)i;
+                break;
+            }
+        }
+        if (jpeg_start >= 0) break;
+
+        // Prova även word16 (P1_2)
+        spi0_transfer_word16(0x0003);
+        for (i = 0; i < 64; i += 2) {
+            uint16_t w = spi0_transfer_word16(0x0000);
+            g_spi_rx_buf[i]     = (uint8_t)(w >> 8);
+            g_spi_rx_buf[i + 1] = (uint8_t)(w & 0xFF);
+        }
+
+        for (i = 0; i < 63; i++) {
+            if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i + 1] == 0xD8) {
+                jpeg_start = (int16_t)i;
+                break;
+            }
+        }
+        if (jpeg_start >= 0) break;
+    }
+
+    // Läs ut hela 2048-bytesbufferten
     for (i = 0; i < 2048; i += 2) {
-        uint16_t w = spi0_transfer_word16(0x0000);
+        uint16_t w = spi0_transfer_dsp16(0x0000);
         g_spi_rx_buf[i]     = (uint8_t)(w >> 8);
         g_spi_rx_buf[i + 1] = (uint8_t)(w & 0xFF);
     }
@@ -1269,44 +1319,11 @@ static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
         }
     }
 
-    // Om inte SOI hittades, prova svep av triggers med 16-bitars framing
-    if (jpeg_start < 0) {
-        const uint16_t cmds16[6] = {0x0001, 0x0100, 0x0002, 0x0200, 0x8001, 0x55AA};
-        uint8_t c;
-
-        for (c = 0; c < 6; c++) {
-            uint16_t cmd = cmds16[c];
-
-            spi0_transfer_word16(cmd);
-            uart1_tx_byte((uint8_t)(cmd & 0xFF));
-            delay_ms(150);
-
-            for (i = 0; i < 2048; i += 2) {
-                uint16_t w = spi0_transfer_word16(0x0000);
-                g_spi_rx_buf[i]     = (uint8_t)(w >> 8);
-                g_spi_rx_buf[i + 1] = (uint8_t)(w & 0xFF);
-            }
-
-            for (i = 0; i < 2047; i++) {
-                if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i + 1] == 0xD8) {
-                    jpeg_start = (int16_t)i;
-                    break;
-                }
-            }
-            if (jpeg_start >= 0) break;
-
-            for (i = 0; i < 2048; i++) {
-                if (g_spi_rx_buf[i] != 0x00) break;
-            }
-            if (i < 2048) break; // Icke-noll respons hittad!
-        }
-    }
-
     // STEG 5: Om 16-bitars word-framing inte hittade JPEG, prova Mode 3 (CPHA=1) Burst Read!
     if (jpeg_start < 0) {
         spi0_master_config(3, 13);
-        P1_1 = 0;
-        P1_2 = 0; // Håll BÅDA SS låga kontinuerligt under burst read
+        P1_1 = 1; // Bus Switch MASTE vara HOG (P1_1=1)!
+        P1_2 = 0; // Assert Blackfin /SPISS (P1_2=0)
         for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
 
         spi0_master_txrx(0x03); // Read Stream Command
@@ -1314,8 +1331,7 @@ static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
             g_spi_rx_buf[i] = spi0_master_txrx(0x00);
         }
         for (uint8_t d = 0; d < 20; d++) { __asm nop __endasm; }
-        P1_1 = 1;
-        P1_2 = 1;
+        P1_2 = 1; // Deassert Blackfin /SPISS
 
         for (i = 0; i < 2047; i++) {
             if (g_spi_rx_buf[i] == 0xFF && g_spi_rx_buf[i + 1] == 0xD8) {
@@ -1335,7 +1351,19 @@ static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
         }
         if (total_len == 0) total_len = 2048 - (uint16_t)jpeg_start;
     } else {
-        total_len = 2048; // Strömma hela rå-bufferten så vi ser exakt vad MISO gav
+        // Om UART tog emot bytes och SPI gav 0x00, bädda in UART-texten i början!
+        if (g_uart_rx_count > 0) {
+            g_spi_rx_buf[0] = 'U';
+            g_spi_rx_buf[1] = 'A';
+            g_spi_rx_buf[2] = 'R';
+            g_spi_rx_buf[3] = 'T';
+            g_spi_rx_buf[4] = ':';
+            g_spi_rx_buf[5] = g_uart_rx_count;
+            for (i = 0; i < g_uart_rx_count && i < 58; i++) {
+                g_spi_rx_buf[6 + i] = g_uart_rx_buf[i];
+            }
+        }
+        total_len = 2048; // Strömma hela rå-bufferten så vi ser exakt vad MISO/UART gav
     }
 
     *out_len = total_len;
@@ -1352,8 +1380,13 @@ static int16_t capture_blackfin_jpeg(uint16_t *out_len, uint16_t *p_seq) {
     P1_0 = 0; // 3.3V switched rail OFF
     P1_1 = 0; // Bus switch OFF
     P1_2 = 1; // SS HIGH
-    P0 &= ~0xCF; // Släck alla eventuella LED-pinnar (P0_1, P0_3, P0_6)
+    // Slack Q2 och roda dioden LD1 i vilolage:
+    P2DIR |= 0x01;
     P2_0 = 0;
+
+    // Släck Q2 och röda dioden LD1 i viloläge (3.0 mA):
+    P0DIR |= 0xCF;
+    P0 &= ~0xCF;
 
     // Annonsera UART RX-resultat via telemetri:
     transmit((*p_seq)++, false, false, false, 0xDD, g_uart_rx_count, 
@@ -1413,9 +1446,217 @@ void main(void) {
     transmit(seq++, false, false, true, 0, 0, 0, 0);
     delay_ms(100);
 
-    // KALLSTARTSTRIGGER: Fånga bild direkt vid uppstart (exakt som Referenskort #2)!
-    capture_blackfin_jpeg(&img_len, &seq);
-    delay_ms(1000);
+    // STEG H: UNCLAMPED BLACKFIN BOOT (P0_0=1 FÖRST, SEDAN P1_2: 0 -> 1) + SALEAE CAPTURE + SPI/CS-SVEP!
+    {
+        uint16_t log_idx = 64;
+        uint8_t prev_p1;
+
+        for (uint16_t i = 0; i < 512; i++) g_spi_rx_buf[i] = 0xEE;
+
+        T1CTL = 0x0D; // Timer 1 Free-Running (4.7407 us/tick)
+        URX1IE = 0;
+        P0SEL = 0x00;
+        P1SEL = 0x00;
+        P2SEL &= ~0x07;
+        P0DIR = 0xDF;
+        P0 = 0x00;
+        P0INP = 0x00;
+        P1DIR = 0x07; // P1_0, P1_1, P1_2 utgångar; P1_3..P1_7 ingångar
+        P1 = 0x04;    // P1_2 = 1, P1_0 = 0, P1_1 = 0
+        P1INP = 0x00; // 20 kOhm pull-up AKTIV på P1_3..P1_7!
+        P2DIR |= 0x01;
+        P2_0 = 0;
+        P2INP &= ~0xE0;
+
+        // 4s pre-wait i 3.0 mA viloläge så build_and_flash_md_cam.py avslutar och Saleae hinner starta!
+        delay_ms(1500);
+
+        // =====================================================================
+        // H1: Slå på P1_0=1, P0_2=1, P0_7=1, P0_0=1 MED P1_2 = 0 (och P1_1 = 0)!
+        //     Vänta ~50 ms och släpp sedan P1_2 = 1! Logga P1-flanker!
+        // =====================================================================
+        P1_2 = 0;
+        P1_1 = 0;
+        P1_0 = 1;
+        delay_ms(10);
+        P0_2 = 1;
+        delay_ms(10);
+        P0_7 = 1;
+        P0_4 = 1;
+        P0_0 = 1;
+        delay_ms(20); // ~52 ms stabilisering med P0_0=1 och P1_2=0!
+
+        g_spi_rx_buf[0] = P1; // P1 vid P0_0=1, P1_2=0, P1_1=0
+        prev_p1 = P1;
+        g_spi_rx_buf[1] = 0;  // Flankräknare H1
+        P1_2 = 1;             // SLÄPP P1_2 = 1!
+        for (uint16_t t = 0; t < 50000; t++) {
+            uint8_t c1 = P1;
+            if (c1 != prev_p1) {
+                if (g_spi_rx_buf[1] < 255) g_spi_rx_buf[1]++;
+                if (log_idx <= 200) {
+                    uint8_t tl = T1CNTL;
+                    uint8_t th = T1CNTH;
+                    g_spi_rx_buf[log_idx++] = 0xA1;
+                    g_spi_rx_buf[log_idx++] = th;
+                    g_spi_rx_buf[log_idx++] = tl;
+                    g_spi_rx_buf[log_idx++] = c1;
+                }
+                prev_p1 = c1;
+            }
+        }
+        g_spi_rx_buf[2] = P1; // P1 efter H1 (förväntas 0xFD!)
+
+        // =====================================================================
+        // H2: Pulsa P1_2 = 0 (50 ms) med P1_1 = 1 (U3 aktiv!) och släpp P1_2 = 1!
+        // =====================================================================
+        P1_2 = 0;
+        P1_1 = 1;
+        delay_ms(20);
+        g_spi_rx_buf[3] = P1; // P1 vid P0_0=1, P1_2=0, P1_1=1
+        prev_p1 = P1;
+        g_spi_rx_buf[4] = 0;  // Flankräknare H2
+        P1_2 = 1;             // SLÄPP P1_2 = 1 med U3 öppen!
+        for (uint16_t t = 0; t < 50000; t++) {
+            uint8_t c1 = P1;
+            if (c1 != prev_p1) {
+                if (g_spi_rx_buf[4] < 255) g_spi_rx_buf[4]++;
+                if (log_idx <= 320) {
+                    uint8_t tl = T1CNTL;
+                    uint8_t th = T1CNTH;
+                    g_spi_rx_buf[log_idx++] = 0xA2;
+                    g_spi_rx_buf[log_idx++] = th;
+                    g_spi_rx_buf[log_idx++] = tl;
+                    g_spi_rx_buf[log_idx++] = c1;
+                }
+                prev_p1 = c1;
+            }
+        }
+        g_spi_rx_buf[5] = P1; // P1 efter H2
+
+        // =====================================================================
+        // H3: Pulsa P1_2 = 0 (50 ms) med P0_1=1, P0_3=1, P0_6=1, P2_0=1, P1_1=1
+        //     och släpp P1_2 = 1!
+        // =====================================================================
+        P1_2 = 0;
+        P0_1 = 1;
+        P0_3 = 1;
+        P0_6 = 1;
+        P2_0 = 1;
+        P1_1 = 1;
+        delay_ms(20);
+        g_spi_rx_buf[6] = P1;
+        prev_p1 = P1;
+        g_spi_rx_buf[7] = 0;  // Flankräknare H3
+        P1_2 = 1;             // SLÄPP P1_2 = 1!
+        for (uint16_t t = 0; t < 50000; t++) {
+            uint8_t c1 = P1;
+            if (c1 != prev_p1) {
+                if (g_spi_rx_buf[7] < 255) g_spi_rx_buf[7]++;
+                if (log_idx <= 440) {
+                    uint8_t tl = T1CNTL;
+                    uint8_t th = T1CNTH;
+                    g_spi_rx_buf[log_idx++] = 0xA3;
+                    g_spi_rx_buf[log_idx++] = th;
+                    g_spi_rx_buf[log_idx++] = tl;
+                    g_spi_rx_buf[log_idx++] = c1;
+                }
+                prev_p1 = c1;
+            }
+        }
+        g_spi_rx_buf[8] = P1; // P1 efter H3
+        g_spi_rx_buf[9] = P0; // P0 efter H3
+
+        // =====================================================================
+        // H4: MED P1 I UNCLAMPED LÄGE (0xFD) OCH P1_1 = 0 (U3 AVSTÄNGD):
+        //     Testa bit-bang SPI (med 20k pull-up på MISO P1_4!) under 6 olika CS-kombinationer:
+        //     K0: P1_2 = 1 (Alla höga)
+        //     K1: P1_2 = 0
+        //     K2: P0_1 = 0
+        //     K3: P0_3 = 0
+        //     K4: P0_6 = 0
+        //     K5: P2_0 = 0
+        // =====================================================================
+        P1_1 = 0;      // Stäng av U3!
+        P1DIR = 0x2F;  // P1_0..P1_3, P1_5 utgångar; P1_4 (MISO) ingång med 20k pull-up!
+        P1INP = 0x00;  // 20k pull-up på P1_4!
+        P1_3 = 0;      // SCK idle low
+
+        for (uint8_t k = 0; k < 6; k++) {
+            // Återställ alla CS-kandidater till HÖGA (1)
+            P1_2 = 1; P0_1 = 1; P0_3 = 1; P0_6 = 1; P2_0 = 1;
+            delay_ms(1);
+            if (k == 1) P1_2 = 0;
+            else if (k == 2) P0_1 = 0;
+            else if (k == 3) P0_3 = 0;
+            else if (k == 4) P0_6 = 0;
+            else if (k == 5) P2_0 = 0;
+            delay_ms(1);
+
+            g_spi_rx_buf[16 + k * 4 + 0] = P1; // P1 före klockning (visar MISO bit 4!)
+            {
+                const uint8_t cmds[3] = {0x04, 0x00, 0x00};
+                for (uint8_t c_idx = 0; c_idx < 3; c_idx++) {
+                    uint8_t out_b = cmds[c_idx];
+                    uint8_t in_b = 0;
+                    for (uint8_t b = 0; b < 8; b++) {
+                        P1_5 = (out_b & 0x80) ? 1 : 0;
+                        out_b <<= 1;
+                        P1_3 = 1;
+                        in_b = (in_b << 1) | (P1_4 ? 1 : 0);
+                        P1_3 = 0;
+                    }
+                    g_spi_rx_buf[16 + k * 4 + 1 + c_idx] = in_b;
+                }
+            }
+        }
+        P1_2 = 1;
+
+        // Läs även U3 @ 0x07F000 (3B) och 0x000000 (4B) efter H1..H4!
+        spi0_master_init();
+        P1_1 = 0; delay_ms(2);
+        P1_1 = 1; delay_ms(1);
+        spi0_master_txrx(0x03);
+        spi0_master_txrx(0x07);
+        spi0_master_txrx(0xF0);
+        spi0_master_txrx(0x00);
+        g_spi_rx_buf[40] = spi0_master_txrx(0x00);
+        g_spi_rx_buf[41] = spi0_master_txrx(0x00);
+        g_spi_rx_buf[42] = spi0_master_txrx(0x00);
+        g_spi_rx_buf[43] = spi0_master_txrx(0x00);
+        P1_1 = 0; delay_ms(2);
+        P1_1 = 1; delay_ms(1);
+        spi0_master_txrx(0x03);
+        spi0_master_txrx(0x00);
+        spi0_master_txrx(0x00);
+        spi0_master_txrx(0x00);
+        g_spi_rx_buf[44] = spi0_master_txrx(0x00);
+        g_spi_rx_buf[45] = spi0_master_txrx(0x00);
+        g_spi_rx_buf[46] = spi0_master_txrx(0x00);
+        g_spi_rx_buf[47] = spi0_master_txrx(0x00);
+        P1_1 = 0;
+
+        // =====================================================================
+        // Stäng av alla rails och återgå till 3.0 mA viloläge!
+        // =====================================================================
+        P1_1 = 0;
+        P1_0 = 0;
+        P1SEL &= ~0x38;
+        P1DIR &= ~0x38;
+        P1INP = 0x00;
+        P0SEL = 0x00;
+        P0DIR |= 0xCF;
+        P0 &= ~0xCF;
+        P2DIR |= 0x01;
+        P2_0 = 0;
+        delay_ms(10);
+
+        transmit(seq++, false, false, false, 0xED, g_spi_rx_buf[1], g_spi_rx_buf[4], g_spi_rx_buf[7]);
+        delay_ms(100);
+
+        stream_buffer_rf(g_spi_rx_buf, 512, &seq);
+        delay_ms(200);
+    }
 
     // Arm motion and button detection
     cur_p1 = P1;

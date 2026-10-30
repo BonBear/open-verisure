@@ -100,9 +100,20 @@ def main():
     session = requests.Session()
     session.auth = HTTPBasicAuth(CC_USER, CC_PASS)
 
-    # 1. Verify target is connected and UNLOCKED
+    # 1. Upload binary FIRST
+    with open(BIN_PATH, "rb") as f:
+        data = f.read()
+    print(f"[*] Uploading /{REMOTE_NAME} ({len(data)} bytes)...")
+    files = {"data": (f"/{REMOTE_NAME}", data, "application/octet-stream")}
+    r_up = session.post(f"{CC_HOST}/edit", files=files, timeout=20)
+    r_up.raise_for_status()
+    print("[+] Upload complete!")
+
+    last_log_id = get_latest_log_id(session, CC_HOST)
+
+    # 2. Verify target is connected and UNLOCKED
     print(f"[*] Checking target chip via {CC_HOST}/cc_init ...")
-    r_init = session.post(f"{CC_HOST}/cc_init", timeout=5)
+    r_init = session.post(f"{CC_HOST}/cc_init", timeout=15)
     init_text = r_init.text.strip()
     print(f"[+] {init_text}")
 
@@ -114,17 +125,6 @@ def main():
     if (status_val & 0x04) != 0:
         print("[-] Target has DEBUG_LOCKED=1 (this is the locked reference board!). Aborting to protect reference board.")
         sys.exit(1)
-
-    # 2. Upload binary
-    with open(BIN_PATH, "rb") as f:
-        data = f.read()
-    print(f"[*] Uploading /{REMOTE_NAME} ({len(data)} bytes)...")
-    files = {"data": (f"/{REMOTE_NAME}", data, "application/octet-stream")}
-    r_up = session.post(f"{CC_HOST}/edit", files=files, timeout=20)
-    r_up.raise_for_status()
-    print("[+] Upload complete!")
-
-    last_log_id = get_latest_log_id(session, CC_HOST)
 
     # 3. Flash and verify
     print(f"[*] Flashing /{REMOTE_NAME} to CC1110F32...")

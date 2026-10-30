@@ -62,3 +62,7 @@ Desktop.ini
 *.bak
 *.swp
 *~
+
+# --- Antigravity & Local Agent Tools ---
+.antigravity/
+.agents/*.json
