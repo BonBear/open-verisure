@@ -1433,7 +1433,7 @@ static void stream_buffer_rf(const uint8_t *buf, uint16_t len, uint16_t *p_seq) 
  * Först skannas hela U3 (2048 sidor à 256 B) och en bitmapp över sidor som inte
  * är 0xFF skickas med typ 'B'; därefter skickas de första U3_MAX_PAGES sådana sidor.
  * ============================================================================ */
-#define U3_DUMP_AT_BOOT 1
+#define U3_DUMP_AT_BOOT 0
 #define U3_SEG_LEN      256
 #define U3_PAGES        2048
 #define U3_MAX_PAGES    64
@@ -1556,6 +1556,276 @@ static void dump_u3_rf(uint16_t *p_seq) {
     P2_0 = 0;
 }
 
+/* ============================================================================
+ * Blackfin boot mode probe (BF_PROBE_AT_BOOT)
+ *
+ * BF512 host boot is either SPI0 slave (BMODE=100, HWAIT=PG0) or UART0 host
+ * (BMODE=111, autobaud '@' -> 0xBF, DLL, DLH, 0x00). The probe powers the
+ * Blackfin (VDDEXT before VDDINT), samples all CC1110 ports before and after
+ * /RESET is released to spot a HWAIT transition, then sends '@' on UART1.
+ * The report is printed on UART1 TX (115200 8N1) with the Blackfin back in
+ * reset, so a logic analyzer on P0_4/P0_5 sees both the exchange and the result.
+ * ============================================================================ */
+#define BF_PROBE_AT_BOOT 0
+#define BF_PROBE_POINTS  7
+#define BF_RF_GAP_MS     2500  // gap between RF report packets
+
+static const uint8_t __code s_probe_ms[BF_PROBE_POINTS] = {1, 1, 3, 5, 10, 30, 50}; // cumulative 1..100 ms
+
+static void uart1_tx_hex(uint8_t b) {
+    static const char __code hex[] = "0123456789ABCDEF";
+    uart1_tx_byte((uint8_t)hex[b >> 4]);
+    uart1_tx_byte((uint8_t)hex[b & 0x0F]);
+}
+
+static void bf_probe(uint16_t *p_seq) {
+    __xdata uint8_t ports[BF_PROBE_POINTS + 2][3];
+    uint8_t reply[8];
+    uint8_t n = 0;
+    uint8_t i;
+    uint16_t t;
+
+    // RF marker: the probe started (shows up in the gateway's GPIO scan fields)
+    transmit((*p_seq)++, false, false, false, 0xA0, 0, 0, 0);
+    delay_ms(BF_RF_GAP_MS);
+
+    uart1_init_115200();
+    uart1_tx_str("\r\nBFP 0");
+
+    // Blackfin in reset, every line it might drive is a tri-state input
+    P0DIR |= 0x85;   // P0_0 (/RESET), P0_2 (1.2V), P0_7 (aux) = outputs
+    P0_0 = 0;
+    P0DIR &= ~0x4A;  // P0_1, P0_3, P0_6 = inputs
+    P0INP |= 0x4A;   // tri-state
+    P1SEL &= ~0x3E;
+    P1DIR |= 0x03;   // P1_0 (3.3V), P1_1 (U3 /CS, 0 = deselected)
+    P1_1 = 0;
+    P1DIR &= ~0x38;  // P1_3..P1_5 = inputs
+    P1INP |= 0x38;   // tri-state
+    P1DIR |= 0x04;   // P1_2 held low through power-up and reset release (unclamps the bus, see memory 2026-10-30)
+    P1_2 = 0;
+    P2DIR &= ~0x01;  // P2_0 = input
+    P2INP |= 0x01;   // tri-state
+
+    // VDDEXT before VDDINT (anomaly 05000482), then sensor aux rail
+    uart1_tx_str(" 1");
+    P1_0 = 1;
+    delay_ms(10);
+    uart1_tx_str(" 2");
+    P0_2 = 1;
+    delay_ms(10);
+    uart1_tx_str(" 3");
+    P0_7 = 1;
+    delay_ms(50);
+    uart1_tx_str(" 4");
+    delay_ms(5);
+
+    ports[0][0] = P0;
+    ports[0][1] = P1;
+    ports[0][2] = P2;
+
+    P0_0 = 1; // release /RESET
+    for (i = 0; i < BF_PROBE_POINTS; i++) {
+        delay_ms(s_probe_ms[i]);
+        ports[i + 1][0] = P0;
+        ports[i + 1][1] = P1;
+        ports[i + 1][2] = P2;
+    }
+    P1_2 = 1;
+    delay_ms(20);
+    ports[BF_PROBE_POINTS + 1][0] = P0;
+    ports[BF_PROBE_POINTS + 1][1] = P1;
+    ports[BF_PROBE_POINTS + 1][2] = P2;
+    delay_ms(80);
+
+    // UART0 host boot autobaud: '@' -> 0xBF, DLL, DLH, 0x00
+    U1CSR &= ~0x04;
+    uart1_tx_byte('@');
+    for (t = 0; t < 2000 && n < sizeof(reply); t++) {
+        if (uart1_rx_ready()) {
+            reply[n++] = uart1_rx_byte();
+            t = 0;
+        }
+        for (i = 0; i < 20; i++) { __asm nop __endasm; }
+    }
+
+    // Blackfin back in reset before the report goes out on the same TX line
+    P0_0 = 0;
+    P1_2 = 0;
+    delay_ms(5);
+
+    uart1_tx_str("\r\nBFP P0/P1/P2 pre:");
+    for (i = 0; i <= BF_PROBE_POINTS; i++) {
+        if (i == 1) uart1_tx_str(" post:");
+        uart1_tx_byte(' ');
+        uart1_tx_hex(ports[i][0]);
+        uart1_tx_byte('/');
+        uart1_tx_hex(ports[i][1]);
+        uart1_tx_byte('/');
+        uart1_tx_hex(ports[i][2]);
+    }
+    uart1_tx_str(" at:");
+    for (i = 0; i < n; i++) {
+        uart1_tx_byte(' ');
+        uart1_tx_hex(reply[i]);
+    }
+    uart1_tx_str("\r\n");
+
+    // Rails off
+    P0_7 = 0;
+    P0_2 = 0;
+    P1_0 = 0;
+
+    // Same result over RF, one packet every 1.5 s:
+    // A1 n r0 r1, A2 r2 r3 r4, then C0+i P0 P1 P2 for each sample
+    // (C0 = before reset release, C8 = 20 ms after P1_2 was released high)
+    transmit((*p_seq)++, false, false, false, 0xA1, n, reply[0], reply[1]);
+    delay_ms(BF_RF_GAP_MS);
+    transmit((*p_seq)++, false, false, false, 0xA2, reply[2], reply[3], reply[4]);
+    delay_ms(BF_RF_GAP_MS);
+    for (i = 0; i <= BF_PROBE_POINTS + 1; i++) {
+        transmit((*p_seq)++, false, false, false, (uint8_t)(0xC0 + i), ports[i][0], ports[i][1], ports[i][2]);
+        delay_ms(BF_RF_GAP_MS);
+    }
+}
+
+/* ============================================================================
+ * Blackfin SPI0 slave boot test (BMODE=100)
+ *
+ * Sends the LDR stream from bf_ldr.h (MD_CAM/blackfin/spi_probe.S) with P1_2 as
+ * the Blackfin SPI0 /SS, SPI mode 1, ~211 kHz and a gap after every byte because
+ * the HWAIT (PG0) pin is not wired to a known CC1110 input. The probe program
+ * answers every byte with 0xA5, so reading MISO afterwards shows whether it runs.
+ * Variant 0 releases /RESET with P1_2 high, variant 1 with P1_2 low.
+ * ============================================================================ */
+#include "bf_ldr.h"
+
+static void bf_byte_gap(void) {
+    for (uint16_t i = 0; i < 435; i++) { __asm nop __endasm; } // ~200 us
+}
+
+static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
+    uint8_t rb[8];
+    uint8_t jedec[3];
+    uint8_t p1_ss;
+    uint16_t i;
+
+    // Blackfin in reset, bus lines tri-state, U3 deselected
+    P0DIR |= 0x85;
+    P0_0 = 0;
+    P1SEL &= ~0x3E;
+    P1DIR |= 0x07;   // P1_0 (3.3V), P1_1 (U3 /CS), P1_2 (Blackfin /SS)
+    P1_1 = 0;
+    P1_2 = variant ? 0 : 1;
+    P1DIR &= ~0x38;  // SCK, MISO, MOSI tri-state until the master is enabled
+    P1INP |= 0x38;
+
+    // VDDEXT before VDDINT, then the sensor aux rail
+    P1_0 = 1;
+    delay_ms(10);
+    P0_2 = 1;
+    delay_ms(10);
+    P0_7 = 1;
+    delay_ms(50);
+
+    // Sanity check of the CC1110 MISO path: U3 JEDEC ID in mode 0 while the Blackfin is in reset
+    spi0_master_init();
+    P1_2 = variant ? 0 : 1;
+    P1_1 = 1;        // U3 /CS low
+    spi0_master_txrx(0x9F);
+    jedec[0] = spi0_master_txrx(0x00);
+    jedec[1] = spi0_master_txrx(0x00);
+    jedec[2] = spi0_master_txrx(0x00);
+    P1_1 = 0;
+    P1SEL &= ~0x38;
+    P1DIR &= ~0x38;
+    delay_ms(1);
+
+    P0_0 = 1;        // release /RESET, boot ROM starts the SPI slave kernel
+    delay_ms(20);
+    P1_2 = 1;
+    delay_ms(5);
+
+    U0CSR = 0x00;              // USART0 in SPI master mode
+    spi0_master_config(1, 13); // mode 1, MSB first, BAUD_E=13 -> ~211 kHz
+    P1DIR |= 0x28;   // SCK, MOSI outputs
+    P1DIR &= ~0x10;  // MISO input
+    P1INP &= ~0x10;  // with pull-up
+
+    P1_2 = 0;
+    delay_ms(1);
+    for (i = 0; i < BF_LDR_LEN; i++) {
+        spi0_master_txrx(bf_ldr[i]);
+        delay_ms(2);                          // HWAIT is not wired to a known pin: go slow
+        if ((i & 0x07) == 0x07) delay_ms(20); // kernel re-asserts HWAIT after 8 header bytes
+    }
+    P1_2 = 1;
+    delay_ms(10);
+
+    P1_2 = 0;
+    delay_ms(1);
+    p1_ss = P1;      // pin levels with /SS driven low (bit 2 should read 0)
+    for (i = 0; i < sizeof(rb); i++) {
+        rb[i] = spi0_master_txrx(0x00);
+        bf_byte_gap();
+    }
+    P1_2 = 1;
+
+    // Blackfin back in reset, rails off, bus released
+    P0_0 = 0;
+    P1SEL &= ~0x38;
+    P1DIR &= ~0x38;
+    P0_7 = 0;
+    P0_2 = 0;
+    P1_0 = 0;
+
+    // RF report: E0+variant JEDEC0..2, E8+variant rb0 rb7 P1-with-/SS-low
+    transmit((*p_seq)++, false, false, false, (uint8_t)(0xE0 + variant), jedec[0], jedec[1], jedec[2]);
+    delay_ms(BF_RF_GAP_MS);
+    transmit((*p_seq)++, false, false, false, (uint8_t)(0xE8 + variant), rb[0], rb[7], p1_ss);
+    delay_ms(BF_RF_GAP_MS);
+}
+
+/* ============================================================================
+ * Blackfin JTAG hold (BF_JTAG_HOLD)
+ *
+ * Board #1 straps BMODE=011 (SPI0 master boot, /CS on PG15), so the CC1110 cannot
+ * host-boot the Blackfin. Instead it powers the Blackfin, releases /RESET and stays
+ * out of the way while code is loaded over JTAG (J5). The CC1110 bus pins are
+ * tri-stated and U3 is deselected. An RF heartbeat (B0, count) shows it is alive.
+ * ============================================================================ */
+#define BF_JTAG_HOLD 1
+#define BF_HEARTBEAT_MS 10000
+
+static void bf_jtag_hold(uint16_t *p_seq) {
+    uint8_t beat = 0;
+
+    // Blackfin in reset, bus lines tri-state, U3 deselected
+    P0DIR |= 0x85;   // P0_0 (/RESET), P0_2 (1.2V), P0_7 (aux) = outputs
+    P0_0 = 0;
+    P1SEL &= ~0x3E;
+    P1DIR |= 0x07;   // P1_0 (3.3V), P1_1 (U3 /CS), P1_2 (Blackfin /SS)
+    P1_1 = 0;
+    P1_2 = 1;
+    P1DIR &= ~0x38;  // SCK, MISO, MOSI tri-state
+    P1INP |= 0x38;
+
+    // VDDEXT before VDDINT, then the sensor aux rail
+    P1_0 = 1;
+    delay_ms(10);
+    P0_2 = 1;
+    delay_ms(10);
+    P0_7 = 1;
+    delay_ms(50);
+
+    P0_0 = 1;        // release /RESET and leave the Blackfin running for JTAG
+
+    for (;;) {
+        transmit((*p_seq)++, false, false, false, 0xB0, beat++, 0, 0);
+        delay_ms(BF_HEARTBEAT_MS);
+    }
+}
+
 void main(void) {
     uint16_t seq = 25000;
     uint8_t cur_p1;
@@ -1577,7 +1847,17 @@ void main(void) {
     transmit(seq++, false, false, true, 0, 0, 0, 0);
     delay_ms(100);
 
-#if U3_DUMP_AT_BOOT
+#if BF_JTAG_HOLD
+    seq = 44000; // above the BF_PROBE builds, for the gateway's replay filter
+    bf_jtag_hold(&seq);
+#elif BF_PROBE_AT_BOOT
+    seq = 43000; // above anything earlier test builds sent, so the gateway's replay filter accepts it
+    for (;;) {
+        bf_spi_boot_test(0, &seq);
+        bf_spi_boot_test(1, &seq);
+        delay_ms(3000);
+    }
+#elif U3_DUMP_AT_BOOT
     delay_ms(1500); // ge mottagarskriptet tid att ansluta efter kallstart
     dump_u3_rf(&seq);
 #else
