@@ -12,7 +12,7 @@
  * Tamper polarity (wall mount): batteries are ALWAYS inserted while the unit is off the
  * wall, so the boot state = SW3 released = TAMPER. SW3 pressed against the wall = CLEAR.
  *
- * Pin map: see Hardware_Pinout_och_Matprotokoll.md (J6: DD=P2_1, DC=P2_2, RESET_N).
+ * Pin map: see docs/Hardware_Pinout_och_Matprotokoll.md (J6: DD=P2_1, DC=P2_2, RESET_N).
  */
 
 #include <cc1110.h>

@@ -6,7 +6,7 @@ Detta dokument innehåller den verifierade hårdvarumappningen och mätresultate
 
 ## 🎉 Sammanfattning av Dina Mätningar (Fullträff!)
 
-Dina mätningar gav **100 % träff** och stämmer exakt överens både med mikroskopbilden på `U15` (`Photo_2026_10_22_00_00_49.jpeg`) och TI:s officiella datablad (`SWRS033`) för CC1110F32:
+Dina mätningar gav **100 % träff** och stämmer exakt överens både med mikroskopbilden på `U15` (`images/Photo_2026_10_22_00_00_49.jpeg`) och TI:s officiella datablad (`SWRS033`) för CC1110F32:
 
 1. **Programmeringsheadern är `J6`!**
    * `J6-2` = **Pin 15 (`P2_1` / `DD` - Debug Data)**
@@ -91,7 +91,7 @@ När du läser texten (*"CC1110 F32 TI..."*) rättvänd sitter **Pin 1 uppe till
 
 ## 💡 LED-kortet (`LED BOARD P/N3302042 C`)
 
-Från dina nya bilder (`led_board_front.jpg` och `led_board_back.jpg`) som ansluts i 4-poliga kontakterna `J3` och `J2`:
+Från dina nya bilder (`images/led_board_front.jpg` och `images/led_board_back.jpg`) som ansluts i 4-poliga kontakterna `J3` och `J2`:
 * **4 st Högeffekts-LEDs (Blixt/IR):** Lyser upp rummet vid fotografering i mörker.
 * **Ljussensor (uppe på fliken ovanför kameralinsen):** Mäter om rummet är mörkt eller ljust.
 * **Drivkrets på baksidan (`U2`):** `MCP6042I` (dubbel rail-to-rail operationsförstärkare) + transistorerna `Q3`/`Q6` och `1R0` (1.0 Ω) strömsensor-motstånd som utgör en konstantströmsdrivare för blixt-lysdioderna.
