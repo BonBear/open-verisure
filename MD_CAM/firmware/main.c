@@ -1796,6 +1796,9 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
  * ============================================================================ */
 #define BF_JTAG_HOLD 1
 #define BF_HEARTBEAT_MS 10000
+#define BF_RESET_DELAY_MS 15000  // rails on, /RESET held: time to start an external CLKIN
+#define BF_P0_0_TOGGLE 0        // test: toggle P0_0 every BF_TOGGLE_MS instead of releasing /RESET
+#define BF_TOGGLE_MS 8000
 
 static void bf_jtag_hold(uint16_t *p_seq) {
     uint8_t beat = 0;
@@ -1817,6 +1820,19 @@ static void bf_jtag_hold(uint16_t *p_seq) {
     delay_ms(10);
     P0_7 = 1;
     delay_ms(50);
+
+#if BF_P0_0_TOGGLE
+    // Polarity test: B10 (/RESET ball) stays 0 V while P0_0 = 1. Toggle P0_0 so the
+    // B10 level can be compared with it. RF: B2, P0_0 level, step.
+    for (beat = 0;; beat++) {
+        P0_0 = beat & 1;
+        transmit((*p_seq)++, false, false, false, 0xB2, P0_0, beat, 0);
+        delay_ms(BF_TOGGLE_MS);
+    }
+#endif
+
+    transmit((*p_seq)++, false, false, false, 0xB1, 0, 0, 0); // rails on, /RESET still low
+    delay_ms(BF_RESET_DELAY_MS);
 
     P0_0 = 1;        // release /RESET and leave the Blackfin running for JTAG
 
@@ -1848,7 +1864,7 @@ void main(void) {
     delay_ms(100);
 
 #if BF_JTAG_HOLD
-    seq = 44000; // above the BF_PROBE builds, for the gateway's replay filter
+    seq = 45000; // above the earlier BF_JTAG_HOLD builds, for the gateway's replay filter
     bf_jtag_hold(&seq);
 #elif BF_PROBE_AT_BOOT
     seq = 43000; // above anything earlier test builds sent, so the gateway's replay filter accepts it
