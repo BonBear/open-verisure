@@ -62,6 +62,8 @@ TRST måste ligga hög för att JTAG ska fungera, därav 1 kΩ mellan J5-1 och J
 | `ft232h_jtag.py` | Egen JTAG via FT232H (MPSSE). `idcode` läser kedjan. |
 | `jtag_run.py` | Avsett för ADI:s gdbproxy, som inte når FT232H på Windows 11 (se Verktyg). |
 | `spi_probe.S` | Gammalt SPI0-slavboottest (fungerar inte med BMODE 011). |
+| `ph_sniff.S` | Samplar PH0..PH3 och loggar varje ändring i L1 (enkel logikanalysator för CC1110-länken). |
+| `sw_spi_slave.S` | Mjukvaru-SPI-slav på PH0..PH3. Svarar med komplementet av förra byten. |
 
 ## CC1110-läget BF_JTAG_HOLD (`firmware/main.c`)
 
@@ -81,7 +83,8 @@ Slår på matningarna (P0_2, P0_7), sätter P0_0 och skickar RF-livstecken `B0, 
 2. ~~Koppla FT232H och läs IDCODE~~: klart 2026-11-08, `python MD_CAM/blackfin/ft232h_jtag.py idcode` ger 0x227E80CB.
 3. ~~Ladda och kör `jtag_test.S` via JTAG~~: klart 2026-11-10 med ADI:s `bfin-gdbproxy` i WSL och Windows `bfin-elf-gdb` (`target remote localhost:2000`, `load build/jtag_test.elf`, break på `_done`). Resultat: 0xB1A5C0DE och räknaren 0x100000 i 0xFF800000. Förutsättning: B10 (/RESET) måste vara hög. Efter flashning står CC1110 i debug halt och då ligger B10 låg. Skicka `/cc_exit_dbg` och vänta tills P1_0 = 0 (Q7).
 4. ~~Kartlägg CC1110 ↔ Blackfin~~: klart 2026-11-11 med `BF_PIN_WALK`/`BF_SPI_WALK` i `firmware/main.c`. CC1110 når Blackfin **SPI1** på port H via P1_2-enable: P1_4 -> PH1 (SCK), P1_3 -> PH2 (MISO), P1_5 -> PH3 (MOSI), PH0 (SSEL) = 0. UART-stiften P0_4 och P0_5 syns inte på PF, PG eller PH. P0_3 måste vara hög, och P0_0 verkar slå på Blackfins matning. Detaljer finns i `Hardware_Pinout_och_Matprotokoll.md`.
-5. Nästa: SPI1-överföring mellan CC1110 och Blackfin (vem är master, PORTH_MUX[1:0] = 01 och PORTH_FER), därefter kamerasensorn (PPI på PF).
+5. ~~SPI mellan CC1110 och Blackfin~~: tvåvägs-SPI fungerar 2026-11-11 med mjukvaru-SPI på båda sidor. Blackfin kör `sw_spi_slave.S` (PH0 SS, PH1 SCK, PH2 MISO, PH3 MOSI som GPIO) och CC1110 kör `BF_SPI1_TEST` (bit-bangad master i läge 0). Blackfins SPI1-kontroller tar inte emot något som slav (provat med PORTH_MUX 0–3, CPHA 0/1 och TIMOD 00/01). Orsaken är inte utredd, se `.agents/memory.md` (BF_SPI1_SLAVE_FAIL).
+6. Nästa: ett riktigt protokoll över länken (kommandon, längd, kontrollsumma), sedan kamerasensorn (PPI på PF).
 
 ## Kartläggningsmetod
 

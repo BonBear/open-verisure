@@ -1799,13 +1799,33 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_RESET_DELAY_MS 15000  // rails on, /RESET held: time to start an external CLKIN
 #define BF_P0_0_TOGGLE 0        // test: toggle P0_0 every BF_TOGGLE_MS instead of releasing /RESET
 #define BF_TOGGLE_MS 8000
-#define BF_PIN_WALK 1           // test: walk one CC1110 pin high at a time (CC1110 <-> Blackfin map)
+#define BF_PIN_WALK 0           // test: walk one CC1110 pin high at a time (CC1110 <-> Blackfin map)
 #define BF_WALK_MS 6000
-#define BF_SPI_WALK 1           // walk variant: SPI/UART pins under every P1_1 x P1_2 combination
+#define BF_SPI_WALK 0           // walk variant: SPI/UART pins under every P1_1 x P1_2 combination
 #define BF_SPI_WALK_MS 3000      // ~8 s real time
 #define BF_WALK_START_MS 20000   // delay_ms runs ~2.75x slow here: ~55 s
 #define BF_P1_0_RELEASE 1        // test: P1_0 drives Q7, which pulls /RESET low; drop it after the pause
 #define BF_P1_0_RELEASE_MS 10000
+
+#define BF_SPI1_TEST 1          // test: bit-banged SPI master to Blackfin SPI1 (slave, set up over JTAG)
+#define BF_SPI1_MS 2000          // ~5.5 s real time between frames
+
+// Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
+// P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
+// pulls PH0 SPI1_SSEL low. Mode 0 (CPOL 0, CPHA 0), MSB first, slow bit-bang.
+static uint8_t bf_spi1_byte(uint8_t out) {
+    uint8_t i, in = 0, d;
+    for (i = 0; i < 8; i++) {
+        P1_5 = (out & 0x80) ? 1 : 0;
+        out <<= 1;
+        for (d = 0; d < 20; d++) ;
+        P1_4 = 1;
+        in = (uint8_t)((in << 1) | P1_3);
+        for (d = 0; d < 20; d++) ;
+        P1_4 = 0;
+    }
+    return in;
+}
 
 static void bf_jtag_hold(uint16_t *p_seq) {
     uint8_t beat = 0;
@@ -1850,6 +1870,26 @@ static void bf_jtag_hold(uint16_t *p_seq) {
     delay_ms(BF_P1_0_RELEASE_MS);
     P1_0 = 0;
     transmit((*p_seq)++, false, false, false, 0xB4, 0, 0, 0);
+#endif
+
+#if BF_SPI1_TEST
+    // One byte per frame: P1_2 high (SSEL low), shift tx, P1_2 low. The Blackfin side
+    // (PORTH_MUX/FER, SPI1_CTL slave, SPI1_TDBR) is set up over JTAG during the pause.
+    // RF: B6, byte sent, byte received.
+    delay_ms(BF_WALK_START_MS);
+    P1_2 = 0;
+    P1SEL &= ~0x3C;
+    P1DIR |= 0x34;                    // P1_2 (enable/SSEL), P1_4 (SCK), P1_5 (MOSI)
+    P1DIR &= ~0x08;                   // P1_3 (Blackfin MISO) input
+    P1_4 = 0;
+    for (beat = 0;; beat++) {
+        uint8_t tx = (beat & 1) ? 0xC3 : 0x5A, rx;
+        P1_2 = 1;
+        rx = bf_spi1_byte(tx);
+        P1_2 = 0;
+        transmit((*p_seq)++, false, false, false, 0xB6, tx, rx, beat);
+        delay_ms(BF_SPI1_MS);
+    }
 #endif
 
 #if BF_PIN_WALK
@@ -1945,7 +1985,7 @@ void main(void) {
     delay_ms(100);
 
 #if BF_JTAG_HOLD
-    seq = 50500; // above the earlier BF_JTAG_HOLD builds, for the gateway's replay filter
+    seq = 51500; // above the earlier BF_JTAG_HOLD builds, for the gateway's replay filter
     bf_jtag_hold(&seq);
 #elif BF_PROBE_AT_BOOT
     seq = 43000; // above anything earlier test builds sent, so the gateway's replay filter accepts it
