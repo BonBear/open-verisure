@@ -1799,6 +1799,13 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_RESET_DELAY_MS 15000  // rails on, /RESET held: time to start an external CLKIN
 #define BF_P0_0_TOGGLE 0        // test: toggle P0_0 every BF_TOGGLE_MS instead of releasing /RESET
 #define BF_TOGGLE_MS 8000
+#define BF_PIN_WALK 1           // test: walk one CC1110 pin high at a time (CC1110 <-> Blackfin map)
+#define BF_WALK_MS 6000
+#define BF_SPI_WALK 1           // walk variant: SPI/UART pins under every P1_1 x P1_2 combination
+#define BF_SPI_WALK_MS 3000      // ~8 s real time
+#define BF_WALK_START_MS 20000   // delay_ms runs ~2.75x slow here: ~55 s
+#define BF_P1_0_RELEASE 1        // test: P1_0 drives Q7, which pulls /RESET low; drop it after the pause
+#define BF_P1_0_RELEASE_MS 10000
 
 static void bf_jtag_hold(uint16_t *p_seq) {
     uint8_t beat = 0;
@@ -1836,6 +1843,80 @@ static void bf_jtag_hold(uint16_t *p_seq) {
 
     P0_0 = 1;        // release /RESET and leave the Blackfin running for JTAG
 
+#if BF_P1_0_RELEASE
+    // Q7 (SOT-89 N-MOSFET): gate = P1_0, drain = B10 (/RESET), source = GND. P1_0 high
+    // therefore holds the Blackfin in reset. Drop it after a pause so B10 and the supply
+    // current can be compared before and after. RF: B4.
+    delay_ms(BF_P1_0_RELEASE_MS);
+    P1_0 = 0;
+    transmit((*p_seq)++, false, false, false, 0xB4, 0, 0, 0);
+#endif
+
+#if BF_PIN_WALK
+    // CC1110 <-> Blackfin map: /RESET released, bus switch on (P1_1), then drive one
+    // candidate pin high at a time (others low) while the Blackfin ports are read over
+    // JTAG as inputs. P1_6 (tamper, switch to VBAT) and P1_7 (PIR output) are never driven.
+    // RF: B3, step (0 = all low, 1..10 = candidate), 0.
+    // Runs after the P1_0 release (Q7 off, /RESET high). The pause lets the Blackfin
+    // ports be set to inputs over JTAG before the first pin is driven.
+    delay_ms(BF_WALK_START_MS);
+    // P0_3 stays high: driving it low drops ~20 mA and the Blackfin JTAG goes dead
+    // (TDO stuck at 1), so it looks like an enable the Blackfin needs.
+    P1_1 = 1;
+    P0_3 = 1;
+    P0SEL &= ~0x7A;  P0DIR |= 0x7A;   // P0_1, P0_3, P0_4, P0_5, P0_6
+    P1SEL &= ~0x3C;  P1DIR |= 0x3C;   // P1_2..P1_5
+    P2SEL &= ~0x01;  P2DIR |= 0x01;   // P2_0
+#if BF_SPI_WALK
+    // SPI/UART pass: every P1_1 (bus switch?) x P1_2 (/SPISS?) combination, then
+    // walk P1_3 (SCK), P1_4 (MISO), P1_5 (MOSI), P0_4 (TX), P0_5 (RX) one at a time.
+    // RF: B5, step (0 = all low, 1..5 = pin), combo (bit0 = P1_1, bit1 = P1_2).
+    for (;;) {
+        uint8_t combo;
+        for (combo = 0; combo < 4; combo++) {
+            P1_1 = combo & 1;
+            P1_2 = (combo >> 1) & 1;
+            for (beat = 0; beat <= 5; beat++) {
+                P0 &= ~0x72;   // all candidates low except P0_3
+                P1 &= ~0x38;
+                P2 &= ~0x01;
+                switch (beat) {
+                case 1: P1_3 = 1; break;
+                case 2: P1_4 = 1; break;
+                case 3: P1_5 = 1; break;
+                case 4: P0_4 = 1; break;
+                case 5: P0_5 = 1; break;
+                }
+                transmit((*p_seq)++, false, false, false, 0xB5, beat, combo, 0);
+                delay_ms(BF_SPI_WALK_MS);
+            }
+        }
+    }
+#else
+    for (;;) {
+        for (beat = 0; beat <= 10; beat++) {
+            P0 &= ~0x72;   // all candidates low except P0_3
+            P1 &= ~0x3C;
+            P2 &= ~0x01;
+            switch (beat) {
+            case 1: P0_1 = 1; break;
+            case 2: break;            // P0_3: held high, see above
+            case 3: P0_4 = 1; break;
+            case 4: P0_5 = 1; break;
+            case 5: P0_6 = 1; break;
+            case 6: P1_2 = 1; break;
+            case 7: P1_3 = 1; break;
+            case 8: P1_4 = 1; break;
+            case 9: P1_5 = 1; break;
+            case 10: P2_0 = 1; break;
+            }
+            transmit((*p_seq)++, false, false, false, 0xB3, beat, 0, 0);
+            delay_ms(BF_WALK_MS);
+        }
+    }
+#endif
+#endif
+
     for (;;) {
         transmit((*p_seq)++, false, false, false, 0xB0, beat++, 0, 0);
         delay_ms(BF_HEARTBEAT_MS);
@@ -1864,7 +1945,7 @@ void main(void) {
     delay_ms(100);
 
 #if BF_JTAG_HOLD
-    seq = 45000; // above the earlier BF_JTAG_HOLD builds, for the gateway's replay filter
+    seq = 50500; // above the earlier BF_JTAG_HOLD builds, for the gateway's replay filter
     bf_jtag_hold(&seq);
 #elif BF_PROBE_AT_BOOT
     seq = 43000; // above anything earlier test builds sent, so the gateway's replay filter accepts it

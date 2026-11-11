@@ -27,6 +27,7 @@ Dina mätningar gav **100 % träff** och stämmer exakt överens både med mikro
    * Alla spänningsregulatorer för kameran, Blackfin DSP, SDRAM och blixt-LED-kortet (`3.3V`, `2.5V`, `1.8V`, `1.2V`) är **helt avstängda (0 V)** tills CC1110 aktivt väljer att slå på dem! Att de inte slogs på när du viftade beror på att Verisures originalfirmware i CC1110 är "avlarmad" och ignorerar PIR-larm tills larmcentralen begär bild.
 5. **SPI- och UART-bussarna mellan CC1110 och Blackfin DSP är helt identifierade:**
    * **SPI (`USART0 Alt. 2`):** `SCK` = Pin 36 (`P1_3`), `MISO` = Pin 35 (`P1_4`), `MOSI` = Pin 34 (`P1_5`), `SS` (övre) = Pin 1 (`P1_2`), `SS` (undre) = Pin 3 (`P1_1`).
+   * **Mot Blackfin (verifierat 2026-11-11):** CC-stiften når Blackfin **SPI1** på port H när P1_2 = 1: P1_4 -> PH1 (SPI1_SCK), P1_3 -> PH2 (SPI1_MISO), P1_5 -> PH3 (SPI1_MOSI), PH0 (SPI1_SSEL) = 0. SCK och MISO är alltså omvända jämfört med CC-etiketterna ovan. PH-funktionerna är tagna från Linux-kärnans BF51x-portmux och inte kontrollerade mot ADI:s datablad.
    * **UART (`USART1 Alt. 1`):** `TX` = Pin 9 (`P0_4`), `RX` = Pin 11 (`P0_5`).
 
 ---
@@ -60,17 +61,17 @@ När du läser texten (*"CC1110 F32 TI..."*) rättvänd sitter **Pin 1 uppe till
 
 | CC1110 Pin # | Port / Namn | Uppmätt Anslutning på Kretskortet | Funktion |
 | :---: | :---: | :--- | :--- |
-| **Pin 1** | **`P1_2`** | Testpad **`SS` (Övre)** | SPI Slave Select 1 (`/SPISS`) till Blackfin DSP (hålls HÖG under boot för att undvika Mode Fault) |
+| **Pin 1** | **`P1_2`** | Testpad **`SS` (Övre)** | **Enable för SPI-vägen till Blackfin SPI1**: 1 = PH1..PH3 följer P1_4/P1_3/P1_5 och PH0 (SPI1_SSEL) = 0; 0 = PH0..PH3 läses som 1 oavsett CC (verifierat 2026-11-11) |
 | **Pin 2** | `DVDD` | Kondensator `C77` | Matningsavkoppling |
-| **Pin 3** | **`P1_1`** | Testpad **`SS` (Undre)** | **Bus Switch Enable** (Aktiv HÖG; hålls HÖG för att öppna SPI-bussen mot DSP/Flash) |
-| **Pin 4** | **`P1_0`** | Transistor **`Q7`** | **Power-Enable för 3.3V switched rail** (Kamera/SDRAM) |
-| **Pin 5** | **`P0_0`** | Blackfin Reset-krets | **Blackfin Hardware Reset (`/RESET`)** (0=Reset 20mA, 1=Kör 92mA) |
-| **Pin 6** | `P0_1` | *(Ej ansluten)* | Oanvänd |
+| **Pin 3** | **`P1_1`** | Testpad **`SS` (Undre)** | Antagen bussomkopplar-enable. Påverkar **inte** Blackfin PH0..PH3 i något läge (verifierat 2026-11-11); roll mot U3 ej utredd |
+| **Pin 4** | **`P1_0`** | Gate på **`Q7`** (N-MOSFET, SOT-89 "N06") | **Blackfin /RESET-hållare**: 1 = Q7 leder och drar B10 (/RESET) låg, 0 = Blackfin släpps (verifierat 2026-11-11) |
+| **Pin 5** | **`P0_0`** | Blackfin Reset-krets | Troligen **matnings-enable för Blackfin**: strömmen går från 20 till 92 mA när P0_0 sätts (/RESET styrs av P1_0 via Q7) |
+| **Pin 6** | `P0_1` | *(Okänd last)* | Hög ger +7 mA; syns inte på Blackfin PF/PG/PH (verifierat 2026-11-11) |
 | **Pin 7** | **`P0_2`** | Transistor **`Q13`** | **Power-Enable för 1.2V Core rail** (Blackfin VDDINT) |
-| **Pin 8** | `P0_3` | *(Ej ansluten)* | Oanvänd |
-| **Pin 9** | **`P0_4`** | Testpad **`TX`** | UART TX (`USART1 Alt. 1`) till Blackfin DSP |
+| **Pin 8** | **`P0_3`** | *(Okänd last)* | **Måste vara hög**: låg ger -20 mA (76 i stället för 95-97 mA) och Blackfin tycks stängas av (verifierat 2026-11-11) |
+| **Pin 9** | **`P0_4`** | Testpad **`TX`** | UART TX (`USART1 Alt. 1`). Syns **inte** på Blackfin PF/PG/PH (verifierat 2026-11-11) |
 | **Pin 10** | `DVDD` | Kondensator `C91` (+ 1 kΩ mot `J6-1`) | Digital 3V-matning |
-| **Pin 11** | **`P0_5`** | Testpad **`RX`** | UART RX (`USART1 Alt. 1`) från Blackfin DSP |
+| **Pin 11** | **`P0_5`** | Testpad **`RX`** | UART RX (`USART1 Alt. 1`). Syns **inte** på Blackfin PF/PG/PH (verifierat 2026-11-11) |
 | **Pin 12** | **`P0_6`** | *(Ej ansluten / Oanvänd)* | Oanvänd |
 | **Pin 13** | **`P0_7`** | Kontakt **`J2 Pin 4`** / DSP rail | **Power-Enable / Switched Auxiliary rail** (6 kΩ till J2-4) |
 | **Pin 14** | `P2_0` | *(Ej ansluten)* | Oanvänd |
@@ -83,9 +84,9 @@ När du läser texten (*"CC1110 F32 TI..."*) rättvänd sitter **Pin 1 uppe till
 | **Pin 31** | **`RESET_N`** | **`J6-4`** & **`SW1`** | **Hardware Reset** för CC-Flasher |
 | **Pin 32** | **`P1_7`** | Testpad **`ALARM`** (från PIR) | **PIR Rörelselarm** (`3.08V` = Vila, `0V` = Rörelse) |
 | **Pin 33** | **`P1_6`** | **`SW3`** (Fjäderbrytare baksida) | **Sabotagebrytare (Tamper)** – sluter mot `VBAT+` (0V = Tamper, 3V = Säkrad) |
-| **Pin 34** | **`P1_5`** | Testpad **`MOSI`** | Delad SPI MOSI (CC1110 -> Blackfin & U3 Pin 5) |
-| **Pin 35** | **`P1_4`** | Testpad **`MISO`** | Delad SPI MISO (Blackfin & U3 Pin 2 -> CC1110) |
-| **Pin 36** | **`P1_3`** | Testpad **`SCK`** | Delad SPI SCK (CC1110 -> Blackfin & U3 Pin 6) |
+| **Pin 34** | **`P1_5`** | Testpad **`MOSI`** | SPI MOSI. Mot Blackfin: **PH3 = SPI1_MOSI** när P1_2 = 1 (verifierat 2026-11-11). U3 Pin 5 |
+| **Pin 35** | **`P1_4`** | Testpad **`MISO`** | Mot Blackfin: **PH1 = SPI1_SCK** när P1_2 = 1 (verifierat 2026-11-11), alltså klocklinjen mot Blackfin. U3 Pin 2 |
+| **Pin 36** | **`P1_3`** | Testpad **`SCK`** | Mot Blackfin: **PH2 = SPI1_MISO** när P1_2 = 1 (verifierat 2026-11-11). U3 Pin 6 |
 
 ---
 

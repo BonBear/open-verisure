@@ -65,7 +65,9 @@ TRST måste ligga hög för att JTAG ska fungera, därav 1 kΩ mellan J5-1 och J
 
 ## CC1110-läget BF_JTAG_HOLD (`firmware/main.c`)
 
-Slår på 3,3 V (P1_0), 1,2 V (P0_2) och aux (P0_7) i den ordningen, släpper Blackfin /RESET (P0_0) och låter SPI-linjerna vara tri-state med U3 bortkopplad. Skickar RF-livstecken `B0, räknare` var 10:e sekund med seq från 44000. Bekräftat på Kort #1: 94 mA vid 3,0 V.
+Slår på matningarna (P0_2, P0_7), sätter P0_0 och skickar RF-livstecken `B0, räknare` var 10:e sekund (seq från 48000). Med `BF_P1_0_RELEASE` släpps P1_0 efter 10 s, och då kommer Blackfin ur reset.
+
+**/RESET styrs av Q7 (verifierat 2026-11-11):** Q7 (SOT-89, märkt "N06") är en N-MOSFET. Gate = P1_0 (CC1110 pin 4), drain = B10 /RESET, source = GND. B10 har 10 kΩ pull-up. P1_0 = 1 håller Blackfin i reset och P1_0 = 0 släpper den. När CC1110 står i debug halt hamnar P1_0 hög via pull-up, så då är Blackfin också i reset. Bilder: `images/q7_reset_area.jpg` och `images/q7_reset_area_annotated.png`.
 
 ## Fallgropar
 
@@ -77,5 +79,10 @@ Slår på 3,3 V (P1_0), 1,2 V (P0_2) och aux (P0_7) i den ordningen, släpper Bl
 
 1. Löd 1 kΩ mellan J5-1 och J5-2 och kontrollera att J5-2 visar cirka 3,2 V med Blackfin påslagen.
 2. ~~Koppla FT232H och läs IDCODE~~: klart 2026-11-08, `python MD_CAM/blackfin/ft232h_jtag.py idcode` ger 0x227E80CB.
-3. ~~Ladda och kör `jtag_test.S` via JTAG~~: klart 2026-11-10 med ADI:s `bfin-gdbproxy` i WSL och Windows `bfin-elf-gdb` (`target remote localhost:2000`, `load build/jtag_test.elf`, break på `_done`). Resultat: 0xB1A5C0DE och räknaren 0x100000 i 0xFF800000. Förutsättning: B10 (/RESET) måste vara hög. Efter flashning står CC1110 i debug halt och då ligger B10 låg, så skicka `/cc_exit_dbg` till flashern först.
-4. Därefter: kartlägg CC1110 ↔ Blackfin-förbindelserna (SPI1, UART1, PG15), sedan kamerasensor (PPI) och protokoll mot CC1110.
+3. ~~Ladda och kör `jtag_test.S` via JTAG~~: klart 2026-11-10 med ADI:s `bfin-gdbproxy` i WSL och Windows `bfin-elf-gdb` (`target remote localhost:2000`, `load build/jtag_test.elf`, break på `_done`). Resultat: 0xB1A5C0DE och räknaren 0x100000 i 0xFF800000. Förutsättning: B10 (/RESET) måste vara hög. Efter flashning står CC1110 i debug halt och då ligger B10 låg. Skicka `/cc_exit_dbg` och vänta tills P1_0 = 0 (Q7).
+4. ~~Kartlägg CC1110 ↔ Blackfin~~: klart 2026-11-11 med `BF_PIN_WALK`/`BF_SPI_WALK` i `firmware/main.c`. CC1110 når Blackfin **SPI1** på port H via P1_2-enable: P1_4 -> PH1 (SCK), P1_3 -> PH2 (MISO), P1_5 -> PH3 (MOSI), PH0 (SSEL) = 0. UART-stiften P0_4 och P0_5 syns inte på PF, PG eller PH. P0_3 måste vara hög, och P0_0 verkar slå på Blackfins matning. Detaljer finns i `Hardware_Pinout_och_Matprotokoll.md`.
+5. Nästa: SPI1-överföring mellan CC1110 och Blackfin (vem är master, PORTH_MUX[1:0] = 01 och PORTH_FER), därefter kamerasensorn (PPI på PF).
+
+## Kartläggningsmetod
+
+Blackfin körs ur reset med `jtag_test` laddat (driver inga stift). Via gdbproxy sätts PORTF/G/H_FER = 0, DIR = 0 och INEN = 0xFFFF. CC1110 lägger ett stift i taget högt, och portarna läses via JTAG (scratchpad-skriptet `pinwalk3.py`). Om IDCODE blir 0xFFFFFFFF eller skräp sitter en JTAG-sladd löst, oftast TDO (AD2).
