@@ -7,6 +7,7 @@
  * 0xFF800024  first register (8-bit pointer)
  * 0xFF800028  bytes to read per register (1..8)
  * 0xFF80002C  number of consecutive registers to read (1..32)
+ * 0xFF800030  pointer width: 2 = 16-bit register address (high byte first), else 8-bit
  * Results:
  * 0xFF800000  magic 0x7171EAD0 when done
  * 0xFF800004  status of the last transfer (0 ok, 1 pointer NAK, 2 read error, 3 timeout)
@@ -41,9 +42,22 @@ _start:
     CALL .Lprep;
     R0 = [P0 + 0x20];
     W[P1 + 0x1C] = R0;          /* MASTER_ADDR */
+    R0 = [P0 + 0x30];
+    CC = R0 == 2;
+    IF !CC JUMP .Lp8;
+    R0 = R5 >> 8;
+    W[P1 + 0x80] = R0;          /* XMT_DATA8 = register high byte */
+    R0 = 0xFF (Z);
+    R0 = R5 & R0;
+    W[P1 + 0x80] = R0;          /* register low byte */
+    SSYNC;
+    R0 = 0x0081 (Z);            /* MEN | DCNT 2, transmit, stop at end */
+    JUMP .Lpgo;
+.Lp8:
     W[P1 + 0x80] = R5;          /* XMT_DATA8 = register (MMRs need 16/32-bit access) */
     SSYNC;
     R0 = 0x0041 (Z);            /* MEN | DCNT 1, transmit, stop at end */
+.Lpgo:
     W[P1 + 0x14] = R0;
     SSYNC;
     CALL .Lwait;
