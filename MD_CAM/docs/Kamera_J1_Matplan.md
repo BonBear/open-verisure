@@ -96,3 +96,11 @@ Kolumnen "Vanlig funktion" gäller om modulen följer den vanliga 24-poliga Omni
 - RF-paket av typ 0x81: bitnummer + 8 pixlar. Gatewayen placerar bitarna efter nummer, så ett förlorat paket bara blir en lucka som fylls nästa varv.
 - ~150 byte/s, ett varv (320x240, 9600 bitar) ~8,5 min. Hämta med `python MD_CAM/blackfin/image_collect.py`.
 - Stäng gdbproxy direkt efter laddning av `snap_link`, annars kan gdbproxy återställa Blackfin vid JTAG-glapp.
+
+## Nästa steg (läge 2026-11-13)
+
+1. **Starta om kedjan:** PSU 3,0 V, CC1110 kör `BF_IMG_LINK`. Ladda `snap_link.elf` via JTAG efter reset-släppet (~70 s efter start, före ~125 s), stäng sedan gdbproxy. Hämta bilden med `python MD_CAM/blackfin/image_collect.py`.
+2. **Fristående Blackfin:** programmet laddas fortfarande via JTAG. Säkerhetskopiera originalprogrammet ur Blackfins SPI0-boot-flash (troligen U7, PG11..PG15, CS PG15) innan något skrivs dit.
+3. **Bättre bild:** full horisontell upplösning (utan SKIP_EN ~670 sampel per rad), exponering och sensorinställningar via TWI (OV7955, adress 0x40, 16-bitars register).
+4. **Snabbare/säkrare RF:** mät förlusten, låt CC1110 bara skicka om saknade bitar (gatewayen vet vilka), eventuellt komprimering.
+5. **Säkerhet:** gatewayens `/api/status` visar huvudnyckeln i klartext. Det ska åtgärdas separat.
