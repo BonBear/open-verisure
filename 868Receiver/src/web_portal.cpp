@@ -1,4 +1,5 @@
 #include "web_portal.h"
+#include "image_receiver.h"
 #include "config_manager.h"
 #include "sensor_registry.h"
 #include "hardware_pins.h"
@@ -573,6 +574,17 @@ static const uint8_t S_MINIMAL_JPEG[] = {
     0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x37, 0xFF, 0xD9
 };
 
+static void handleApiCameraBmp() {
+    size_t len = 0;
+    const uint8_t* bmp = imageReceiverBmp(&len);
+    if (!bmp) {
+        s_server.send(404, "text/plain", "no picture yet");
+        return;
+    }
+    s_server.sendHeader("X-Tiles", String(imageReceiverTilesHave()) + "/" + String(RAW_TILES));
+    s_server.send_P(200, "image/bmp", (const char*)bmp, len);
+}
+
 static void handleApiCameraTest() {
     String devId = "2NCEKS3T";
     if (s_server.hasArg("id")) {
@@ -629,6 +641,7 @@ void webPortalInit() {
     s_server.on("/api/save", HTTP_POST, handleApiSave);
     s_server.on("/api/reboot", HTTP_POST, handleApiReboot);
     s_server.on("/api/reset", HTTP_POST, handleApiReset);
+    s_server.on("/api/camera.bmp", HTTP_GET, handleApiCameraBmp);
     s_server.on("/api/camera_test", HTTP_GET, handleApiCameraTest);
     s_server.on("/api/camera_test", HTTP_POST, handleApiCameraTest);
 

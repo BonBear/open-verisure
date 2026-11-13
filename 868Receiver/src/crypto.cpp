@@ -126,6 +126,21 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
         return false; // Handled directly as image stream, not a telemetry packet
     }
 
+    // 3c. Raw grayscale camera tile (plain[2] == 0x81): plain[3..4] = tile number,
+    // plain[6..13] = 8 pixels, plain[14..15] == 'V', 'S'. See imageReceiverProcessTile().
+    if (plain[2] == 0x81 && plain[14] == 'V' && plain[15] == 'S') {
+        uint16_t seq = ((uint16_t)plain[0] << 8) | plain[1];
+        uint16_t tile = ((uint16_t)plain[3] << 8) | plain[4];
+        DeviceSession* sess = getOrCreateSession(devId);
+        if (sess) {
+            sess->lastSeq = seq;
+            sess->hasLastSeq = true;
+            sess->lastSeen = millis();
+        }
+        imageReceiverProcessTile(devId, tile, &plain[6]);
+        return false; // camera data, not telemetry
+    }
+
     // 4. Authenticate Magic Bytes (plain[10..11] == 'V', 'S')
     // If the key is wrong or data was corrupted, AES diffusion produces random bytes
     if (plain[10] != 'V' || plain[11] != 'S') {

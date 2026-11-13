@@ -37,6 +37,7 @@
 #include "web_portal.h"
 #include "serial_cli.h"
 #include "mqtt_manager.h"
+#include "image_receiver.h"
 #include <WiFi.h>
 
 #include "hardware_pins.h"
@@ -237,6 +238,7 @@ void loop() {
     webPortalLoop(cachedRssi, cachedMarc, packetCount);
     serialCliLoop();
     mqttLoop(cachedRssi, cachedMarc, packetCount);
+    imageReceiverLoop();
 
     // 2. Process Radio Receiver FIFO
     if (!s_radioOnline) {

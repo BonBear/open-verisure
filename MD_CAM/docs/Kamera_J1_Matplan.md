@@ -87,3 +87,12 @@ Kolumnen "Vanlig funktion" gäller om modulen följer den vanliga 24-poliga Omni
 - PPI-inställningen är kopierad från originalprogrammet (disassemblerat ur L1): PPI_CONTROL 0x3E0D, PPI_COUNT 1279, PORTG_FER 0x0460, PORTG_MUX 0x0480. VSYNC väntas in i mjukvara på PG7.
 - Strömmen efter VSYNC är sammanhängande, med radlängd 335 sparade sampel. Pixel = (sampel >> 2) & 0xFF.
 - DMA: källan måste slås på före målet vid MDMA. DMA_DONE kräver DI_EN.
+
+## Bild via RF till gatewayen (2026-11-13)
+
+![320x240 via RF](images/camera_rf_320x240.png)
+
+- Kedja: kamera -> Blackfin (`blackfin/snap_link.c`, laddad via JTAG) -> mjukvaru-SPI -> CC1110 (`BF_IMG_LINK`) -> RF 868 MHz -> gateway -> `/api/camera.bmp` och MQTT.
+- RF-paket av typ 0x81: bitnummer + 8 pixlar. Gatewayen placerar bitarna efter nummer, så ett förlorat paket bara blir en lucka som fylls nästa varv.
+- ~150 byte/s, ett varv (320x240, 9600 bitar) ~8,5 min. Hämta med `python MD_CAM/blackfin/image_collect.py`.
+- Stäng gdbproxy direkt efter laddning av `snap_link`, annars kan gdbproxy återställa Blackfin vid JTAG-glapp.

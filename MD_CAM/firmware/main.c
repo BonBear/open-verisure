@@ -990,6 +990,30 @@ static void transmit_image_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk
     radio_send_dma();
 }
 
+// Raw grayscale camera tile (gateway packet type 0x81): tile number in plain[3..4] and
+// 8 pixels in plain[6..13]; the gateway places it by number (imageReceiverProcessTile).
+static void transmit_raw_tile(uint16_t seq, uint16_t tile, const uint8_t *pix8) {
+    uint8_t i;
+
+    aes_load_key(DEVICE_AES_KEY);
+    for (i = 0; i < 8; i++) {
+        tx_buf[i] = (uint8_t)DEVICE_ID[i];
+    }
+    s_img_plain[0] = (uint8_t)(seq >> 8);
+    s_img_plain[1] = (uint8_t)(seq & 0xFF);
+    s_img_plain[2] = 0x81;
+    s_img_plain[3] = (uint8_t)(tile >> 8);
+    s_img_plain[4] = (uint8_t)(tile & 0xFF);
+    s_img_plain[5] = 0;
+    for (i = 0; i < 8; i++) {
+        s_img_plain[6 + i] = pix8[i];
+    }
+    s_img_plain[14] = 'V';
+    s_img_plain[15] = 'S';
+    aes_encrypt_block(s_img_plain, &tx_buf[8]);
+    radio_send_dma();
+}
+
 
 
 static uint32_t scan_flash_for_jpeg(uint32_t *out_jpeg_len) {
@@ -1807,8 +1831,10 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_P1_0_RELEASE 1        // test: P1_0 drives Q7, which pulls /RESET low; drop it after the pause
 #define BF_P1_0_RELEASE_MS 10000
 
-#define BF_SPI1_TEST 1          // test: bit-banged SPI master to Blackfin SPI1 (slave, set up over JTAG)
+#define BF_SPI1_TEST 0          // test: bit-banged SPI master to Blackfin SPI1 (slave, set up over JTAG)
 #define BF_SPI1_MS 2000          // ~5.5 s real time between frames
+#define BF_IMG_LINK 1           // pull the camera picture from the Blackfin (snap_link.c) and send it over RF
+#define BF_IMG_BLOCK 8           // pixels per RF tile (packet type 0x81)
 
 // Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
 // P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
@@ -1826,6 +1852,21 @@ static uint8_t bf_spi1_byte(uint8_t out) {
     }
     return in;
 }
+
+#if BF_IMG_LINK
+// One framed byte to the Blackfin software SPI slave (snap_link.c). The pause after the
+// byte gives the Blackfin time to prepare its next answer before the next select.
+static uint8_t bf_link_xfer(uint8_t tx) {
+    uint8_t rx, d;
+    P1_2 = 1;
+    rx = bf_spi1_byte(tx);
+    P1_2 = 0;
+    for (d = 0; d < 40; d++) ;
+    return rx;
+}
+
+static uint8_t s_img_blk[BF_IMG_BLOCK];
+#endif
 
 static void bf_jtag_hold(uint16_t *p_seq) {
     uint8_t beat = 0;
@@ -1870,6 +1911,43 @@ static void bf_jtag_hold(uint16_t *p_seq) {
     delay_ms(BF_P1_0_RELEASE_MS);
     P1_0 = 0;
     transmit((*p_seq)++, false, false, false, 0xB4, 0, 0, 0);
+#endif
+
+#if BF_IMG_LINK
+    // Camera picture over RF: the Blackfin runs snap_link.c (loaded over JTAG during the
+    // pause). Per quarter q: 0xC0|q grabs 320x60, 0xB0 asks the status (answered 0x5A in
+    // the next transfer), 0xA0 resets the read pointer, then 0x00 reads byte after byte.
+    // Each RF packet is a raw tile (type 0x81, 8 pixels, tile number); the gateway places
+    // tiles by number and serves the picture as BMP. The picture repeats to fill gaps.
+    // RF on a failed status: B7, q, status.
+    delay_ms(BF_WALK_START_MS);
+    P1_2 = 0;
+    P1SEL &= ~0x3C;
+    P1DIR |= 0x34;                    // P1_2 (select), P1_4 (SCK), P1_5 (MOSI)
+    P1DIR &= ~0x08;                   // P1_3 (MISO) input
+    P1_4 = 0;
+    for (;;) {
+        uint8_t q, st, i;
+        uint16_t off;
+        for (q = 0; q < 4; q++) {
+            bf_link_xfer(0xC0 | q);
+            delay_ms(500);            // capture takes ~0.3 s
+            bf_link_xfer(0xB0);
+            st = bf_link_xfer(0xA0);  // answer to 0xB0
+            if (st != 0x5A) {
+                transmit((*p_seq)++, false, false, false, 0xB7, q, st, 0);
+                delay_ms(2000);
+                continue;
+            }
+            for (off = 0; off < 320u * 60u; off += 8) {
+                // One raw tile per RF packet: 8 pixels, tile n = q * 2400 + off / 8.
+                uint16_t n = (uint16_t)q * 2400u + off / 8u;
+                for (i = 0; i < 8; i++)
+                    s_img_blk[i] = bf_link_xfer(0x00);
+                transmit_raw_tile((*p_seq)++, n, s_img_blk);
+            }
+        }
+    }
 #endif
 
 #if BF_SPI1_TEST
@@ -1985,7 +2063,7 @@ void main(void) {
     delay_ms(100);
 
 #if BF_JTAG_HOLD
-    seq = 51500; // above the earlier BF_JTAG_HOLD builds, for the gateway's replay filter
+    seq = 2000; // above the earlier BF_JTAG_HOLD builds, for the gateway's replay filter
     bf_jtag_hold(&seq);
 #elif BF_PROBE_AT_BOOT
     seq = 43000; // above anything earlier test builds sent, so the gateway's replay filter accepts it

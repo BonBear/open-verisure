@@ -1,5 +1,6 @@
 /*
- * ppi_snap.c - Grab one 160x120 grayscale picture from the OV7955 camera via PPI + DMA0.
+ * ppi_snap.c - Grab a grayscale picture from the OV7955 camera via PPI + DMA0.
+ * Output: one quarter (320 x 60) of a 320 x 240 image per run, chosen by QUARTER.
  *
  * Camera bus (verified 2026-11-12): PCLK PG5, HREF PG6, VSYNC PG7 (PORTG_MUX function 2,
  * as the factory firmware uses), data D2..D9 on PF2..PF9 (PF0/PF1 unused, read as 1).
@@ -18,7 +19,8 @@
  * 0xFF800000  magic 0x5A9C0DE5 when done
  * 0xFF800004  bands done
  * 0xFF800008  band that timed out + 1 (0 = none)
- * 0xFF800400  160 x 120 bytes, row after row
+ * 0xFF80000C  QUARTER to grab (0..3), set over JTAG before running (kept)
+ * 0xFF800400  320 x 60 bytes, row after row (rows 60*QUARTER .. +59 of 240)
  */
 #define R16(a) (*(volatile unsigned short *)(a))
 #define R32(a) (*(volatile unsigned long *)(a))
@@ -47,9 +49,9 @@
 #define LINE_SAMP   640             /* stored per line (1280 counted, SKIP_EN keeps every other) */
 #define BAND_SAMP   (BAND_LINES * LINE_SAMP)
 #define BANDS       21
-#define OUT_H       120
+#define OUT_H       60
 #define LINE_STRIDE 335
-#define OUT_W       160
+#define OUT_W       320
 
 __asm__(
     ".text\n"
@@ -66,7 +68,8 @@ int main(void)
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
     volatile unsigned short *buf = (volatile unsigned short *)0xFF900000;
     volatile unsigned char *out = (volatile unsigned char *)0xFF800400;
-    unsigned int k, l, x;
+    unsigned int k, x, kmin, kmax;
+    unsigned int q = (unsigned int)st[3] & 3;
 
     st[0] = 0;
     st[1] = 0;
@@ -79,7 +82,10 @@ int main(void)
     R16(PORTG_FER) = 0x0460;        /* PG5, PG6, PG10 peripheral; PG7 (VSYNC) stays GPIO */
     SSYNC();
 
-    for (k = 0; k < BANDS; k++) {
+    /* only the bands that hold lines 2 * (60q .. 60q + 59) */
+    kmin = (unsigned int)(((unsigned long)q * OUT_H * 2 * LINE_STRIDE) / BAND_SAMP);
+    kmax = (unsigned int)((((unsigned long)(q * OUT_H + OUT_H - 1) * 2) * LINE_STRIDE + OUT_W) / BAND_SAMP);
+    for (k = kmin; k <= kmax; k++) {
         unsigned long t;
 
         R16(PPI_CONTROL) = 0;
@@ -120,16 +126,16 @@ int main(void)
         /* Measured: PPI does not wait for HREF between chunks, so the samples after the
          * VSYNC wait form one continuous stream with a line stride of 335 stored samples
          * (left/right check with half the lens covered). Global sample g = k * BAND_SAMP + i
-         * lies on line g / 335 at x = g % 335. Output: every 4th line, every 2nd sample. */
+         * lies on line g / 335 at x = g % 335. Output: every 2nd line, every sample. */
         {
             unsigned long g0 = (unsigned long)k * BAND_SAMP, g1 = g0 + BAND_SAMP;
             unsigned int r;
             for (r = 0; r < OUT_H; r++) {
-                unsigned long g = (unsigned long)r * 4 * LINE_STRIDE;
-                if (g + 2 * OUT_W <= g0 || g >= g1)
+                unsigned long g = (unsigned long)(q * OUT_H + r) * 2 * LINE_STRIDE;
+                if (g + OUT_W <= g0 || g >= g1)
                     continue;
                 for (x = 0; x < OUT_W; x++) {
-                    unsigned long gx = g + 2 * x;
+                    unsigned long gx = g + x;
                     if (gx >= g0 && gx < g1)
                         out[r * OUT_W + x] = (unsigned char)((buf[gx - g0] >> 2) & 0xFF);
                 }
