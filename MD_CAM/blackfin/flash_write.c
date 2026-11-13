@@ -4,18 +4,21 @@
  *
  * Safety rules, enforced in code:
  *  - only addresses 0x8000 .. 0x3FFFF are accepted (FLASH_MIN / FLASH_MAX);
- *  - no erase command is ever sent (only WREN 0x06, page program 0x02, RDSR 0x05, READ 0x03);
+ *  - erase only on request (0xFF80001C = 0xE7A5E000) and only 4 KB sector erase (0x20) of
+ *    the sectors the range touches, and only inside our own area 0x8000 .. 0xFFFF
+ *    (ERASE_MIN / ERASE_MAX): never sector 0 (selector) or 0x10000.. (factory firmware copy);
  *  - the target range must read back all 0xFF before anything is written;
  *  - the range is read back and compared afterwards.
  *
  * Bit-banged SPI as in flash_read.c: PG15 CS, PG12 SCK, PG14 MOSI, PG13 MISO.
  * Parameters (set in L1 over JTAG before running):
  * 0xFF800010  flash address        0xFF800014  length (1..0x4000)
+ * 0xFF80001C  0xE7A5E000 = erase the 4 KB sectors of the range first (own area only)
  * 0xFF900000  the data (loaded over JTAG)
  * Results:
  * 0xFF800000  magic 0xF1A5D07E when finished
  * 0xFF800004  result: 0 ok, 1 address/length refused, 2 target not blank,
- *             3 verify failed, 4 timeout waiting for the flash
+ *             3 verify failed, 4 timeout waiting for the flash, 5 erase refused
  * 0xFF800008  status register before, 0xFF80000C  status register after
  * 0xFF800018  first mismatching offset (result 2 or 3)
  */
@@ -36,6 +39,9 @@
 
 #define FLASH_MIN 0x8000UL
 #define FLASH_MAX 0x40000UL
+#define ERASE_MIN 0x8000UL
+#define ERASE_MAX 0x10000UL
+#define ERASE_OK  0xE7A5E000UL
 
 __asm__(
     ".text\n"
@@ -109,6 +115,28 @@ static unsigned long compare(unsigned long a, const volatile unsigned char *expe
     return i;
 }
 
+/* 4 KB sector erase of every sector touched by [a, a+len); callers check the area */
+static int erase_range(unsigned long a, unsigned long len)
+{
+    unsigned long sec, t;
+    for (sec = a & ~0xFFFUL; sec < a + len; sec += 0x1000) {
+        if (sec < ERASE_MIN || sec >= ERASE_MAX)
+            return 0;
+        cs(1);
+        xfer(0x06);                 /* WREN */
+        cs(0);
+        cs(1);
+        xfer(0x20);                 /* 4 KB sector erase */
+        addr3(sec);
+        cs(0);
+        for (t = 0; t < 20000000UL && (rdsr() & 1); t++)
+            ;
+        if (rdsr() & 1)
+            return 0;
+    }
+    return 1;
+}
+
 int main(void)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
@@ -127,6 +155,10 @@ int main(void)
     st[2] = rdsr();
     if (a < FLASH_MIN || len == 0 || len > 0x4000 || a + len > FLASH_MAX) {
         result = 1;
+    } else if (st[7] == ERASE_OK && (a < ERASE_MIN || a + len > ERASE_MAX)) {
+        result = 5;
+    } else if (st[7] == ERASE_OK && !erase_range(a, len)) {
+        result = 4;
     } else if ((r = compare(a, 0, len)) != len) {
         result = 2;
         st[6] = r;
@@ -157,6 +189,7 @@ int main(void)
     }
     st[3] = rdsr();
     st[1] = result;
+    st[7] = 0;                      /* consume the erase request */
 
     R16(PORTGIO_SET) = PIN_CS;
     SSYNC();

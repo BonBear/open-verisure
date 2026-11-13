@@ -106,3 +106,12 @@ Blackfin körs ur reset med `jtag_test` laddat (driver inga stift). Via gdbproxy
 1. ~~Testa ROM-funktionen `bfrom_SpiBoot` via JTAG~~: klart. `blackfin/rom_spiboot.S` med flaggorna 0x03A00000 startar originalprogrammet från flashadress 0.
 2. ~~Skriv vår boot-ström på 0x8000 och starta den med ROM-anropet~~: klart 2026-11-14. `blackfin/flash_write.c` skrev `snap_link.ldr` (1 272 byte) till 0x8000–0x84F7. Originalets sidor är oförändrade (samma sidsummor), och `rom_spiboot` med adress 0x8000 startar `snap_link` från flashet. Bygg strömmen med `bfin-elf-ldr -T BF518 -c build/snap_link.ldr build/snap_link.elf`.
 3. Sist: en liten väljare i början av flashet som anropar `bfrom_SpiBoot` med 0x8000 eller originalets adress. Det kräver att sida 0 raderas och skrivs om, så originalet kopieras först oförändrat till en ledig plats.
+
+## Fristående start (2026-11-14)
+
+![Bild från kall start utan JTAG](images/camera_standalone_320x240.png)
+
+- Flashlayout: 0x0000 väljare (`boot_select.ldr`), 0x1000–0x7FFF rester av originalet (oanvända), 0x8000 `snap_link.ldr` (4 196 byte), 0x10000 originalet (0x7FD4 byte).
+- Väljaren läser PH0: låg (CC1110 har P1_2 = 1 före reset-släppet, som `BF_JTAG_HOLD` gör) startar 0x8000, annars startar originalet på 0x10000.
+- `snap_link` initierar kameran själv med originalets egen sekvens (mjukreset 0x0103 och 108 registerskrivningar), loggad via JTAG. Utan den står sensorns utgångar avstängda.
+- Verktyg: `flash_sector0.c` (bara sektor 0, kräver bekräftelseord), `flash_write.c` (bara 0x8000 och uppåt, radering bara inom 0x8000–0xFFFF på begäran). Återställ originalets sektor 0 med `build/fw_dump/orig_sector0.bin`.

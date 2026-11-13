@@ -8,6 +8,8 @@
  * 0xFF800028  bytes to read per register (1..8)
  * 0xFF80002C  number of consecutive registers to read (1..32)
  * 0xFF800030  pointer width: 2 = 16-bit register address (high byte first), else 8-bit
+ * 0xFF800034  write mode: 0x100 | value = write that value to the register (16-bit
+ *             address only, one register, no read). 0 = read as above.
  * Results:
  * 0xFF800000  magic 0x7171EAD0 when done
  * 0xFF800004  status of the last transfer (0 ok, 1 pointer NAK, 2 read error, 3 timeout)
@@ -50,6 +52,34 @@ _start:
     R0 = 0xFF (Z);
     R0 = R5 & R0;
     W[P1 + 0x80] = R0;          /* register low byte */
+    R0 = [P0 + 0x34];
+    CC = BITTST(R0, 8);
+    IF !CC JUMP .Lp16;
+    R1 = 0xFF (Z);
+    R6 = R0 & R1;               /* value byte (write mode); the TX FIFO holds only 2 */
+    SSYNC;
+    R0 = 0x00C1 (Z);            /* MEN | DCNT 3, transmit, stop at end */
+    W[P1 + 0x14] = R0;
+    SSYNC;
+    R2.L = 0x0000;
+    R2.H = 0x0008;
+.Lwfifo:                        /* wait until the TX FIFO has room, then add the value */
+    R0 = W[P1 + 0x2C] (Z);      /* FIFO_STAT: XMTSTAT bits 1..0, 3 = full */
+    R1 = 3;
+    R0 = R0 & R1;
+    CC = R0 == R1;
+    IF !CC JUMP .Lwput;
+    R2 += -1;
+    CC = R2 == 0;
+    IF !CC JUMP .Lwfifo;
+    R4 = 3;
+    JUMP .Lfail;
+.Lwput:
+    W[P1 + 0x80] = R6;
+    SSYNC;
+    CALL .Lwait;
+    JUMP .Lfail;                /* R4 = 0 ok / 1 error / 3 timeout */
+.Lp16:
     SSYNC;
     R0 = 0x0081 (Z);            /* MEN | DCNT 2, transmit, stop at end */
     JUMP .Lpgo;
