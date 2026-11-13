@@ -92,3 +92,17 @@ Slår på matningarna (P0_2, P0_7), sätter P0_0 och skickar RF-livstecken `B0, 
 ## Kartläggningsmetod
 
 Blackfin körs ur reset med `jtag_test` laddat (driver inga stift). Via gdbproxy sätts PORTF/G/H_FER = 0, DIR = 0 och INEN = 0xFFFF. CC1110 lägger ett stift i taget högt, och portarna läses via JTAG (scratchpad-skriptet `pinwalk3.py`). Om IDCODE blir 0xFFFFFFFF eller skräp sitter en JTAG-sladd löst, oftast TDO (AD2).
+
+## Boot-flash (säkerhetskopierat 2026-11-14)
+
+- Blackfin startar från ett **EON EN25F20** (JEDEC 0x1C3112, 256 KB) på SPI0: PG12 SCK, PG13 MISO, PG14 MOSI, PG15 CS. Det är inte U3.
+- `blackfin/flash_read.c` läser det med bit-bang och skickar bara läskommandon (0x9F och 0x03). Läge 0 läser ID och går igenom boot-strömmens blockhuvuden, läge 1 läser ett område till L1 och läge 2 räknar använda byte och summa per 4 KB-sida.
+- Originalprogrammets boot-ström är 0x7FD4 byte (23 block). Resten av flashet (0x8000–0x3FFFF) är tomt.
+- Säkerhetskopian ligger i `blackfin/build/fw_dump/bootflash_0000_8000.bin` (inte i git). SHA-256: `25d0dc4000e2ee21ad0363ec1ee22c04ecaf30567baa848d58b2264c696fa2b2`.
+- Inget har skrivits till flashet. Innan något skrivs: bestäm om originalprogrammet ska ligga kvar och vårt program läggas efter det, eller om det ska ersättas.
+
+## Plan för fristående start med originalet kvar (2026-11-14)
+
+1. ~~Testa ROM-funktionen `bfrom_SpiBoot` via JTAG~~: klart. `blackfin/rom_spiboot.S` med flaggorna 0x03A00000 startar originalprogrammet från flashadress 0.
+2. ~~Skriv vår boot-ström på 0x8000 och starta den med ROM-anropet~~: klart 2026-11-14. `blackfin/flash_write.c` skrev `snap_link.ldr` (1 272 byte) till 0x8000–0x84F7. Originalets sidor är oförändrade (samma sidsummor), och `rom_spiboot` med adress 0x8000 startar `snap_link` från flashet. Bygg strömmen med `bfin-elf-ldr -T BF518 -c build/snap_link.ldr build/snap_link.elf`.
+3. Sist: en liten väljare i början av flashet som anropar `bfrom_SpiBoot` med 0x8000 eller originalets adress. Det kräver att sida 0 raderas och skrivs om, så originalet kopieras först oförändrat till en ledig plats.
