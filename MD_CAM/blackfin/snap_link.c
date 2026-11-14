@@ -194,7 +194,7 @@ static unsigned int sensor_init(void)
     R16(TWI_CONTROL) = 0x0083;      /* TWI_ENA | PRESCALE 3 */
     SSYNC();
     /* generated from the factory firmware's TWI writes (build/ov7955_factory_init.txt),
-     * logged over JTAG on 2026-11-14; entries 0..108 + 0x3503 = 0x03 */
+     * logged over JTAG on 2026-11-14; entries 0..109 (ends with 0x3503 = 0x00) */
     errors += twi_write16(0x0103, 0x01) != 0;   /* software reset */
     for (t = 0; t < 400000UL; t++)
         __asm__ volatile("nop;");
@@ -306,7 +306,9 @@ static unsigned int sensor_init(void)
     errors += twi_write16(0x6704, 0xFF) != 0;
     errors += twi_write16(0x6705, 0xFF) != 0;
     errors += twi_write16(0x3011, 0x00) != 0;
-    errors += twi_write16(0x3503, 0x03) != 0;
+    /* the factory firmware writes 0x3503 = 0x00 here (on-chip AEC/AGC on), lets it settle and
+     * then freezes it with 0x03; we leave the sensor's AEC/AGC running */
+    errors += twi_write16(0x3503, 0x00) != 0;
     R16(TWI_MASTER_CTL) = 0;
     return errors;
 }
