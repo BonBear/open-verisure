@@ -23,6 +23,9 @@ struct DeviceSession {
 };
 
 static DeviceSession s_devices[MAX_TRACKED_DEVICES];
+static bool s_lastWasImage = false;
+
+bool cryptoLastPacketWasImage(void) { return s_lastWasImage; }
 static size_t s_deviceCount = 0;
 
 bool cryptoDeriveDeviceKey(const uint8_t masterKey[16], const char* deviceId, uint8_t outDeviceKey[16]) {
@@ -84,6 +87,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId) {
 }
 
 bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const uint8_t masterKey[16], VerisureTelemetry* outTelem) {
+    s_lastWasImage = false;
     if (!rxBuf24 || !outTelem || !masterKey) return false;
 
     // 1. Extract 8-character plaintext Device ID
@@ -123,6 +127,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
         }
 
         imageReceiverProcessChunk(devId, chunkIdx, chunkLen, isFirst, isLast, &plain[6]);
+        s_lastWasImage = true;
         return false; // Handled directly as image stream, not a telemetry packet
     }
 
@@ -138,6 +143,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
             sess->lastSeen = millis();
         }
         imageReceiverProcessTile(devId, tile, &plain[6]);
+        s_lastWasImage = true;
         return false; // camera data, not telemetry
     }
 

@@ -94,3 +94,7 @@ bool cryptoDecryptPayload(const uint8_t deviceKey[16], const uint8_t inCipher[16
  * @return True if packet is authentic, untampered, and passes replay checks.
  */
 bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const uint8_t masterKey[16], VerisureTelemetry* outTelem);
+
+/** True if the last packet given to cryptoProcessPacket() was a camera image packet (type
+ * 0x80/0x81), which is handled there and returns false without being a rejection. */
+bool cryptoLastPacketWasImage(void);

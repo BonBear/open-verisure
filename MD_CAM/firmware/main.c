@@ -1837,8 +1837,17 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_IMG_BLOCK 8           // pixels per RF tile (packet type 0x81) / JPEG bytes per chunk (0x80)
 #define BF_IMG_JPEG 1            // 1: JPEG from the Blackfin (packet type 0x80); 0: raw quarters (0x81)
 #define BF_IMG_CMD 0xD3          // 0xD3 colour 320x240 as delta (only changed blocks), 0xD1 full colour, 0xD0 grayscale
-#define BF_IMG_HIRES_EVERY 60    // every Nth picture as 640x480 colour (0xD2, ~20 KB); 0 = never
-#define BF_IMG_PAUSE_MS 2000     // pause between pictures (delay_ms runs ~2.75x slow: ~5.5 s)
+#define BF_IMG_PIR 1             // pictures driven by the PIR (P1_7): fast while there is motion, rare otherwise
+#define BF_IMG_HIRES_ON_MOTION 1 // the 2nd picture of a motion event is 640x480 colour (0xD2, ~20 KB, ~2.5 min)
+#define BF_IMG_IDLE_S 300        // without motion: one picture (delta) this often
+#define BF_IMG_FULL_IDLE_EVERY 12 // every Nth idle picture is a full one (0xD1, ~8 KB): the gateway gets a base again
+                                 // after its own restart within ~1 h (deltas need the gateway's copy of the full picture)
+#define BF_PIR_HOLD_S 30         // a motion event lasts this long after the last PIR activity
+#define BF_TICKS_PER_S 36        // delay_ms(10) takes ~27.5 ms here (delay_ms runs ~2.75x slow)
+#define BF_IMG_PAUSE_TICKS (5 * BF_TICKS_PER_S)   // pause between pictures during motion (~5 s)
+#define BF_IMG_PIC_TICKS (7 * BF_TICKS_PER_S)     // rough time one delta picture takes
+#define BF_IMG_HIRES_EVERY 0     // without BF_IMG_PIR: every Nth picture as 640x480; 0 = never
+#define BF_IMG_PAUSE_MS 2000     // without BF_IMG_PIR: pause between pictures (~5.5 s)
 
 // Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
 // P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
@@ -1870,6 +1879,41 @@ static uint8_t bf_link_xfer(uint8_t tx) {
 }
 
 static uint8_t s_img_blk[BF_IMG_BLOCK];
+
+// One picture from the Blackfin (snap_link.c): cmd 0xD0..0xD3 grabs and encodes it (a few
+// seconds; the Blackfin does not answer meanwhile), so poll 0xB0/0xA0 until the answer is
+// 0x5A. Then read the length (2 bytes, little endian) and the data, 8 bytes per RF packet
+// (type 0x80, chunk number, length, first/last flags); the gateway places the chunks by
+// number. RF on a failure: B8, tries, status. Returns true if the picture was sent.
+static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
+    uint8_t st = 0, tries, i, n;
+    uint16_t len, off, idx;
+    bf_link_xfer(cmd);
+    for (tries = 0; tries < 40; tries++) {
+        delay_ms(300);
+        bf_link_xfer(0xB0);
+        st = bf_link_xfer(0xA0);      // answer to 0xB0
+        if (st == 0x5A)
+            break;
+    }
+    if (st != 0x5A) {
+        transmit((*p_seq)++, false, false, false, 0xB8, tries, st, 0);
+        return false;
+    }
+    len = bf_link_xfer(0x00);
+    len |= (uint16_t)bf_link_xfer(0x00) << 8;
+    if (len < 4 || len > 65000u) {
+        transmit((*p_seq)++, false, false, false, 0xB8, 0xFF, (uint8_t)len, (uint8_t)(len >> 8));
+        return false;
+    }
+    for (off = 0, idx = 0; off < len; off += n, idx++) {
+        n = (len - off) > BF_IMG_BLOCK ? BF_IMG_BLOCK : (uint8_t)(len - off);
+        for (i = 0; i < n; i++)
+            s_img_blk[i] = bf_link_xfer(0x00);
+        transmit_image_chunk((*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
+    }
+    return true;
+}
 #endif
 
 static void bf_jtag_hold(uint16_t *p_seq) {
@@ -1931,49 +1975,79 @@ static void bf_jtag_hold(uint16_t *p_seq) {
     P1DIR &= ~0x08;                   // P1_3 (MISO) input
     P1_4 = 0;
 #if BF_IMG_JPEG
-    // JPEG: BF_IMG_CMD grabs the whole picture and encodes it on the Blackfin (jpeg_enc.c, a
-    // few seconds; the Blackfin does not answer meanwhile), so poll 0xB0/0xA0 until the
-    // answer is 0x5A. Then read the length (2 bytes, little endian) and the JPEG, 8 bytes
-    // per RF packet (type 0x80, chunk number, length, first/last flags); the gateway places
-    // the chunks by number and serves /api/camera.jpg. RF on a failure: B8, tries, status.
+#if BF_IMG_PIR
+    // Pictures driven by the PIR (P1_7, active low, pull-up; only read, never driven).
+    // Motion: a motion packet (flag bit 0 -> "motion" ON in Home Assistant), then pictures
+    // every ~5 s (delta, the 2nd one 640x480) until BF_PIR_HOLD_S after the last PIR
+    // activity, then a packet with motion OFF. Without motion: one picture every
+    // BF_IMG_IDLE_S (keeps the gateway's picture fresh), every BF_IMG_FULL_IDLE_EVERY-th of
+    // them a full picture. RF B9: motion state change.
+    {
+        uint16_t idle = BF_IMG_IDLE_S * BF_TICKS_PER_S;   // first picture right after start
+        uint16_t hold = 0, t;
+        uint8_t ev_pic = 0;
+        uint8_t idle_pics = 0;
+        bool active = false;
+        for (;;) {
+            if (P1_7 == 0) {
+                if (!active) {
+                    active = true;
+                    ev_pic = 0;
+                    transmit((*p_seq)++, true, false, false, 0xB9, 1, 0, 0);
+                }
+                hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
+            }
+            if (active) {
+                uint8_t cmd = BF_IMG_CMD;
+#if BF_IMG_HIRES_ON_MOTION
+                if (ev_pic == 1)
+                    cmd = 0xD2;
+#endif
+                bf_send_picture(cmd, p_seq);
+                if (ev_pic < 2)
+                    ev_pic++;
+                hold = hold > BF_IMG_PIC_TICKS ? hold - BF_IMG_PIC_TICKS : 0;
+                for (t = 0; t < BF_IMG_PAUSE_TICKS; t++) {
+                    delay_ms(10);
+                    if (P1_7 == 0)
+                        hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
+                    else if (hold)
+                        hold--;
+                }
+                if (!hold && P1_7 != 0) {
+                    active = false;
+                    idle = 0;
+                    transmit((*p_seq)++, false, false, false, 0xB9, 0, 0, 0);
+                }
+            } else {
+                if (idle >= BF_IMG_IDLE_S * BF_TICKS_PER_S) {
+                    idle = 0;
+                    if (++idle_pics >= BF_IMG_FULL_IDLE_EVERY) {
+                        idle_pics = 0;
+                        bf_send_picture(0xD1, p_seq);
+                    } else {
+                        bf_send_picture(BF_IMG_CMD, p_seq);
+                    }
+                }
+                delay_ms(10);
+                idle++;
+            }
+        }
+    }
+#else
     for (;;) {
-        static uint8_t pic = BF_IMG_HIRES_EVERY - 1;   // the first picture after start is 640x480
-        uint8_t st = 0, tries, i, n, cmd = BF_IMG_CMD;
-        uint16_t len, off, idx;
+        static uint8_t pic = 0;
+        uint8_t cmd = BF_IMG_CMD;
 #if BF_IMG_HIRES_EVERY
         if (++pic >= BF_IMG_HIRES_EVERY) {
             pic = 0;
             cmd = 0xD2;
         }
 #endif
-        bf_link_xfer(cmd);
-        for (tries = 0; tries < 40; tries++) {
-            delay_ms(300);
-            bf_link_xfer(0xB0);
-            st = bf_link_xfer(0xA0);  // answer to 0xB0
-            if (st == 0x5A)
-                break;
-        }
-        if (st != 0x5A) {
-            transmit((*p_seq)++, false, false, false, 0xB8, tries, st, 0);
-            delay_ms(2000);
-            continue;
-        }
-        len = bf_link_xfer(0x00);
-        len |= (uint16_t)bf_link_xfer(0x00) << 8;
-        if (len < 4 || len > 65000u) {
-            transmit((*p_seq)++, false, false, false, 0xB8, 0xFF, (uint8_t)len, (uint8_t)(len >> 8));
-            delay_ms(2000);
-            continue;
-        }
-        for (off = 0, idx = 0; off < len; off += n, idx++) {
-            n = (len - off) > BF_IMG_BLOCK ? BF_IMG_BLOCK : (uint8_t)(len - off);
-            for (i = 0; i < n; i++)
-                s_img_blk[i] = bf_link_xfer(0x00);
-            transmit_image_chunk((*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
-        }
+        bf_send_picture(cmd, p_seq);
         delay_ms(BF_IMG_PAUSE_MS);
     }
+#endif
 #endif
     for (;;) {
         uint8_t q, st, i;
