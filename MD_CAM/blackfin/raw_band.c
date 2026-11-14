@@ -7,7 +7,7 @@
  * Parameters: 0xFF800014 PPI_COUNT (0 = 1279); 0xFF800010 block index k: the block holds stream samples
  *             k*BLOCK .. k*BLOCK+BLOCK-1 counted from the end of the VSYNC pulse.
  * 0xFF800018 PORTG_MUX, 0xFF80001C PORTG_FER, 0xFF800020 PPI_CONTROL (0 = defaults; a
- * PPI_CONTROL override skips the software VSYNC wait).
+ * PPI_CONTROL override skips the software VSYNC wait unless 0xFF800024 = 1).
  * Results: 0xFF800000 magic 0x8A3BA4D0 when done, 0xFF800004 1 = ok, 0 = timeout,
  *          0xFF900000 BLOCK 16-bit samples.
  */
@@ -73,7 +73,7 @@ int main(void)
     R16(PPI_FRAME) = 480;
     R16(DMA0_CONFIG) = 0x0097;
     SSYNC();
-    if (!st[8]) {                   /* software VSYNC wait unless PPI syncs itself */
+    if (!st[8] || st[9]) {          /* software VSYNC wait unless PPI syncs itself (0xFF800024 = 1 forces it) */
         for (t = 0; t < 2000000UL && !(R16(PORTGIO) & 0x0080); t++)
             ;
         for (t = 0; t < 2000000UL && (R16(PORTGIO) & 0x0080); t++)
