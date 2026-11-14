@@ -112,3 +112,19 @@ Kolumnen "Vanlig funktion" gäller om modulen följer den vanliga 24-poliga Omni
 **Åtgärd:** `snap_link` sätter PLL som originalet i `pll_init()`. Strömmen blir då ren YUYV i full upplösning: 1560 sampel per rad, 640 aktiva pixlar (sampel 0..1279), 480 rader. Färg-JPEG (4:2:0) fungerar, se `camera_color_320x240.jpg`. Ingen Saleae-mätning behövdes.
 
 **Kvar:** 640×480 på begäran (kräver SDRAM-inställning som originalets initblock och en nedlänk för begäran från Home Assistant), bild vid rörelse, vitbalans (lätt blåstick).
+
+## Läge och nästa steg (2026-11-14 kväll)
+
+**Fungerar från kallstart utan JTAG:** väljaren i sektor 0 startar `snap_link` (0x8000) som sätter PLL och SDRAM som originalet, initierar sensorn och tar bilder på begäran från CC1110:
+- `0xD1`/`0xD3`: 320×240 färg-JPEG, hel bild (~8 KB) eller delta med bara ändrade 16×16-block (7 byte när inget ändrats). Gatewayen lappar in deltorna (`868Receiver/src/jpeg_splice.cpp`) och visar `/api/camera.jpg`.
+- `0xD2`: 640×480 färg (~17–20 KB, ~2,5 min via RF), visas på `/api/camera_large.jpg`.
+- CC1110 styr takten med PIR (P1_7): motion PÅ/AV till Home Assistant, vid rörelse delta + 640×480 + deltor var ~5 s, i vila en delta var 5:e minut och en hel bild ungefär en gång i timmen.
+
+**Nästa steg:**
+1. **Blixtkortet:** kartlägg stiften (mät först, driv inget okänt) och styr blixten vid rörelse/bild.
+2. **640×480 på begäran från Home Assistant:** kräver att CC1110 lyssnar efter kommandon från gatewayen (RF-nedlänk).
+3. **Vitbalans:** bilden drar lite åt blått (sensorns AWB-register eller korrigering i mjukvara).
+4. **Kamerans placering:** i dag ser kameran bara föremål tätt framför linsen.
+5. **Säkerhet (separat):** gatewayens `/api/status` visar masternyckeln i klartext.
+
+**Praktiskt:** nätaggregatets OVP löser ofta ut när CC1110 flashas (troligen matar programmeraren ~3,3 V bakvägen), slå då på igen. JTAG som läser 0xFFFFFFFF trots att kortet drar ström löses med strömcykling.
