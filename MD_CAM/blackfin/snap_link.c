@@ -11,14 +11,15 @@
  *   0xA0      reset the read pointer (next answer is byte 0)
  *   other     answer the next picture byte (CC sends 0x00 while reading)
  *
- * Capture: factory PPI setup (PPI_CONTROL 0x3E0D, PPI_COUNT 1279, software VSYNC wait on
- * PG7), continuous stream with 335 stored samples per line, see ppi_snap.c. A capture
+ * Capture: PPI without frame syncs (PPI_CONTROL 0x383D) after a software VSYNC wait on PG7,
+ * gap-free stream, duplicate samples dropped and luma picked in software (see capture()). A capture
  * takes a few camera frames (~0.2 s); the CC1110 waits before asking for the status.
  *
  * Needs DMEM_CONTROL 0x00001001 (data bank A all SRAM), set over JTAG before running.
  * L1: 0xFF800000 magic 0x5B1F11CC once running, 0xFF800004 quarters grabbed,
  *     0xFF800008 bytes sent, 0xFF80000C last command, 0xFF800010 sensor setup TWI errors,
- *     0xFF800400 320x60 quarter.
+ *     0xFF800014 last band, 0xFF800018 duplicate/luma phase, 0xFF800020 SEQSTAT and
+ *     0xFF800024 RETX after an exception, 0xFF800400 320x60 quarter.
  */
 #define R16(a) (*(volatile unsigned short *)(a))
 #define R32(a) (*(volatile unsigned long *)(a))
@@ -47,14 +48,17 @@
 #define DMA0_YMOD    0xFFC00C1C
 #define DMA0_STAT    0xFFC00C28
 
-#define BAND_LINES   12
-#define LINE_SAMP    640
-#define BAND_SAMP    (BAND_LINES * LINE_SAMP)
-/* Stored samples per two camera lines and per output row (every 2nd line). With the
- * factory firmware's clocking the line stride was 335; with our own sensor_init() it is
- * 493.5 (HREF period 1170 PCLK instead of 780, measured 2026-11-14), so two lines = 987. */
-#define LINE2_STRIDE 987
-#define SRC_W        400     /* active stored samples used per line (~405), scaled to 320 */
+/* Continuous capture (2026-11-14): PPI without frame syncs (PPI_CONTROL 0x383D) started
+ * right after the VSYNC pulse gives a gap-free stream. With our sensor_init() the HREF period
+ * is 1170 PCLK samples, and the PPI clock runs 1.5x the data byte rate: in every triplet one
+ * sample duplicates the next, so one luma (Y) byte per triplet, 390 per period. A period
+ * holds two sensor lines (195 Y each, ~158 active from Y index 6), and a frame is ~240
+ * periods = 480 lines (seen 2026-11-14 by showing whole periods). Output: the first line of
+ * every period (every 2nd sensor line), active part doubled horizontally to 320. */
+#define BAND_SAMP    7680    /* multiple of 3 so the triplet phase is the same in every band */
+#define PERIOD       1170
+#define ROW_STRIDE   PERIOD
+#define Y_FIRST      6       /* first active luma in a line */
 #define OUT_W        320
 #define OUT_H        60
 #define OUT_SIZE     (OUT_W * OUT_H)
@@ -66,8 +70,23 @@ __asm__(
     "    SP.L = 0x0FF0;\n"          /* stack in L1 scratchpad */
     "    SP.H = 0xFFB0;\n"
     "    FP = SP;\n"
+    "    CLI R0;\n"                 /* no interrupts: the boot path leaves IVG15 pending */
+    "    P0.L = 0x200C;\n"          /* EVT3 (exceptions) -> _exc, not stale L1 content */
+    "    P0.H = 0xFFE0;\n"
+    "    R0.L = _exc;\n"
+    "    R0.H = _exc;\n"
+    "    [P0] = R0;\n"
     "    CALL _main;\n"
     "1:  JUMP 1b;\n"
+    /* exception: log SEQSTAT and RETX at 0xFF800020/24 and stop here */
+    "_exc:\n"
+    "    P0.L = 0x0020;\n"
+    "    P0.H = 0xFF80;\n"
+    "    R0 = SEQSTAT;\n"
+    "    [P0] = R0;\n"
+    "    R0 = RETX;\n"
+    "    [P0 + 4] = R0;\n"
+    "2:  JUMP 2b;\n"
 
     /* unsigned int spi_xfer(unsigned int tx): wait for SS low, shift one byte (mode 0,
      * MSB first) with tx on PH2, return the byte from PH3; returns 0x100 if SS went high
@@ -292,6 +311,13 @@ static unsigned int sensor_init(void)
     return errors;
 }
 
+static void st_dbg(unsigned int k, unsigned int d, unsigned int yo)
+{
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    st[5] = k;                      /* 0xFF800014: last band */
+    st[6] = (d << 4) | yo;          /* 0xFF800018: duplicate phase, luma phase */
+}
+
 static void capture(volatile unsigned char *out, unsigned int q)
 {
     volatile unsigned short *buf = (volatile unsigned short *)0xFF900000;
@@ -304,10 +330,11 @@ static void capture(volatile unsigned char *out, unsigned int q)
     R16(PORTG_FER) = 0x0460;        /* PG5, PG6, PG10 peripheral; PG7 GPIO */
     SSYNC();
 
-    kmin = (unsigned int)(((unsigned long)q * OUT_H * LINE2_STRIDE) / BAND_SAMP);
-    kmax = (unsigned int)((((unsigned long)(q * OUT_H + OUT_H - 1)) * LINE2_STRIDE + SRC_W) / BAND_SAMP);
+    kmin = (unsigned int)(((unsigned long)q * OUT_H * ROW_STRIDE) / BAND_SAMP);
+    kmax = (unsigned int)((((unsigned long)(q * OUT_H + OUT_H - 1)) * ROW_STRIDE + PERIOD) / BAND_SAMP);
     for (k = kmin; k <= kmax; k++) {
-        unsigned long t, g0, g1;
+        unsigned long t, g0, g1, j, ya, yb;
+        unsigned int p, d = 0, best = 0, yo;
 
         R16(PPI_CONTROL) = 0;
         R16(DMA0_CONFIG) = 0;
@@ -319,7 +346,7 @@ static void capture(volatile unsigned char *out, unsigned int q)
         R16(DMA0_XMOD) = 2;
         R16(DMA0_YCOUNT) = k + 1;
         R16(DMA0_YMOD) = (unsigned short)(-(BAND_SAMP * 2 - 2));
-        R16(PPI_COUNT) = 2 * LINE_SAMP - 1;
+        R16(PPI_COUNT) = 1279;
         R16(PPI_DELAY) = 0;
         R16(PPI_FRAME) = 480;
         R16(DMA0_CONFIG) = 0x0097;  /* DMAEN | WNR | WDSIZE_16 | DMA2D | DI_EN */
@@ -328,9 +355,9 @@ static void capture(volatile unsigned char *out, unsigned int q)
             ;
         for (t = 0; t < 2000000UL && (R16(PORTGIO) & 0x0080); t++)
             ;
-        R16(PPI_CONTROL) = 0x3E0D;
+        R16(PPI_CONTROL) = 0x383D;  /* no frame syncs, continuous from the end of VSYNC */
         SSYNC();
-        for (t = 0; t < 20000000UL; t++)
+        for (t = 0; t < 40000000UL; t++)
             if (R16(DMA0_STAT) & 0x0001)
                 break;
         R16(PPI_CONTROL) = 0;
@@ -338,18 +365,41 @@ static void capture(volatile unsigned char *out, unsigned int q)
         if (!(R16(DMA0_STAT) & 0x0001))
             return;
 
+        /* duplicate phase d: s[3j+d] == s[3j+d+1] most often; data bytes at d+1, d+2 */
+        for (p = 0; p < 3; p++) {
+            unsigned int eq = 0;
+            for (j = p; j + 1 < BAND_SAMP; j += 3)
+                if (((buf[j] ^ buf[j + 1]) & 0x03FC) == 0)
+                    eq++;
+            if (eq > best) {
+                best = eq;
+                d = p;
+            }
+        }
+        /* luma is the data byte that strays further from 128 (chroma sits near 128) */
+        ya = yb = 0;
+        for (j = d + 1; j + 1 < BAND_SAMP; j += 3) {
+            int va = (int)((buf[j] >> 2) & 0xFF) - 128, vb = (int)((buf[j + 1] >> 2) & 0xFF) - 128;
+            ya += va < 0 ? -va : va;
+            yb += vb < 0 ? -vb : vb;
+        }
+        yo = d + (ya > yb ? 1 : 2);
+        if (yo >= 3)
+            yo -= 3;
+
         g0 = (unsigned long)k * BAND_SAMP;
         g1 = g0 + BAND_SAMP;
         for (r = 0; r < OUT_H; r++) {
-            unsigned long g = (unsigned long)(q * OUT_H + r) * LINE2_STRIDE;
-            if (g + SRC_W <= g0 || g >= g1)
+            unsigned long g = (unsigned long)(q * OUT_H + r) * ROW_STRIDE;
+            if (g + PERIOD <= g0 || g >= g1)
                 continue;
             for (x = 0; x < OUT_W; x++) {
-                unsigned long gx = g + ((x * 5) >> 2);
+                unsigned long gx = g + 3UL * (Y_FIRST + (x >> 1)) + yo;
                 if (gx >= g0 && gx < g1)
                     out[r * OUT_W + x] = (unsigned char)((buf[gx - g0] >> 2) & 0xFF);
             }
         }
+        st_dbg(k, d, yo);
     }
 }
 
@@ -362,6 +412,8 @@ int main(void)
     st[1] = 0;
     st[2] = 0;
     st[3] = 0;
+    st[8] = 0;
+    st[9] = 0;
     st[4] = sensor_init();          /* 0xFF800010: TWI errors during sensor setup */
 
     R16(PORTH_FER) &= ~0x000F;      /* PH0..PH3 GPIO */
