@@ -7,13 +7,17 @@
 #include "mqtt_manager.h"
 #include <string.h>
 #include <esp_heap_caps.h>
+#include "jpeg_splice.h"
 
 /* ------------------------------ JPEG chunks (type 0x80) ------------------------------
  * Chunk n carries bytes 8n .. 8n+len-1 of the JPEG (the MD CAM sends 8-byte chunks, the
  * last one shorter). Chunks are placed by number, so a lost packet only leaves an 8-byte
- * hole (zeros); the sender puts a restart marker after every block row, so a hole only
- * damages that row. A picture is finished by its last chunk, or by the first chunk of the
- * next picture, and is then published on MQTT and served on /api/camera.jpg. */
+ * hole (zeros); the sender puts a restart marker after every MCU (or MCU row), so a hole
+ * only damages that part. A blob is finished by its last chunk, or by the first chunk of
+ * the next blob. Full 320x240 pictures (COM id) become the base that later delta blobs
+ * (only the changed MCUs, see jpeg_splice.h) are spliced into; the current picture is
+ * published on MQTT and served on /api/camera.jpg. Pictures wider than 320 (640x480) are
+ * kept apart for /api/camera_large.jpg. */
 #define JPEG_CHUNK 8
 #define JPEG_MAX_CHUNKS (MAX_IMAGE_SIZE / JPEG_CHUNK)
 
@@ -25,6 +29,12 @@ static uint16_t s_haveCount = 0;
 static int32_t s_lastIdx = -1;
 static size_t s_jpgLen = 0;
 static uint16_t s_jpgMissing = 0;
+static uint8_t* s_jpgLarge = nullptr;        // last finished picture wider than 320
+static size_t s_jpgLargeLen = 0;
+static uint16_t s_jpgLargeMissing = 0;
+static uint8_t* s_tmp = nullptr;             // splice output, swapped with s_jpg
+static int s_baseId = -1;                    // COM id of the full picture deltas apply to
+static uint16_t s_deltaCount = 0;            // deltas applied since the last full picture
 static char s_activeDeviceId[10] = {0};
 static unsigned long s_lastChunkTime = 0;
 
@@ -42,21 +52,63 @@ static void jpegReset(void) {
     s_lastIdx = -1;
 }
 
-// Finish the picture in s_imgBuf (len bytes; missing chunks stay zero) and publish it.
+// Picture width from the SOF0 marker (0 if not found).
+static unsigned int jpegWidth(const uint8_t* j, size_t len) {
+    for (size_t i = 2; i + 9 < len && i < 1024; i++)
+        if (j[i] == 0xFF && j[i + 1] == 0xC0)
+            return ((unsigned int)j[i + 7] << 8) | j[i + 8];
+    return 0;
+}
+
+// Finish the blob in s_imgBuf (len bytes; missing chunks stay zero): a full JPEG (kept as
+// the base for deltas if it is 320 wide, or as the large picture) or a delta blob that is
+// spliced into the base (jpeg_splice.cpp). The resulting picture is published on MQTT.
 static void jpegFinish(size_t len) {
-    if (len < 4 || !s_jpg) {
+    if (len < 4 || !s_jpg || !s_tmp) {
         jpegReset();
         return;
     }
     uint16_t chunks = (len + JPEG_CHUNK - 1) / JPEG_CHUNK;
     uint16_t missing = chunks > s_haveCount ? chunks - s_haveCount : 0;
-    memcpy(s_jpg, s_imgBuf, len);
-    s_jpgLen = len;
-    s_jpgMissing = missing;
-    bool soi = s_jpg[0] == 0xFF && s_jpg[1] == 0xD8;
-    Serial.printf("[ImageReceiver] JPEG from %s: %u bytes, %u/%u chunks missing%s\n", s_activeDeviceId,
-                  (unsigned int)len, missing, chunks, soi ? "" : " (no SOI)");
-    if (!mqttPublishCameraImage(s_activeDeviceId, s_jpg, len))
+    if (jpegIsDelta(s_imgBuf, len)) {
+        int id = jpegDeltaId(s_imgBuf, len);
+        unsigned int updated = 0;
+        size_t n = 0;
+        if (s_jpgLen && id == s_baseId)
+            n = jpegApplyDelta(s_jpg, s_jpgLen, s_imgBuf, len, s_tmp, MAX_IMAGE_SIZE, &updated);
+        Serial.printf("[ImageReceiver] Delta from %s: %u bytes for picture %d, %u blocks%s, %u/%u chunks missing\n",
+                      s_activeDeviceId, (unsigned int)len, id, updated,
+                      n ? "" : (id == s_baseId ? " (could not apply)" : " (other base, ignored)"), missing, chunks);
+        if (n) {
+            uint8_t* t = s_jpg;          // the spliced picture becomes the current one
+            s_jpg = s_tmp;
+            s_tmp = t;
+            s_jpgLen = n;
+            s_deltaCount++;
+            if (updated && !mqttPublishCameraImage(s_activeDeviceId, s_jpg, n))
+                Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
+        }
+        jpegReset();
+        return;
+    }
+    bool soi = s_imgBuf[0] == 0xFF && s_imgBuf[1] == 0xD8;
+    unsigned int w = jpegWidth(s_imgBuf, len);
+    if (w > 320) {                           // large (640x480) picture: kept apart, no base
+        if (s_jpgLarge) {
+            memcpy(s_jpgLarge, s_imgBuf, len);
+            s_jpgLargeLen = len;
+            s_jpgLargeMissing = missing;
+        }
+    } else {
+        memcpy(s_jpg, s_imgBuf, len);
+        s_jpgLen = len;
+        s_jpgMissing = missing;
+        s_baseId = jpegCommentId(s_jpg, len);
+        s_deltaCount = 0;
+    }
+    Serial.printf("[ImageReceiver] JPEG from %s: %u bytes, width %u, id %d, %u/%u chunks missing%s\n", s_activeDeviceId,
+                  (unsigned int)len, w, jpegCommentId(s_imgBuf, len), missing, chunks, soi ? "" : " (no SOI)");
+    if (!mqttPublishCameraImage(s_activeDeviceId, s_imgBuf, len))
         Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
     jpegReset();
 }
@@ -73,6 +125,8 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
     if (!s_imgBuf) {
         s_imgBuf = allocBig(MAX_IMAGE_SIZE);
         s_jpg = allocBig(MAX_IMAGE_SIZE);
+        s_jpgLarge = allocBig(MAX_IMAGE_SIZE);
+        s_tmp = allocBig(MAX_IMAGE_SIZE);
         if (!s_imgBuf || !s_jpg) return;
         jpegReset();
     }
@@ -109,6 +163,12 @@ const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing) {
     if (len) *len = s_jpgLen;
     if (missing) *missing = s_jpgMissing;
     return s_jpgLen ? s_jpg : nullptr;
+}
+
+const uint8_t* imageReceiverJpegLarge(size_t* len, uint16_t* missing) {
+    if (len) *len = s_jpgLargeLen;
+    if (missing) *missing = s_jpgLargeMissing;
+    return s_jpgLargeLen ? s_jpgLarge : nullptr;
 }
 
 /* ------------------------------ raw grayscale tiles ------------------------------ */

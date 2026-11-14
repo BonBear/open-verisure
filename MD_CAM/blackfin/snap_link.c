@@ -11,6 +11,9 @@
  *             JPEG_QUALITY), then answer 0x5A; the bytes read are length (2 bytes, little
  *             endian) followed by the JPEG
  *   0xD1      the same in colour (YCbCr 4:2:0)
+ *   0xD2      640x480 colour (needs the SDRAM; length 0 if the SDRAM test failed)
+ *   0xD3      320x240 colour as a delta: only the 16x16 blocks that changed since the last
+ *             picture (see grab_color_delta), or a full picture when needed
  *   0xC0 | q  grab raw quarter q (0..3) now, then answer 0x5A
  *   0xB0      answer 0x5A if a picture is ready, else 0x00
  *   0xA0      reset the read pointer (next answer is byte 0)
@@ -72,17 +75,29 @@
 #define BAND_SAMP    15360   /* multiple of 4 */
 #define LINE_SAMP    1560
 #define ACTIVE_SAMP  1280
-#define ROW_STRIDE   (2 * LINE_SAMP)
 #define OUT_W        320
 #define OUT_H        60
 #define OUT_SIZE     (OUT_W * OUT_H)
 #define IMG_H        240
 #define STRIP_H      16
-#define STRIP_BUF    0xFF801000  /* 16 x 320 Y */
-#define STRIP_U      0xFF802400  /* 8 x 160 Cb */
-#define STRIP_V      0xFF802900  /* 8 x 160 Cr */
-#define SEND_BUF     0xFF802E00
-#define SEND_MAX     0x5100UL    /* up to 0xFF807F00 */
+#define STRIP_BUF    0xFF801000  /* 16 x 640 Y (16 x 320 at low resolution) */
+#define STRIP_U      0xFF803800  /* 8 x 320 Cb */
+#define STRIP_V      0xFF804200  /* 8 x 320 Cr */
+#define SEND_L1      0xFF804C00  /* picture to send if the SDRAM test failed */
+#define SEND_L1_MAX  0x3300UL    /* up to 0xFF807F00 */
+#define SEND_SDRAM   0x00100000  /* picture to send in SDRAM (1 MB in) */
+#define SEND_SDRAM_MAX 0xFFF0UL  /* the length field is 16 bit */
+/* delta pictures (mode 3): current and reference 320x240 picture in SDRAM */
+#define CUR_Y        0x00200000
+#define CUR_U        0x00213000
+#define CUR_V        0x00218000
+#define REF_Y        0x00220000
+#define REF_U        0x00233000
+#define REF_V        0x00238000
+#define MCU_X        (OUT_W / 16)
+#define MCU_Y        (IMG_H / 16)
+#define DELTA_T      6           /* mean |difference| per 8x8 block that counts as a change */
+#define FULL_EVERY   120         /* a full picture at least every this many delta pictures */
 #define JPEG_QUALITY 50
 
 #include "jpeg_enc.h"
@@ -232,6 +247,38 @@ static unsigned long pll_init(void)
     R16(PLL_DIV) = 0x0002;
     SSYNC();
     return ((unsigned long)R16(PLL_CTL) << 16) | R16(PLL_DIV);
+}
+
+/* External SDRAM as the factory init block (EBIU_SDGCTL 0, pause, SDRRC 0x26B, SDBCTL 0x11,
+ * SDGCTL 0xC0911109, dummy read to start the power-up sequence); needs SCLK 120 MHz.
+ * Then a pattern test over the send buffer; returns the number of bad words (0 = usable). */
+#define EBIU_SDGCTL 0xFFC00A10
+#define EBIU_SDBCTL 0xFFC00A14
+#define EBIU_SDRRC  0xFFC00A18
+#define SDRAM_TEST_WORDS 0x50000UL  /* 1.25 MB: send buffer, current and reference picture */
+
+static unsigned long sdram_init(void)
+{
+    volatile unsigned long *m = (volatile unsigned long *)SEND_SDRAM;
+    unsigned long i, bad = 0, t;
+    R32(EBIU_SDGCTL) = 0;
+    SSYNC();
+    for (t = 0; t < 10000UL; t++)
+        __asm__ volatile("nop;");
+    R16(EBIU_SDRRC) = 0x026B;
+    SSYNC();
+    R16(EBIU_SDBCTL) = 0x0011;
+    SSYNC();
+    R32(EBIU_SDGCTL) = 0xC0911109UL;
+    SSYNC();
+    (void)R16(0x00000000);          /* first access starts the power-up sequence */
+    SSYNC();
+    for (i = 0; i < SDRAM_TEST_WORDS; i++)
+        m[i] = (i * 0x9E3779B1UL) ^ 0xA5A5A5A5UL;
+    for (i = 0; i < SDRAM_TEST_WORDS; i++)
+        if (m[i] != ((i * 0x9E3779B1UL) ^ 0xA5A5A5A5UL))
+            bad++;
+    return bad;
 }
 
 static unsigned int sensor_init(void)
@@ -388,11 +435,15 @@ static unsigned int sensor_init(void)
 
 #define SMP(i) ((int)((buf[i] >> 2) & 0xFF))
 
-/* grab output rows row0 .. row0 + n - 1 (320 pixels each) into yout; if uout/vout are
- * given, also the 160-pixel U/V rows of the even output rows into uout/vout (row R/2 - row0/2) */
+/* grab output rows row0 .. row0 + n - 1 into yout; if uout/vout are given, also the U/V
+ * rows (half width) of the even output rows into uout/vout (row R/2 - row0/2).
+ * hires 0: 320 wide, row R = sensor line 2R, pixel x = sensor pixel 2x;
+ * hires 1: 640 wide, row R = sensor line R, pixel x = sensor pixel x. */
 static void capture(volatile unsigned char *yout, volatile unsigned char *uout, volatile unsigned char *vout,
-                    unsigned int row0, unsigned int n)
+                    unsigned int row0, unsigned int n, unsigned int hires)
 {
+    unsigned long rstride = hires ? LINE_SAMP : 2UL * LINE_SAMP;
+    unsigned int ow = hires ? 2 * OUT_W : OUT_W, ystep = hires ? 2 : 4;
     volatile unsigned short *buf = (volatile unsigned short *)0xFF900000;
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
     unsigned int k, x, r, kmin, kmax;
@@ -404,8 +455,8 @@ static void capture(volatile unsigned char *yout, volatile unsigned char *uout, 
     R16(PORTG_FER) = 0x0460;        /* PG5, PG6, PG10 peripheral; PG7 GPIO */
     SSYNC();
 
-    kmin = (unsigned int)(((unsigned long)row0 * ROW_STRIDE) / BAND_SAMP);
-    kmax = (unsigned int)((((unsigned long)(row0 + n - 1)) * ROW_STRIDE + ACTIVE_SAMP + LINE_SAMP) / BAND_SAMP);
+    kmin = (unsigned int)(((unsigned long)row0 * rstride) / BAND_SAMP);
+    kmax = (unsigned int)((((unsigned long)(row0 + n - 1)) * rstride + ACTIVE_SAMP + LINE_SAMP) / BAND_SAMP);
     for (k = kmin; k <= kmax; k++) {
         unsigned long t, g0, g1;
 
@@ -443,21 +494,21 @@ static void capture(volatile unsigned char *yout, volatile unsigned char *uout, 
         st[5] = k;                  /* 0xFF800014: last band */
 
         for (r = 0; r < n; r++) {
-            unsigned long g = (unsigned long)(row0 + r) * ROW_STRIDE;
+            unsigned long g = (unsigned long)(row0 + r) * rstride;
             if (g + ACTIVE_SAMP <= g0 || g >= g1)
                 continue;
-            for (x = 0; x < OUT_W; x++) {
-                unsigned long gx = g + 4UL * x;
+            for (x = 0; x < ow; x++) {
+                unsigned long gx = g + (unsigned long)ystep * x;
                 if (gx >= g0 && gx < g1)
-                    yout[r * OUT_W + x] = (unsigned char)SMP(gx - g0);
+                    yout[r * ow + x] = (unsigned char)SMP(gx - g0);
             }
             if (uout && !((row0 + r) & 1)) {
                 unsigned int cr = r >> 1;
-                for (x = 0; x < OUT_W / 2; x++) {
-                    unsigned long gx = g + 8UL * x;
+                for (x = 0; x < ow / 2; x++) {
+                    unsigned long gx = g + 2UL * ystep * x;     /* pixel pair of output pixel 2x */
                     if (gx + 3 >= g0 && gx + 3 < g1 && gx + 1 >= g0) {
-                        uout[cr * (OUT_W / 2) + x] = (unsigned char)SMP(gx + 1 - g0);
-                        vout[cr * (OUT_W / 2) + x] = (unsigned char)SMP(gx + 3 - g0);
+                        uout[cr * (ow / 2) + x] = (unsigned char)SMP(gx + 1 - g0);
+                        vout[cr * (ow / 2) + x] = (unsigned char)SMP(gx + 3 - g0);
                     }
                 }
             }
@@ -465,17 +516,164 @@ static void capture(volatile unsigned char *yout, volatile unsigned char *uout, 
     }
 }
 
-/* whole picture as JPEG into SEND_BUF: 2 length bytes (little endian), then the JPEG;
- * colour 1 = YCbCr 4:2:0, 0 = grayscale; returns the number of bytes to send */
-static unsigned int grab_jpeg(unsigned int colour)
+static unsigned long sdram_bad = 0xFFFFFFFFUL;   /* set in main(); 0 = SDRAM usable */
+
+/* buffer the picture is sent from: SDRAM if it passed the test, else L1 */
+static unsigned char *send_buf(unsigned long *max)
+{
+    if (sdram_bad == 0) {
+        *max = SEND_SDRAM_MAX;
+        return (unsigned char *)SEND_SDRAM;
+    }
+    *max = SEND_L1_MAX;
+    return (unsigned char *)SEND_L1;
+}
+
+/* sum of |a - b| over an 8x8 block */
+static unsigned long sad8(const volatile unsigned char *a, const volatile unsigned char *b, unsigned int stride)
+{
+    unsigned long sum = 0;
+    unsigned int x, y;
+    for (y = 0; y < 8; y++)
+        for (x = 0; x < 8; x++) {
+            int d = (int)a[y * stride + x] - (int)b[y * stride + x];
+            sum += (unsigned long)(d < 0 ? -d : d);
+        }
+    return sum;
+}
+
+/* MCU m (16x16 Y + 8x8 Cb/Cr) of the current picture differs from the reference by more
+ * than the noise: any of its six 8x8 blocks has a mean |difference| above the threshold */
+static int mcu_changed(unsigned int m, unsigned long thr)
+{
+    unsigned int mx = m % MCU_X, my = m / MCU_X;
+    unsigned long yo = (unsigned long)my * 16 * OUT_W + mx * 16, co = (unsigned long)my * 8 * (OUT_W / 2) + mx * 8;
+    const volatile unsigned char *cy = (const volatile unsigned char *)CUR_Y + yo;
+    const volatile unsigned char *ry = (const volatile unsigned char *)REF_Y + yo;
+    unsigned long lim = 64UL * thr;
+    if (sad8(cy, ry, OUT_W) > lim || sad8(cy + 8, ry + 8, OUT_W) > lim ||
+        sad8(cy + 8 * OUT_W, ry + 8 * OUT_W, OUT_W) > lim || sad8(cy + 8 * OUT_W + 8, ry + 8 * OUT_W + 8, OUT_W) > lim)
+        return 1;
+    if (sad8((const volatile unsigned char *)CUR_U + co, (const volatile unsigned char *)REF_U + co, OUT_W / 2) > lim ||
+        sad8((const volatile unsigned char *)CUR_V + co, (const volatile unsigned char *)REF_V + co, OUT_W / 2) > lim)
+        return 1;
+    return 0;
+}
+
+/* encode MCU m of the current picture (independent restart interval) and copy it to the
+ * reference */
+static void mcu_encode_and_keep(unsigned int m)
+{
+    unsigned int mx = m % MCU_X, my = m / MCU_X, r;
+    unsigned long yo = (unsigned long)my * 16 * OUT_W + mx * 16, co = (unsigned long)my * 8 * (OUT_W / 2) + mx * 8;
+    unsigned char *cy = (unsigned char *)CUR_Y + yo, *cu = (unsigned char *)CUR_U + co, *cv = (unsigned char *)CUR_V + co;
+    unsigned char *ry = (unsigned char *)REF_Y + yo, *ru = (unsigned char *)REF_U + co, *rv = (unsigned char *)REF_V + co;
+    jpeg_mcu(cy, OUT_W, cu, cv, OUT_W / 2);
+    for (r = 0; r < 16; r++) {
+        unsigned int x;
+        for (x = 0; x < 16; x++)
+            ry[r * OUT_W + x] = cy[r * OUT_W + x];
+    }
+    for (r = 0; r < 8; r++) {
+        unsigned int x;
+        for (x = 0; x < 8; x++) {
+            ru[r * (OUT_W / 2) + x] = cu[r * (OUT_W / 2) + x];
+            rv[r * (OUT_W / 2) + x] = cv[r * (OUT_W / 2) + x];
+        }
+    }
+}
+
+static unsigned int have_ref, full_id, since_full;
+
+/* 320x240 colour picture as a full JPEG (restart marker after every MCU, COM 'I' id) or,
+ * if delta is allowed and a reference exists, as a delta blob:
+ *   'D' '1' id  mcus_lo mcus_hi  count_lo count_hi  then per changed MCU:
+ *   idx_lo idx_hi  len_lo len_hi  len bytes of entropy-coded data (one restart interval)
+ * The receiver replaces those restart intervals in its copy of full picture 'id'.
+ * Writes into send (after the 2 length bytes); returns the blob length (0 = overflow). */
+static unsigned long grab_color_delta(unsigned char *send, unsigned long max, int allow_delta)
+{
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    unsigned int row, m, changed = 0, total = MCU_X * MCU_Y, full;
+    unsigned long thr = st[20] ? st[20] : DELTA_T, len;
+    unsigned char *blob = send + 2;
+    static unsigned char chg[MCU_X * MCU_Y];
+
+    for (row = 0; row < IMG_H; row += STRIP_H)
+        capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
+                (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+    full = !allow_delta || !have_ref || since_full >= FULL_EVERY;
+    if (!full) {
+        for (m = 0; m < total; m++) {
+            chg[m] = (unsigned char)mcu_changed(m, thr);
+            changed += chg[m];
+        }
+        if (changed * 2 > total)
+            full = 1;
+    }
+    st[21] = changed;               /* 0xFF800054: changed MCUs (delta check) */
+    if (full) {
+        full_id = (full_id + 1) & 0xFF;
+        jpeg_begin(blob, max - 2, OUT_W, IMG_H, JPEG_QUALITY, 1, 1, (int)full_id);
+        for (m = 0; m < total; m++) {
+            if (m)
+                jpeg_rst(m - 1);
+            mcu_encode_and_keep(m);
+        }
+        len = jpeg_end();
+        have_ref = len != 0;
+        since_full = 0;
+        st[22] = 1;                 /* 0xFF800058: 1 full, 2 delta */
+        return len;
+    }
+    jpeg_tables(blob, max - 2, OUT_W, JPEG_QUALITY, 1);
+    jpeg_put('D');
+    jpeg_put('1');
+    jpeg_put(full_id);
+    jpeg_put(total & 0xFF);
+    jpeg_put(total >> 8);
+    jpeg_put(changed & 0xFF);
+    jpeg_put(changed >> 8);
+    for (m = 0; m < total; m++) {
+        unsigned long pos;
+        if (!chg[m])
+            continue;
+        jpeg_put(m & 0xFF);
+        jpeg_put(m >> 8);
+        pos = jpeg_len();
+        jpeg_put(0);
+        jpeg_put(0);
+        mcu_encode_and_keep(m);
+        len = jpeg_len() - pos - 2;
+        if (pos + 1 < max - 2) {
+            blob[pos] = (unsigned char)(len & 0xFF);
+            blob[pos + 1] = (unsigned char)(len >> 8);
+        }
+    }
+    len = jpeg_len();
+    if (jpeg_end() == 0) {          /* overflow: send a full picture next time */
+        have_ref = 0;
+        return 0;
+    }
+    since_full++;
+    st[22] = 2;
+    return len;
+}
+
+/* whole picture as JPEG into the send buffer: 2 length bytes (little endian), then the JPEG.
+ * mode 0 = 320x240 grayscale, 1 = 320x240 colour (full, one restart interval per MCU),
+ * 2 = 640x480 colour, 3 = 320x240 colour as a delta against the last picture when
+ * possible (see grab_color_delta); modes 1..3 need the SDRAM.
+ * Returns the number of bytes to send (2 with length 0 on failure) */
+static unsigned int grab_jpeg(unsigned int mode)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
     unsigned char *strip = (unsigned char *)STRIP_BUF;
     unsigned char *su = (unsigned char *)STRIP_U;
     unsigned char *sv = (unsigned char *)STRIP_V;
-    unsigned char *send = (unsigned char *)SEND_BUF;
-    unsigned int row;
-    unsigned long len, w = st[13];
+    unsigned long max, len, w = st[13];
+    unsigned char *send = send_buf(&max);
+    unsigned int row, hires = mode == 2, ow = hires ? 2 * OUT_W : OUT_W, oh = hires ? 2 * IMG_H : IMG_H;
 
     /* test: 0xFF800034 = 0x80000000 | reg << 8 | value writes one sensor register before
      * the next picture (set over JTAG) */
@@ -483,15 +681,26 @@ static unsigned int grab_jpeg(unsigned int colour)
         st[14] = (unsigned long)twi_write16((unsigned int)((w >> 8) & 0xFFFF), (unsigned int)(w & 0xFF));
         st[13] = 0;
     }
-    jpeg_begin(send + 2, SEND_MAX - 2, OUT_W, IMG_H, JPEG_QUALITY, colour);
-    for (row = 0; row < IMG_H; row += STRIP_H) {
-        if (colour) {
-            capture(strip, su, sv, row, STRIP_H);
-            jpeg_rows_color(strip, OUT_W, su, sv, OUT_W / 2);
+    if (mode != 0 && sdram_bad != 0) {
+        send[0] = send[1] = 0;
+        return 2;
+    }
+    if (mode == 1 || mode == 3) {
+        len = grab_color_delta(send, max, mode == 3);
+        st[10] = len;
+        send[0] = (unsigned char)(len & 0xFF);
+        send[1] = (unsigned char)(len >> 8);
+        return (unsigned int)len + 2;
+    }
+    jpeg_begin(send + 2, max - 2, ow, oh, JPEG_QUALITY, mode != 0, 0, -1);
+    for (row = 0; row < oh; row += STRIP_H) {
+        if (mode != 0) {
+            capture(strip, su, sv, row, STRIP_H, hires);
+            jpeg_rows_color(strip, ow, su, sv, ow / 2);
         } else {
-            capture(strip, 0, 0, row, STRIP_H);
-            jpeg_rows(strip, OUT_W);
-            jpeg_rows(strip + 8 * OUT_W, OUT_W);
+            capture(strip, 0, 0, row, STRIP_H, 0);
+            jpeg_rows(strip, ow);
+            jpeg_rows(strip + 8 * ow, ow);
         }
     }
     len = jpeg_end();
@@ -504,7 +713,8 @@ static unsigned int grab_jpeg(unsigned int colour)
 int main(void)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
-    volatile unsigned char *out = (volatile unsigned char *)SEND_BUF;
+    volatile unsigned char *out;
+    unsigned long out_max;
     unsigned int tx = 0, rx, ptr = 0, ready = 0, size = 0, hold = 0;
 
     st[1] = 0;
@@ -514,6 +724,12 @@ int main(void)
     st[9] = 0;
     st[10] = 0;
     st[17] = pll_init();            /* 0xFF800044: PLL_CTL << 16 | PLL_DIV afterwards */
+    sdram_bad = sdram_init();
+    have_ref = 0;                   /* .bss is not zeroed by a JTAG load */
+    full_id = 0;
+    since_full = 0;
+    st[19] = sdram_bad;             /* 0xFF80004C: bad SDRAM test words (0 = SDRAM in use) */
+    out = send_buf(&out_max);
     st[4] = sensor_init();          /* 0xFF800010: TWI errors during sensor setup */
 
     R16(PORTH_FER) &= ~0x000F;      /* PH0..PH3 GPIO */
@@ -527,7 +743,7 @@ int main(void)
         st[11] = 0;
         for (t = 0; t < 20000000UL; t++)    /* let the sensor's AEC settle */
             __asm__ volatile("nop;");
-        size = grab_jpeg(st[18] == 1);
+        size = grab_jpeg(st[18]);
         ready = 1;
         tx = 0x5A;
         st[11] = 0x1D6E00D0UL;
@@ -539,18 +755,23 @@ int main(void)
         if (rx & 0x100)
             continue;               /* aborted transfer: keep the same answer */
         st[3] = rx;
-        if (hold && (rx == 0xD0 || rx == 0xD1 || (rx & 0xF0) == 0xC0)) {
+        if (hold && (rx >= 0xD0 && rx <= 0xD3 || (rx & 0xF0) == 0xC0)) {
             tx = 0x5A;
-        } else if (rx == 0xD0 || rx == 0xD1) {
-            /* 0xD1 colour; 0xD0 grayscale unless 0xFF800048 = 1 (JTAG test) */
-            size = grab_jpeg(rx == 0xD1 || st[18] == 1);
+        } else if (rx >= 0xD0 && rx <= 0xD3) {
+            /* 0xD0 grayscale, 0xD1 colour, 0xD2 640x480 colour, 0xD3 colour delta;
+             * 0xFF800048 (JTAG test) overrides the mode of 0xD0 */
+            size = grab_jpeg(rx == 0xD0 ? st[18] : rx - 0xD0);
             ready = 1;
             ptr = 0;
             st[1]++;
             tx = 0x5A;
         } else if ((rx & 0xF0) == 0xC0) {
-            capture(out, 0, 0, (rx & 3) * OUT_H, OUT_H);
-            size = OUT_SIZE;
+            if (out_max >= OUT_SIZE) {
+                capture(out, 0, 0, (rx & 3) * OUT_H, OUT_H, 0);
+                size = OUT_SIZE;
+            } else {
+                size = 0;           /* raw quarters need the SDRAM send buffer */
+            }
             ready = 1;
             ptr = 0;
             st[1]++;

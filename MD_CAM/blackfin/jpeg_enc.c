@@ -222,8 +222,10 @@ static void build_class(struct jclass *c, const unsigned char *stdq, unsigned in
     build_huff(acb, acv, c->ac_code, c->ac_size);
 }
 
-void jpeg_begin(unsigned char *out, unsigned long max, unsigned int w, unsigned int h,
-                unsigned int quality, unsigned int colour)
+static unsigned int dri_mcus;        /* restart interval written in DRI */
+
+/* tables and output only, no header (used for delta blobs and by jpeg_begin) */
+void jpeg_tables(unsigned char *out, unsigned long max, unsigned int w, unsigned int quality, unsigned int colour)
 {
     unsigned int u, x, scale;
 
@@ -237,6 +239,7 @@ void jpeg_begin(unsigned char *out, unsigned long max, unsigned int w, unsigned 
     color = colour ? 1 : 0;
     mcus_x = color ? w >> 4 : w >> 3;
     restart_n = 0;
+    dri_mcus = mcus_x;
 
     /* IJG quality scaling */
     if (quality < 1)
@@ -250,7 +253,14 @@ void jpeg_begin(unsigned char *out, unsigned long max, unsigned int w, unsigned 
     for (u = 0; u < 8; u++)
         for (x = 0; x < 8; x++)
             dctm[u * 8 + x] = (short)(u == 0 ? 2896 : cos_pi16((2 * x + 1) * u));
+}
 
+void jpeg_begin(unsigned char *out, unsigned long max, unsigned int w, unsigned int h,
+                unsigned int quality, unsigned int colour, unsigned int dri, int comment_id)
+{
+    jpeg_tables(out, max, w, quality, colour);
+    if (dri)
+        dri_mcus = dri;
     put_word(0xFFD8);               /* SOI */
     put_word(0xFFE0);               /* APP0 JFIF 1.01, no thumbnail */
     put_word(16);
@@ -261,6 +271,12 @@ void jpeg_begin(unsigned char *out, unsigned long max, unsigned int w, unsigned 
     put_word(1);
     put_byte(0);
     put_byte(0);
+    if (comment_id >= 0) {          /* COM 'I' id: lets the receiver match delta updates */
+        put_word(0xFFFE);
+        put_word(4);
+        put_byte('I');
+        put_byte((unsigned int)comment_id & 0xFF);
+    }
     put_dqt(0, cls[0].qtab);
     if (color)
         put_dqt(1, cls[1].qtab);
@@ -286,7 +302,7 @@ void jpeg_begin(unsigned char *out, unsigned long max, unsigned int w, unsigned 
     }
     put_word(0xFFDD);               /* DRI: restart after every MCU row */
     put_word(4);
-    put_word(mcus_x);
+    put_word(dri_mcus);
     put_word(0xFFDA);               /* SOS */
     if (color) {
         put_word(12);
@@ -340,11 +356,12 @@ static void encode_block(const unsigned char *px, unsigned int stride, const str
                 s += (long)t[y * 8 + u] * dctm[v * 8 + y];
             q[v * 8 + u] = (int)((s + (1L << 14)) >> 15);
         }
-    /* quantise: round(F / q) = (|8F| * (2^19 / q) + 2^21) >> 22 */
+    /* quantise: round(F / q) = (|8F| * (2^19 / q) + 2^21) >> 22; the AC coefficients round
+     * at 0.6 instead of 0.5 (small dead zone: noise-level coefficients become zero) */
     for (k = 0; k < 64; k++) {
         int f = q[k];
         unsigned long a = (unsigned long)(f < 0 ? -f : f);
-        int r = (int)((a * c->qrecip[k] + (1UL << 21)) >> 22);
+        int r = (int)((a * c->qrecip[k] + (k ? 1677722UL : (1UL << 21))) >> 22);
         q[k] = f < 0 ? -r : r;
     }
 
@@ -407,6 +424,40 @@ void jpeg_rows_color(const unsigned char *y, unsigned int ystride,
         encode_block(cb + mx * 8, cstride, &cls[1], &dc_pred[1]);
         encode_block(cr + mx * 8, cstride, &cls[1], &dc_pred[2]);
     }
+}
+
+/* one MCU as an independent restart interval: DC predictions reset, bits flushed at the
+ * end (no marker); colour: 16x16 Y + 8x8 Cb/Cr, grayscale: one 8x8 block (cb, cr unused) */
+void jpeg_mcu(const unsigned char *y, unsigned int ystride,
+              const unsigned char *cb, const unsigned char *cr, unsigned int cstride)
+{
+    dc_pred[0] = dc_pred[1] = dc_pred[2] = 0;
+    if (color) {
+        encode_block(y, ystride, &cls[0], &dc_pred[0]);
+        encode_block(y + 8, ystride, &cls[0], &dc_pred[0]);
+        encode_block(y + 8 * ystride, ystride, &cls[0], &dc_pred[0]);
+        encode_block(y + 8 * ystride + 8, ystride, &cls[0], &dc_pred[0]);
+        encode_block(cb, cstride, &cls[1], &dc_pred[1]);
+        encode_block(cr, cstride, &cls[1], &dc_pred[2]);
+    } else {
+        encode_block(y, ystride, &cls[0], &dc_pred[0]);
+    }
+    flush_bits();
+}
+
+void jpeg_rst(unsigned int n)
+{
+    put_word(0xFFD0 + (n & 7));
+}
+
+void jpeg_put(unsigned int b)
+{
+    put_byte(b);
+}
+
+unsigned long jpeg_len(void)
+{
+    return o_len;
 }
 
 unsigned long jpeg_end(void)

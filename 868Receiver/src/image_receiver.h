@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define MAX_IMAGE_SIZE 32768
+#define MAX_IMAGE_SIZE 65536    /* 640x480 colour JPEG ~20 KB */
 
 void imageReceiverInit(void);
 
@@ -27,6 +27,9 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
 
 /** Last finished JPEG (nullptr if none yet); missing = chunks that never arrived (zeros). */
 const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing);
+
+/** Last finished JPEG wider than 320 pixels (640x480), nullptr if none yet. */
+const uint8_t* imageReceiverJpegLarge(size_t* len, uint16_t* missing);
 
 /* ---------------------------------------------------------------------------------------
  * Raw grayscale tiles (packet type 0x81) from the MD CAM camera link (BF_IMG_LINK).

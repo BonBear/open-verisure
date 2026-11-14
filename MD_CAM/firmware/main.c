@@ -1836,7 +1836,9 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_IMG_LINK 1           // pull the camera picture from the Blackfin (snap_link.c) and send it over RF
 #define BF_IMG_BLOCK 8           // pixels per RF tile (packet type 0x81) / JPEG bytes per chunk (0x80)
 #define BF_IMG_JPEG 1            // 1: JPEG from the Blackfin (packet type 0x80); 0: raw quarters (0x81)
-#define BF_IMG_CMD 0xD1          // 0xD1 colour JPEG (YCbCr 4:2:0), 0xD0 grayscale
+#define BF_IMG_CMD 0xD3          // 0xD3 colour 320x240 as delta (only changed blocks), 0xD1 full colour, 0xD0 grayscale
+#define BF_IMG_HIRES_EVERY 60    // every Nth picture as 640x480 colour (0xD2, ~20 KB); 0 = never
+#define BF_IMG_PAUSE_MS 2000     // pause between pictures (delay_ms runs ~2.75x slow: ~5.5 s)
 
 // Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
 // P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
@@ -1935,9 +1937,16 @@ static void bf_jtag_hold(uint16_t *p_seq) {
     // per RF packet (type 0x80, chunk number, length, first/last flags); the gateway places
     // the chunks by number and serves /api/camera.jpg. RF on a failure: B8, tries, status.
     for (;;) {
-        uint8_t st = 0, tries, i, n;
+        static uint8_t pic = BF_IMG_HIRES_EVERY - 1;   // the first picture after start is 640x480
+        uint8_t st = 0, tries, i, n, cmd = BF_IMG_CMD;
         uint16_t len, off, idx;
-        bf_link_xfer(BF_IMG_CMD);
+#if BF_IMG_HIRES_EVERY
+        if (++pic >= BF_IMG_HIRES_EVERY) {
+            pic = 0;
+            cmd = 0xD2;
+        }
+#endif
+        bf_link_xfer(cmd);
         for (tries = 0; tries < 40; tries++) {
             delay_ms(300);
             bf_link_xfer(0xB0);
@@ -1952,7 +1961,7 @@ static void bf_jtag_hold(uint16_t *p_seq) {
         }
         len = bf_link_xfer(0x00);
         len |= (uint16_t)bf_link_xfer(0x00) << 8;
-        if (len < 4 || len > 22000u) {
+        if (len < 4 || len > 65000u) {
             transmit((*p_seq)++, false, false, false, 0xB8, 0xFF, (uint8_t)len, (uint8_t)(len >> 8));
             delay_ms(2000);
             continue;
@@ -1963,6 +1972,7 @@ static void bf_jtag_hold(uint16_t *p_seq) {
                 s_img_blk[i] = bf_link_xfer(0x00);
             transmit_image_chunk((*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
         }
+        delay_ms(BF_IMG_PAUSE_MS);
     }
 #endif
     for (;;) {
