@@ -585,6 +585,18 @@ static void handleApiCameraBmp() {
     s_server.send_P(200, "image/bmp", (const char*)bmp, len);
 }
 
+static void handleApiCameraJpg() {
+    size_t len = 0;
+    uint16_t missing = 0;
+    const uint8_t* jpg = imageReceiverJpeg(&len, &missing);
+    if (!jpg) {
+        s_server.send(404, "text/plain", "no picture yet");
+        return;
+    }
+    s_server.sendHeader("X-Missing-Chunks", String(missing));
+    s_server.send_P(200, "image/jpeg", (const char*)jpg, len);
+}
+
 static void handleApiCameraTest() {
     String devId = "2NCEKS3T";
     if (s_server.hasArg("id")) {
@@ -642,6 +654,7 @@ void webPortalInit() {
     s_server.on("/api/reboot", HTTP_POST, handleApiReboot);
     s_server.on("/api/reset", HTTP_POST, handleApiReset);
     s_server.on("/api/camera.bmp", HTTP_GET, handleApiCameraBmp);
+    s_server.on("/api/camera.jpg", HTTP_GET, handleApiCameraJpg);
     s_server.on("/api/camera_test", HTTP_GET, handleApiCameraTest);
     s_server.on("/api/camera_test", HTTP_POST, handleApiCameraTest);
 

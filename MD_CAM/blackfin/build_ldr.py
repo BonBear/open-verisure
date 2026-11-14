@@ -78,7 +78,8 @@ def write_header(name: str, data: bytes) -> None:
 def main() -> None:
     args = sys.argv[1:]
     elf_only = "--elf-only" in args
-    sources = [a for a in args if a != "--elf-only"] or ["spi_probe.S"]
+    header = "--header" in args          # also write firmware/bf_ldr.h (CC1110 SPI boot test)
+    sources = [a for a in args if a not in ("--elf-only", "--header")] or ["spi_probe.S"]
     name = os.path.splitext(os.path.basename(sources[0]))[0]
     os.makedirs(BUILD, exist_ok=True)
     elf = os.path.join(BUILD, name + ".elf")
@@ -95,8 +96,9 @@ def main() -> None:
     data = open(ldr, "rb").read()
     print(f"[+] {ldr} ({len(data)} bytes)")
     check_ldr(data)
-    write_header(os.path.basename(sources[0]), data)
-    print(f"[+] {os.path.normpath(HEADER)}")
+    if header:
+        write_header(os.path.basename(sources[0]), data)
+        print(f"[+] {os.path.normpath(HEADER)}")
 
 
 if __name__ == "__main__":

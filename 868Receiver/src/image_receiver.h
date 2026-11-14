@@ -16,7 +16,7 @@ void imageReceiverInit(void);
 /**
  * @brief Process an incoming authenticated image chunk from RF.
  * @param deviceId 8-char sensor ID.
- * @param chunkIdx 16-bit chunk index (0..N).
+ * @param chunkIdx 16-bit chunk index (0..N); chunk n holds bytes 8n.. of the JPEG.
  * @param chunkLen Number of bytes in this chunk (1..8).
  * @param isFirst True if this is the first chunk (SOI).
  * @param isLast True if this is the final chunk (EOI).
@@ -24,6 +24,9 @@ void imageReceiverInit(void);
  */
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
                                bool isFirst, bool isLast, const uint8_t* data);
+
+/** Last finished JPEG (nullptr if none yet); missing = chunks that never arrived (zeros). */
+const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing);
 
 /* ---------------------------------------------------------------------------------------
  * Raw grayscale tiles (packet type 0x81) from the MD CAM camera link (BF_IMG_LINK).

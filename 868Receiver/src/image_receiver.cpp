@@ -8,78 +8,107 @@
 #include <string.h>
 #include <esp_heap_caps.h>
 
-static uint8_t s_imgBuf[MAX_IMAGE_SIZE];
-static size_t s_imgLen = 0;
-static uint16_t s_expectedChunk = 0;
+/* ------------------------------ JPEG chunks (type 0x80) ------------------------------
+ * Chunk n carries bytes 8n .. 8n+len-1 of the JPEG (the MD CAM sends 8-byte chunks, the
+ * last one shorter). Chunks are placed by number, so a lost packet only leaves an 8-byte
+ * hole (zeros); the sender puts a restart marker after every block row, so a hole only
+ * damages that row. A picture is finished by its last chunk, or by the first chunk of the
+ * next picture, and is then published on MQTT and served on /api/camera.jpg. */
+#define JPEG_CHUNK 8
+#define JPEG_MAX_CHUNKS (MAX_IMAGE_SIZE / JPEG_CHUNK)
+
+static uint8_t* s_imgBuf = nullptr;          // picture being received
+static uint8_t* s_jpg = nullptr;             // last finished picture
+static uint8_t s_have[JPEG_MAX_CHUNKS / 8];  // bit per chunk received
+static size_t s_imgEnd = 0;                  // bytes up to the highest chunk seen
+static uint16_t s_haveCount = 0;
+static int32_t s_lastIdx = -1;
+static size_t s_jpgLen = 0;
+static uint16_t s_jpgMissing = 0;
 static char s_activeDeviceId[10] = {0};
 static unsigned long s_lastChunkTime = 0;
 
+static uint8_t* allocBig(size_t n) {
+    uint8_t* p = (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = (uint8_t*)malloc(n);
+    return p;
+}
+
+static void jpegReset(void) {
+    if (s_imgBuf) memset(s_imgBuf, 0, MAX_IMAGE_SIZE);
+    memset(s_have, 0, sizeof(s_have));
+    s_imgEnd = 0;
+    s_haveCount = 0;
+    s_lastIdx = -1;
+}
+
+// Finish the picture in s_imgBuf (len bytes; missing chunks stay zero) and publish it.
+static void jpegFinish(size_t len) {
+    if (len < 4 || !s_jpg) {
+        jpegReset();
+        return;
+    }
+    uint16_t chunks = (len + JPEG_CHUNK - 1) / JPEG_CHUNK;
+    uint16_t missing = chunks > s_haveCount ? chunks - s_haveCount : 0;
+    memcpy(s_jpg, s_imgBuf, len);
+    s_jpgLen = len;
+    s_jpgMissing = missing;
+    bool soi = s_jpg[0] == 0xFF && s_jpg[1] == 0xD8;
+    Serial.printf("[ImageReceiver] JPEG from %s: %u bytes, %u/%u chunks missing%s\n", s_activeDeviceId,
+                  (unsigned int)len, missing, chunks, soi ? "" : " (no SOI)");
+    if (!mqttPublishCameraImage(s_activeDeviceId, s_jpg, len))
+        Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
+    jpegReset();
+}
+
 void imageReceiverInit(void) {
-    s_imgLen = 0;
-    s_expectedChunk = 0;
     s_activeDeviceId[0] = '\0';
     s_lastChunkTime = 0;
+    jpegReset();
 }
 
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
                                bool isFirst, bool isLast, const uint8_t* data) {
-    if (!deviceId || !data || chunkLen == 0 || chunkLen > 8) return;
+    if (!deviceId || !data || chunkLen == 0 || chunkLen > JPEG_CHUNK || chunkIdx >= JPEG_MAX_CHUNKS) return;
+    if (!s_imgBuf) {
+        s_imgBuf = allocBig(MAX_IMAGE_SIZE);
+        s_jpg = allocBig(MAX_IMAGE_SIZE);
+        if (!s_imgBuf || !s_jpg) return;
+        jpegReset();
+    }
 
     unsigned long now = millis();
-
-    // Reset buffer on First chunk or on timeout (> 8 seconds since last chunk)
-    if (isFirst || (s_imgLen > 0 && now - s_lastChunkTime > 8000) ||
-        strcmp(s_activeDeviceId, deviceId) != 0) {
-        s_imgLen = 0;
-        s_expectedChunk = 0;
+    bool otherDevice = strcmp(s_activeDeviceId, deviceId) != 0;
+    bool stale = s_lastIdx >= 0 && now - s_lastChunkTime > 15000;
+    bool wrapped = s_lastIdx >= 0 && (int32_t)chunkIdx < s_lastIdx;   // next picture, first chunk lost
+    if (otherDevice || stale) {
+        jpegReset();
+    } else if ((isFirst || wrapped) && s_lastIdx >= 0) {
+        jpegFinish(s_imgEnd);           // previous picture lost its last chunk
+    }
+    if (otherDevice) {
         strncpy(s_activeDeviceId, deviceId, 9);
         s_activeDeviceId[9] = '\0';
     }
-
     s_lastChunkTime = now;
 
-    // Buffer overflow guard
-    if (s_imgLen + chunkLen > MAX_IMAGE_SIZE) {
-        Serial.printf("[ImageReceiver] Image buffer overflow (> %d bytes), resetting.\n", MAX_IMAGE_SIZE);
-        s_imgLen = 0;
-        s_expectedChunk = 0;
-        return;
+    size_t off = (size_t)chunkIdx * JPEG_CHUNK;
+    memcpy(s_imgBuf + off, data, chunkLen);
+    uint8_t bit = 1 << (chunkIdx & 7);
+    if (!(s_have[chunkIdx >> 3] & bit)) {
+        s_have[chunkIdx >> 3] |= bit;
+        s_haveCount++;
     }
+    if (off + chunkLen > s_imgEnd) s_imgEnd = off + chunkLen;
+    s_lastIdx = chunkIdx;
 
-    // Append chunk
-    memcpy(&s_imgBuf[s_imgLen], data, chunkLen);
-    s_imgLen += chunkLen;
-    s_expectedChunk = chunkIdx + 1;
+    if (isLast) jpegFinish(off + chunkLen);
+}
 
-    // Progress log every 32 chunks (~256 bytes) or on completion
-    if ((chunkIdx % 32 == 0) || isLast) {
-        Serial.printf("[ImageReceiver] [%s] Chunk #%u received (+%u B, Total: %u B)%s\n",
-                      deviceId, chunkIdx, chunkLen, (unsigned int)s_imgLen, isLast ? " [FINAL CHUNK]" : "");
-    }
-
-    // Final chunk received -> publish to Home Assistant!
-    if (isLast) {
-        // Validate JPEG SOI marker (0xFF 0xD8)
-        if (s_imgLen >= 4 && s_imgBuf[0] == 0xFF && s_imgBuf[1] == 0xD8) {
-            Serial.printf("[ImageReceiver] >>> VALID JPEG IMAGE RECEIVED (%u bytes) from %s! <<<\n",
-                          (unsigned int)s_imgLen, deviceId);
-            bool ok = mqttPublishCameraImage(deviceId, s_imgBuf, s_imgLen);
-            if (ok) {
-                Serial.printf("[ImageReceiver] Successfully delivered camera image to Home Assistant MQTT!\n");
-            } else {
-                Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
-            }
-        } else {
-            Serial.printf("[ImageReceiver] Warning: Image completed (%u bytes) but missing JPEG SOI header (0x%02X 0x%02X).\n",
-                          (unsigned int)s_imgLen, s_imgBuf[0], s_imgBuf[1]);
-            // Publish anyway in case it's a valid format Home Assistant can decode
-            mqttPublishCameraImage(deviceId, s_imgBuf, s_imgLen);
-        }
-
-        // Reset for next image
-        s_imgLen = 0;
-        s_expectedChunk = 0;
-    }
+const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing) {
+    if (len) *len = s_jpgLen;
+    if (missing) *missing = s_jpgMissing;
+    return s_jpgLen ? s_jpg : nullptr;
 }
 
 /* ------------------------------ raw grayscale tiles ------------------------------ */

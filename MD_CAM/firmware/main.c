@@ -1834,7 +1834,9 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_SPI1_TEST 0          // test: bit-banged SPI master to Blackfin SPI1 (slave, set up over JTAG)
 #define BF_SPI1_MS 2000          // ~5.5 s real time between frames
 #define BF_IMG_LINK 1           // pull the camera picture from the Blackfin (snap_link.c) and send it over RF
-#define BF_IMG_BLOCK 8           // pixels per RF tile (packet type 0x81)
+#define BF_IMG_BLOCK 8           // pixels per RF tile (packet type 0x81) / JPEG bytes per chunk (0x80)
+#define BF_IMG_JPEG 1            // 1: JPEG from the Blackfin (packet type 0x80); 0: raw quarters (0x81)
+#define BF_IMG_CMD 0xD1          // 0xD1 colour JPEG (YCbCr 4:2:0), 0xD0 grayscale
 
 // Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
 // P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
@@ -1926,6 +1928,43 @@ static void bf_jtag_hold(uint16_t *p_seq) {
     P1DIR |= 0x34;                    // P1_2 (select), P1_4 (SCK), P1_5 (MOSI)
     P1DIR &= ~0x08;                   // P1_3 (MISO) input
     P1_4 = 0;
+#if BF_IMG_JPEG
+    // JPEG: BF_IMG_CMD grabs the whole picture and encodes it on the Blackfin (jpeg_enc.c, a
+    // few seconds; the Blackfin does not answer meanwhile), so poll 0xB0/0xA0 until the
+    // answer is 0x5A. Then read the length (2 bytes, little endian) and the JPEG, 8 bytes
+    // per RF packet (type 0x80, chunk number, length, first/last flags); the gateway places
+    // the chunks by number and serves /api/camera.jpg. RF on a failure: B8, tries, status.
+    for (;;) {
+        uint8_t st = 0, tries, i, n;
+        uint16_t len, off, idx;
+        bf_link_xfer(BF_IMG_CMD);
+        for (tries = 0; tries < 40; tries++) {
+            delay_ms(300);
+            bf_link_xfer(0xB0);
+            st = bf_link_xfer(0xA0);  // answer to 0xB0
+            if (st == 0x5A)
+                break;
+        }
+        if (st != 0x5A) {
+            transmit((*p_seq)++, false, false, false, 0xB8, tries, st, 0);
+            delay_ms(2000);
+            continue;
+        }
+        len = bf_link_xfer(0x00);
+        len |= (uint16_t)bf_link_xfer(0x00) << 8;
+        if (len < 4 || len > 22000u) {
+            transmit((*p_seq)++, false, false, false, 0xB8, 0xFF, (uint8_t)len, (uint8_t)(len >> 8));
+            delay_ms(2000);
+            continue;
+        }
+        for (off = 0, idx = 0; off < len; off += n, idx++) {
+            n = (len - off) > BF_IMG_BLOCK ? BF_IMG_BLOCK : (uint8_t)(len - off);
+            for (i = 0; i < n; i++)
+                s_img_blk[i] = bf_link_xfer(0x00);
+            transmit_image_chunk((*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
+        }
+    }
+#endif
     for (;;) {
         uint8_t q, st, i;
         uint16_t off;

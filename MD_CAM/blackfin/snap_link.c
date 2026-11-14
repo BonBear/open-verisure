@@ -2,12 +2,17 @@
  * snap_link.c - Camera capture + software SPI slave towards the CC1110 (RF path).
  *
  * The CC1110 is SPI master (bit-banged mode 0, P1_2 = select) and pulls a 320x240
- * grayscale picture, one 320x60 quarter at a time, then sends it over RF. Blackfin side
+ * grayscale picture, either as JPEG (0xD0) or raw, one 320x60 quarter at a time (0xC0|q),
+ * then sends it over RF. Blackfin side
  * on port H as GPIO (verified 2026-11-11): PH0 SS (low = selected), PH1 SCK, PH2 MISO
  * (output), PH3 MOSI. Every byte received decides the byte answered in the NEXT transfer:
  *
- *   0xC0 | q  grab quarter q (0..3) now, then answer 0x5A
- *   0xB0      answer 0x5A if a quarter is ready, else 0x00
+ *   0xD0      grab the whole picture and encode it as grayscale JPEG (jpeg_enc.c, quality
+ *             JPEG_QUALITY), then answer 0x5A; the bytes read are length (2 bytes, little
+ *             endian) followed by the JPEG
+ *   0xD1      the same in colour (YCbCr 4:2:0)
+ *   0xC0 | q  grab raw quarter q (0..3) now, then answer 0x5A
+ *   0xB0      answer 0x5A if a picture is ready, else 0x00
  *   0xA0      reset the read pointer (next answer is byte 0)
  *   other     answer the next picture byte (CC sends 0x00 while reading)
  *
@@ -19,7 +24,9 @@
  * L1: 0xFF800000 magic 0x5B1F11CC once running, 0xFF800004 quarters grabbed,
  *     0xFF800008 bytes sent, 0xFF80000C last command, 0xFF800010 sensor setup TWI errors,
  *     0xFF800014 last band, 0xFF800018 duplicate/luma phase, 0xFF800020 SEQSTAT and
- *     0xFF800024 RETX after an exception, 0xFF800400 320x60 quarter.
+ *     0xFF800024 RETX after an exception, 0xFF800028 last JPEG length,
+ *     0xFF801000 16-row strip, 0xFF802800 picture to send (raw quarter or length + JPEG).
+ * Tables and variables: 0xFF800100..0xFF800FFF (bf512_l1.ld).
  */
 #define R16(a) (*(volatile unsigned short *)(a))
 #define R32(a) (*(volatile unsigned long *)(a))
@@ -32,6 +39,11 @@
 #define PORTG_MUX    0xFFC03214
 #define PORTGIO      0xFFC01500
 #define PORTGIO_INEN 0xFFC01540
+#define PORTGIO_CLEAR 0xFFC01504
+#define PORTGIO_SET  0xFFC01508
+#define PORTGIO_DIR  0xFFC01530
+#define PORTFIO_CLEAR 0xFFC00704
+#define PORTFIO_DIR  0xFFC00730
 #define PORTHIO      0xFFC01700
 #define PORTHIO_DIR  0xFFC01730
 #define PORTHIO_INEN 0xFFC01740
@@ -48,20 +60,32 @@
 #define DMA0_YMOD    0xFFC00C1C
 #define DMA0_STAT    0xFFC00C28
 
-/* Continuous capture (2026-11-14): PPI without frame syncs (PPI_CONTROL 0x383D) started
- * right after the VSYNC pulse gives a gap-free stream. With our sensor_init() the HREF period
- * is 1170 PCLK samples, and the PPI clock runs 1.5x the data byte rate: in every triplet one
- * sample duplicates the next, so one luma (Y) byte per triplet, 390 per period. A period
- * holds two sensor lines (195 Y each, ~158 active from Y index 6), and a frame is ~240
- * periods = 480 lines (seen 2026-11-14 by showing whole periods). Output: the first line of
- * every period (every 2nd sensor line), active part doubled horizontally to 320. */
-#define BAND_SAMP    7680    /* multiple of 3 so the triplet phase is the same in every band */
-#define PERIOD       1170
-#define ROW_STRIDE   PERIOD
-#define Y_FIRST      6       /* first active luma in a line */
+/* Capture (2026-11-14): with the factory clocks (pll_init) the PPI follows the pixel clock.
+ * PPI without frame syncs (PPI_CONTROL 0x383D) started right after the VSYNC pulse gives
+ * YUYV at one byte per sample: a sensor line is LINE_SAMP = 1560 samples, of which samples
+ * 0..1279 are the 640 active pixels (Y on even samples, U on 1 mod 4, V on 3 mod 4) and
+ * 1280..1559 blanking at a constant level; 480 lines per frame.
+ * Output 320x240: row R = sensor line 2R, pixel x = Y of sensor pixel 2x; colour: U/V at
+ * 160x120 from sensor pixel pair 2cx on sensor line 2R (R even). Raw bands at the start,
+ * the middle and the end of the frame all had line starts at exact multiples of LINE_SAMP
+ * from the PPI start, so no per-band alignment is done. */
+#define BAND_SAMP    15360   /* multiple of 4 */
+#define LINE_SAMP    1560
+#define ACTIVE_SAMP  1280
+#define ROW_STRIDE   (2 * LINE_SAMP)
 #define OUT_W        320
 #define OUT_H        60
 #define OUT_SIZE     (OUT_W * OUT_H)
+#define IMG_H        240
+#define STRIP_H      16
+#define STRIP_BUF    0xFF801000  /* 16 x 320 Y */
+#define STRIP_U      0xFF802400  /* 8 x 160 Cb */
+#define STRIP_V      0xFF802900  /* 8 x 160 Cr */
+#define SEND_BUF     0xFF802E00
+#define SEND_MAX     0x5100UL    /* up to 0xFF807F00 */
+#define JPEG_QUALITY 50
+
+#include "jpeg_enc.h"
 
 __asm__(
     ".text\n"
@@ -182,16 +206,65 @@ static int twi_write16(unsigned int reg, unsigned int val)
     return -2;
 }
 
+/* Clocks as the factory boot stream's init block (run by the boot ROM before the factory
+ * program): PLL_CTL 0x1400 (MSEL 10, VCO = 10 x CLKIN 24 MHz = 240 MHz), PLL_DIV 2
+ * (CCLK 240 MHz, SCLK 120 MHz). Our boot stream has no init block, so the ROM leaves
+ * PLL_CTL 0x0C00 / PLL_DIV 4 (SCLK 36 MHz): the PPI (max SCLK / 2) then cannot follow the
+ * sensor's pixel clock, which caused the 1.5x duplicate pattern (found 2026-11-14).
+ * The PLL change takes effect in IDLE, woken by the PLL wakeup (SIC_IWR0 bit 0). */
+#define PLL_CTL     0xFFC00000
+#define PLL_DIV     0xFFC00004
+#define PLL_LOCKCNT 0xFFC00010
+#define SIC_IWR0    0xFFC00124
+
+static unsigned long pll_init(void)
+{
+    unsigned long iwr;
+    if (R16(PLL_CTL) != 0x1400) {
+        iwr = R32(SIC_IWR0);
+        R32(SIC_IWR0) = 1;          /* only the PLL wakes the core */
+        R16(PLL_LOCKCNT) = 0x1000;
+        R16(PLL_CTL) = 0x1400;
+        SSYNC();
+        __asm__ volatile("idle;");
+        R32(SIC_IWR0) = iwr;
+    }
+    R16(PLL_DIV) = 0x0002;
+    SSYNC();
+    return ((unsigned long)R16(PLL_CTL) << 16) | R16(PLL_DIV);
+}
+
 static unsigned int sensor_init(void)
 {
     /* explicit calls, no table: .rodata would land in L1 instruction memory, which the
      * core cannot read with data loads */
     unsigned int errors = 0;
     unsigned long t;
+
+    /* board setup as the factory firmware (0xFFA012CE, 0xFFA01492): PF10, PF11, PF13 outputs
+     * low, PG4 output low (sensor PWDN?), PG8 output high (sensor RESETB?), then a hardware
+     * reset pulse on PG8 before the register setup */
+    R16(PORTFIO_CLEAR) = 0x2C00;
+    R16(PORTFIO_DIR) |= 0x2C00;
+    R16(PORTGIO_SET) = 0x0100;
+    R16(PORTGIO_CLEAR) = 0x0010;
+    R16(PORTGIO_DIR) |= 0x0110;
+    SSYNC();
+    for (t = 0; t < 400000UL; t++)
+        __asm__ volatile("nop;");
+    R16(PORTGIO_CLEAR) = 0x0100;    /* RESETB low */
+    SSYNC();
+    for (t = 0; t < 400000UL; t++)
+        __asm__ volatile("nop;");
+    R16(PORTGIO_SET) = 0x0100;      /* RESETB high */
+    SSYNC();
+    for (t = 0; t < 2000000UL; t++)
+        __asm__ volatile("nop;");
+
     R16(TWI_CONTROL) = 0;
     SSYNC();
     R16(TWI_CLKDIV) = 0x3232;
-    R16(TWI_CONTROL) = 0x0083;      /* TWI_ENA | PRESCALE 3 */
+    R16(TWI_CONTROL) = 0x008C;      /* TWI_ENA | PRESCALE 12 (SCLK 120 MHz / 10 MHz) */
     SSYNC();
     /* generated from the factory firmware's TWI writes (build/ov7955_factory_init.txt),
      * logged over JTAG on 2026-11-14; entries 0..109 (ends with 0x3503 = 0x00) */
@@ -313,16 +386,15 @@ static unsigned int sensor_init(void)
     return errors;
 }
 
-static void st_dbg(unsigned int k, unsigned int d, unsigned int yo)
-{
-    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
-    st[5] = k;                      /* 0xFF800014: last band */
-    st[6] = (d << 4) | yo;          /* 0xFF800018: duplicate phase, luma phase */
-}
+#define SMP(i) ((int)((buf[i] >> 2) & 0xFF))
 
-static void capture(volatile unsigned char *out, unsigned int q)
+/* grab output rows row0 .. row0 + n - 1 (320 pixels each) into yout; if uout/vout are
+ * given, also the 160-pixel U/V rows of the even output rows into uout/vout (row R/2 - row0/2) */
+static void capture(volatile unsigned char *yout, volatile unsigned char *uout, volatile unsigned char *vout,
+                    unsigned int row0, unsigned int n)
 {
     volatile unsigned short *buf = (volatile unsigned short *)0xFF900000;
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
     unsigned int k, x, r, kmin, kmax;
 
     R16(PORTF_MUX) = 0x0055;        /* PF0..PF9 PPI data */
@@ -332,11 +404,10 @@ static void capture(volatile unsigned char *out, unsigned int q)
     R16(PORTG_FER) = 0x0460;        /* PG5, PG6, PG10 peripheral; PG7 GPIO */
     SSYNC();
 
-    kmin = (unsigned int)(((unsigned long)q * OUT_H * ROW_STRIDE) / BAND_SAMP);
-    kmax = (unsigned int)((((unsigned long)(q * OUT_H + OUT_H - 1)) * ROW_STRIDE + PERIOD) / BAND_SAMP);
+    kmin = (unsigned int)(((unsigned long)row0 * ROW_STRIDE) / BAND_SAMP);
+    kmax = (unsigned int)((((unsigned long)(row0 + n - 1)) * ROW_STRIDE + ACTIVE_SAMP + LINE_SAMP) / BAND_SAMP);
     for (k = kmin; k <= kmax; k++) {
-        unsigned long t, g0, g1, j, ya, yb;
-        unsigned int p, d = 0, best = 0, yo;
+        unsigned long t, g0, g1;
 
         R16(PPI_CONTROL) = 0;
         R16(DMA0_CONFIG) = 0;
@@ -353,13 +424,13 @@ static void capture(volatile unsigned char *out, unsigned int q)
         R16(PPI_FRAME) = 480;
         R16(DMA0_CONFIG) = 0x0097;  /* DMAEN | WNR | WDSIZE_16 | DMA2D | DI_EN */
         SSYNC();
-        for (t = 0; t < 2000000UL && !(R16(PORTGIO) & 0x0080); t++)
+        for (t = 0; t < 4000000UL && !(R16(PORTGIO) & 0x0080); t++)
             ;
-        for (t = 0; t < 2000000UL && (R16(PORTGIO) & 0x0080); t++)
+        for (t = 0; t < 4000000UL && (R16(PORTGIO) & 0x0080); t++)
             ;
         R16(PPI_CONTROL) = 0x383D;  /* no frame syncs, continuous from the end of VSYNC */
         SSYNC();
-        for (t = 0; t < 40000000UL; t++)
+        for (t = 0; t < 80000000UL; t++)
             if (R16(DMA0_STAT) & 0x0001)
                 break;
         R16(PPI_CONTROL) = 0;
@@ -367,55 +438,82 @@ static void capture(volatile unsigned char *out, unsigned int q)
         if (!(R16(DMA0_STAT) & 0x0001))
             return;
 
-        /* duplicate phase d: s[3j+d] == s[3j+d+1] most often; data bytes at d+1, d+2 */
-        for (p = 0; p < 3; p++) {
-            unsigned int eq = 0;
-            for (j = p; j + 1 < BAND_SAMP; j += 3)
-                if (((buf[j] ^ buf[j + 1]) & 0x03FC) == 0)
-                    eq++;
-            if (eq > best) {
-                best = eq;
-                d = p;
-            }
-        }
-        /* luma is the data byte that strays further from 128 (chroma sits near 128) */
-        ya = yb = 0;
-        for (j = d + 1; j + 1 < BAND_SAMP; j += 3) {
-            int va = (int)((buf[j] >> 2) & 0xFF) - 128, vb = (int)((buf[j + 1] >> 2) & 0xFF) - 128;
-            ya += va < 0 ? -va : va;
-            yb += vb < 0 ? -vb : vb;
-        }
-        yo = d + (ya > yb ? 1 : 2);
-        if (yo >= 3)
-            yo -= 3;
-
         g0 = (unsigned long)k * BAND_SAMP;
         g1 = g0 + BAND_SAMP;
-        for (r = 0; r < OUT_H; r++) {
-            unsigned long g = (unsigned long)(q * OUT_H + r) * ROW_STRIDE;
-            if (g + PERIOD <= g0 || g >= g1)
+        st[5] = k;                  /* 0xFF800014: last band */
+
+        for (r = 0; r < n; r++) {
+            unsigned long g = (unsigned long)(row0 + r) * ROW_STRIDE;
+            if (g + ACTIVE_SAMP <= g0 || g >= g1)
                 continue;
             for (x = 0; x < OUT_W; x++) {
-                unsigned long gx = g + 3UL * (Y_FIRST + (x >> 1)) + yo;
+                unsigned long gx = g + 4UL * x;
                 if (gx >= g0 && gx < g1)
-                    out[r * OUT_W + x] = (unsigned char)((buf[gx - g0] >> 2) & 0xFF);
+                    yout[r * OUT_W + x] = (unsigned char)SMP(gx - g0);
+            }
+            if (uout && !((row0 + r) & 1)) {
+                unsigned int cr = r >> 1;
+                for (x = 0; x < OUT_W / 2; x++) {
+                    unsigned long gx = g + 8UL * x;
+                    if (gx + 3 >= g0 && gx + 3 < g1 && gx + 1 >= g0) {
+                        uout[cr * (OUT_W / 2) + x] = (unsigned char)SMP(gx + 1 - g0);
+                        vout[cr * (OUT_W / 2) + x] = (unsigned char)SMP(gx + 3 - g0);
+                    }
+                }
             }
         }
-        st_dbg(k, d, yo);
     }
+}
+
+/* whole picture as JPEG into SEND_BUF: 2 length bytes (little endian), then the JPEG;
+ * colour 1 = YCbCr 4:2:0, 0 = grayscale; returns the number of bytes to send */
+static unsigned int grab_jpeg(unsigned int colour)
+{
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    unsigned char *strip = (unsigned char *)STRIP_BUF;
+    unsigned char *su = (unsigned char *)STRIP_U;
+    unsigned char *sv = (unsigned char *)STRIP_V;
+    unsigned char *send = (unsigned char *)SEND_BUF;
+    unsigned int row;
+    unsigned long len, w = st[13];
+
+    /* test: 0xFF800034 = 0x80000000 | reg << 8 | value writes one sensor register before
+     * the next picture (set over JTAG) */
+    if (w & 0x80000000UL) {
+        st[14] = (unsigned long)twi_write16((unsigned int)((w >> 8) & 0xFFFF), (unsigned int)(w & 0xFF));
+        st[13] = 0;
+    }
+    jpeg_begin(send + 2, SEND_MAX - 2, OUT_W, IMG_H, JPEG_QUALITY, colour);
+    for (row = 0; row < IMG_H; row += STRIP_H) {
+        if (colour) {
+            capture(strip, su, sv, row, STRIP_H);
+            jpeg_rows_color(strip, OUT_W, su, sv, OUT_W / 2);
+        } else {
+            capture(strip, 0, 0, row, STRIP_H);
+            jpeg_rows(strip, OUT_W);
+            jpeg_rows(strip + 8 * OUT_W, OUT_W);
+        }
+    }
+    len = jpeg_end();
+    st[10] = len;                   /* 0xFF800028 */
+    send[0] = (unsigned char)(len & 0xFF);
+    send[1] = (unsigned char)(len >> 8);
+    return (unsigned int)len + 2;
 }
 
 int main(void)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
-    volatile unsigned char *out = (volatile unsigned char *)0xFF800400;
-    unsigned int tx = 0, rx, ptr = 0, ready = 0;
+    volatile unsigned char *out = (volatile unsigned char *)SEND_BUF;
+    unsigned int tx = 0, rx, ptr = 0, ready = 0, size = 0, hold = 0;
 
     st[1] = 0;
     st[2] = 0;
     st[3] = 0;
     st[8] = 0;
     st[9] = 0;
+    st[10] = 0;
+    st[17] = pll_init();            /* 0xFF800044: PLL_CTL << 16 | PLL_DIV afterwards */
     st[4] = sensor_init();          /* 0xFF800010: TWI errors during sensor setup */
 
     R16(PORTH_FER) &= ~0x000F;      /* PH0..PH3 GPIO */
@@ -424,13 +522,35 @@ int main(void)
     SSYNC();
     st[0] = 0x5B1F11CC;
 
+    if (st[11] == 0x1D6E0000UL) {   /* 0xFF80002C: JTAG test, grab one JPEG at start */
+        unsigned long t;
+        st[11] = 0;
+        for (t = 0; t < 20000000UL; t++)    /* let the sensor's AEC settle */
+            __asm__ volatile("nop;");
+        size = grab_jpeg(st[18] == 1);
+        ready = 1;
+        tx = 0x5A;
+        st[11] = 0x1D6E00D0UL;
+        hold = 1;                   /* keep it for JTAG: ignore capture commands */
+    }
+
     for (;;) {
         rx = spi_xfer(tx);
         if (rx & 0x100)
             continue;               /* aborted transfer: keep the same answer */
         st[3] = rx;
-        if ((rx & 0xF0) == 0xC0) {
-            capture(out, rx & 3);
+        if (hold && (rx == 0xD0 || rx == 0xD1 || (rx & 0xF0) == 0xC0)) {
+            tx = 0x5A;
+        } else if (rx == 0xD0 || rx == 0xD1) {
+            /* 0xD1 colour; 0xD0 grayscale unless 0xFF800048 = 1 (JTAG test) */
+            size = grab_jpeg(rx == 0xD1 || st[18] == 1);
+            ready = 1;
+            ptr = 0;
+            st[1]++;
+            tx = 0x5A;
+        } else if ((rx & 0xF0) == 0xC0) {
+            capture(out, 0, 0, (rx & 3) * OUT_H, OUT_H);
+            size = OUT_SIZE;
             ready = 1;
             ptr = 0;
             st[1]++;
@@ -441,7 +561,7 @@ int main(void)
             ptr = 0;
             tx = out[ptr++];
         } else {
-            tx = (ptr < OUT_SIZE) ? out[ptr++] : 0;
+            tx = (ptr < size) ? out[ptr++] : 0;
             st[2]++;
         }
     }

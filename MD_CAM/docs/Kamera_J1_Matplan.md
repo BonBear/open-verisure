@@ -105,16 +105,10 @@ Kolumnen "Vanlig funktion" gäller om modulen följer den vanliga 24-poliga Omni
 4. **Snabbare/säkrare RF:** mät förlusten, låt CC1110 bara skicka om saknade bitar (gatewayen vet vilka), eventuellt komprimering.
 5. **Säkerhet:** gatewayens `/api/status` visar huvudnyckeln i klartext. Det ska åtgärdas separat.
 
-## TODO: pixelklockan går 1,5 gånger för fort med vår init (2026-11-14)
+## Löst: pixelklockan gick 1,5 gånger för fort med vår init (2026-11-14)
 
-**Läge:** med vår egen `sensor_init()` i `snap_link` är radtiden 1170/960 PCLK (HREF period/hög). Med originalprogrammet är den 780/640. Bilden blir dålig eftersom PPI inte radsynkar och vår radgeometri då inte stämmer.
+**Orsak:** inte sensorn utan Blackfins klockor. Originalets boot-ström har ett initblock (0x110 byte) som boot-ROM:en kör först: `PLL_CTL = 0x1400` (MSEL 10, VCO 240 MHz med CLKIN 24 MHz), `PLL_DIV = 2` (CCLK 240 MHz, SCLK 120 MHz) och SDRAM-inställningar. Vår LDR saknade initblock, så ROM:en lämnade `PLL_CTL 0x0C00` / `PLL_DIV 4` (SCLK 36 MHz). PPI klarar högst SCLK/2 = 18 MHz och samplade sensorns pixelklocka (24 MHz) i fel takt, vilket gav dubbletterna, 1170 i stället för 780 per rad och den trasiga färgen. Den tidigare jämförelsen av PLL-registren gjordes efter att originalet redan hade bootat och var därför missvisande.
 
-**Uteslutet:** sensorns register (hela 0x3000–0x67FF skannat i båda lägena, bara automatik skiljer), SDRAM/EBIU-inställningen, PG4/PG8 samt Blackfins PLL_CTL, PLL_DIV och VR_CTL.
+**Åtgärd:** `snap_link` sätter PLL som originalet i `pll_init()`. Strömmen blir då ren YUYV i full upplösning: 1560 sampel per rad, 640 aktiva pixlar (sampel 0..1279), 480 rader. Färg-JPEG (4:2:0) fungerar, se `camera_color_320x240.jpg`. Ingen Saleae-mätning behövdes.
 
-**Att göra när Saleae kan kopplas in:**
-1. Kanal 0 på **J1-13 (XCLK)** och kanal 1 på **J1-17 (PCLK)**, GND på kortets GND.
-2. Mät båda frekvenserna efter kallstart (vår init via väljaren).
-3. Starta originalet via JTAG (`rom_spiboot` med adress 0x10000) och mät igen.
-4. Om XCLK skiljer sig: leta klockkällan (CLKBUF, CLKOUT eller en timer). Om bara PCLK skiljer sig: sensorns PLL eller DVP-inställning som inte syns i de skannade registren.
-
-**Alternativ om orsaken inte hittas:** radsynk i mjukvara (känn av HREF via timer 0 och starta PPI per rad).
+**Kvar:** 640×480 på begäran (kräver SDRAM-inställning som originalets initblock och en nedlänk för begäran från Home Assistant), bild vid rörelse, vitbalans (lätt blåstick).
