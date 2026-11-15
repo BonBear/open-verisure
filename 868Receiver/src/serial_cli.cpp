@@ -9,6 +9,7 @@
 #include "web_portal.h"
 #include "hardware_pins.h"
 #include "mqtt_manager.h"
+#include "downlink.h"
 #include <WiFi.h>
 #include <SPI.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
@@ -30,6 +31,7 @@ static void printHelp() {
     Serial.println("  connect <ssid> [password]  - Connect to Wi-Fi and save to NVS");
     Serial.println("  setkey <32-hex-characters> - Configure Master AES Key");
     Serial.println("  setmqtt <host> <port> [user] [pass] [topic] - Configure MQTT broker");
+    Serial.println("  alarm [on|off]             - Show or set the alarm state sent to cameras");
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
@@ -233,6 +235,11 @@ static void processCommand(char* cmd) {
         } else {
             Serial.println("[CLI] Usage: setmqtt <host> <port> [user] [pass] [topic]");
         }
+    } else if (strcmp(cmd, "alarm on") == 0 || strcmp(cmd, "alarm off") == 0) {
+        downlinkSetArmed(cmd[7] == 'n');
+        Serial.printf("[CLI] Alarm %s (sent to cameras with their next poll)\n", downlinkArmed() ? "ARMED" : "DISARMED");
+    } else if (strcmp(cmd, "alarm") == 0) {
+        Serial.printf("[CLI] Alarm is %s\n", downlinkArmed() ? "ARMED" : "DISARMED");
     } else if (strcmp(cmd, "reset") == 0) {
         ConfigManager::resetToDefaults();
         Serial.println("[CLI] Reset all settings to factory defaults.");

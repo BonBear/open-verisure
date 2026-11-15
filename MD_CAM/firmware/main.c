@@ -1848,6 +1848,12 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_IMG_PIC_TICKS (7 * BF_TICKS_PER_S)     // rough time one delta picture takes
 #define BF_IMG_HIRES_EVERY 0     // without BF_IMG_PIR: every Nth picture as 640x480; 0 = never
 #define BF_IMG_PAUSE_MS 2000     // without BF_IMG_PIR: pause between pictures (~5.5 s)
+#define BF_IMG_ALARM 1           // alarm-driven camera (cam_alarm_loop): Blackfin powered only for pictures while armed
+#define BF_ARMED_AT_BOOT 1       // alarm state until the gateway has answered a poll (armed: fail safe)
+#define BF_POLL_S 30             // poll the gateway (alarm state, picture requests) this often
+#define BF_RX_WINDOW 40          // listen window after a poll, in delay_ms(1) steps (~2.75 ms each: ~110 ms)
+#define BF_BOOT_WAIT_MS 1100     // after /RESET release: boot selector, snap_link and sensor setup (~3 s)
+#define BF_ARMED_IDLE_S 1800     // armed without motion: one picture this often (0 = never)
 
 // Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
 // P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
@@ -2164,6 +2170,300 @@ static void bf_jtag_hold(uint16_t *p_seq) {
     }
 }
 
+#if BF_IMG_LINK && BF_IMG_ALARM
+/* ============================================================================
+ * Alarm-driven camera
+ *
+ * Disarmed: the Blackfin stays unpowered; the PIR only sends motion ON/OFF (B9).
+ * Armed: on motion the Blackfin is powered, pictures are taken as with BF_IMG_PIR, and it
+ * is switched off again when the motion event ends. A picture requested from Home
+ * Assistant is taken in either state.
+ *
+ * Every BF_POLL_S the camera sends a poll (telemetry packet, plain[12] = 0xBA, [13..14] =
+ * challenge, [15] = state: bit 0 armed, bit 1 Blackfin powered, bit 2 a command arrived
+ * and the gateway has not seen this yet) and listens BF_RX_WINDOW for the gateway's answer
+ * (868Receiver/src/downlink.h): 8 bytes device ID + AES(device key, 'D' 'L' seq challenge
+ * armed cmd id[0..3] 0 0 'V' 'S'). The challenge is new for every poll (next_challenge)
+ * and hidden inside the encrypted poll, so a recorded answer fits a later poll only by
+ * chance (1 in 65536 for a matching sequence number).
+ * ============================================================================ */
+static __xdata uint8_t rx_buf[PACKET_LEN + 2];
+static __xdata uint8_t s_dl_plain[16];
+static __xdata uint16_t s_boot_noise;  // radio noise taken at boot
+static __xdata uint32_t s_poll_ctr;
+static __xdata uint8_t s_chal_in[16], s_chal_out[16];
+static __xdata uint16_t s_chal;      // challenge of the last poll
+static __xdata uint8_t s_dl_cmd;     // picture requested by the gateway, 0 = none
+static bool s_armed = BF_ARMED_AT_BOOT;
+static bool s_cmd_ack;               // report in polls that a command arrived, until answered
+
+// Fresh 16-bit challenge for every poll: AES(device key, boot noise | poll counter). It is
+// encrypted inside the poll, so a listener cannot tell which recorded answer would fit.
+static uint16_t next_challenge(void) {
+    uint8_t i;
+    s_poll_ctr++;
+    for (i = 0; i < 16; i++)
+        s_chal_in[i] = 0;
+    s_chal_in[0] = (uint8_t)(s_boot_noise >> 8);
+    s_chal_in[1] = (uint8_t)s_boot_noise;
+    s_chal_in[2] = (uint8_t)(s_poll_ctr >> 24);
+    s_chal_in[3] = (uint8_t)(s_poll_ctr >> 16);
+    s_chal_in[4] = (uint8_t)(s_poll_ctr >> 8);
+    s_chal_in[5] = (uint8_t)s_poll_ctr;
+    s_chal_in[6] = 'C';
+    aes_load_key(DEVICE_AES_KEY);
+    aes_encrypt_block(s_chal_in, s_chal_out);
+    return ((uint16_t)s_chal_out[0] << 8) | s_chal_out[1];
+}
+
+static void aes_decrypt_block(const uint8_t *in, uint8_t *out) {
+    uint16_t timeout = 50000;
+    uint8_t i;
+    ENCCS = 0x40 | 0x02 | 0x01;      // MODE = ECB, CMD = Decrypt, ST = 1
+    for (i = 0; i < 16; i++)
+        ENCDI = in[i];
+    while (!(ENCCS & 0x08) && --timeout);
+    for (i = 0; i < 16; i++)
+        out[i] = ENCDO;
+}
+
+// Receive one packet (24 bytes + RSSI + LQI/CRC) within 'window' delay_ms(1) steps.
+// Returns true for a packet with a good CRC in rx_buf.
+static bool radio_receive_dma(uint16_t window) {
+    uint16_t t;
+    bool done;
+
+    RFST = 0x04; // SIDLE
+    t = 5000;
+    while ((MARCSTATE & 0x1F) != 0x01 && --t);
+
+    dma_desc.src_h = 0xDF;
+    dma_desc.src_l = 0xD9;           // X_RFD
+    dma_desc.dst_h = (uint8_t)(((uint16_t)rx_buf) >> 8);
+    dma_desc.dst_l = (uint8_t)(((uint16_t)rx_buf) & 0xFF);
+    dma_desc.len_h = 0x00;
+    dma_desc.len_l = PACKET_LEN + 2;
+    dma_desc.cfg0  = 19;             // DMA_TRIG_RADIO, single
+    dma_desc.cfg1  = 0x1A;           // SRCINC 0, DESTINC 1, IRQMASK, high priority
+
+    DMA0CFGH = (uint8_t)(((uint16_t)&dma_desc) >> 8);
+    DMA0CFGL = (uint8_t)(((uint16_t)&dma_desc) & 0xFF);
+    RFTXRXIF = 0;
+    RFIF = 0;
+    DMAIRQ &= ~0x01;
+    DMAARM = 0x01;
+    __asm
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+    __endasm;
+
+    RFST = 0x02; // SRX (MCSM1: back to IDLE after the packet)
+    for (t = 0; t < window && !(RFIF & 0x10); t++)
+        delay_ms(1);
+    // a packet whose sync word came late in the window: let it finish (~7 ms on air)
+    for (t = 0; t < 10 && !(RFIF & 0x10) && (PKTSTATUS & 0x08); t++)
+        delay_ms(1);
+    done = (RFIF & 0x10) != 0;
+
+    RFST = 0x04;
+    if (done) {
+        t = 1000;
+        while (!(DMAIRQ & 0x01) && --t);
+        done = t != 0;
+    }
+    DMAARM = 0x81;                   // abort channel 0 if still armed
+    RFTXRXIF = 0;
+    RFIF = 0;
+    return done && (rx_buf[PACKET_LEN + 1] & 0x80) != 0;
+}
+
+// 16 bits from the radio noise floor (RSSI LSBs), taken once at boot.
+static uint16_t radio_noise_nonce(void) {
+    uint16_t n = 0;
+    uint8_t i;
+    clock_xosc();
+    radio_init();
+    RFST = 0x02; // SRX
+    delay_ms(2);
+    for (i = 0; i < 64; i++) {
+        n = (uint16_t)((n << 3) | (n >> 13)) ^ RSSI;
+        delay_ms(1);
+    }
+    RFST = 0x04;
+    return n;
+}
+
+// Poll the gateway and take its answer. Returns true for a valid answer.
+static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
+    uint16_t seq = (*p_seq)++;
+    uint8_t i, state = 0;
+
+    if (s_armed) state |= 0x01;
+    if (bf_on) state |= 0x02;
+    if (s_cmd_ack) state |= 0x04;
+    s_chal = next_challenge();
+    transmit(seq, motion, false, false, 0xBA, (uint8_t)(s_chal >> 8), (uint8_t)s_chal, state);
+    if (!radio_receive_dma(BF_RX_WINDOW))
+        return false;
+    for (i = 0; i < 8; i++)
+        if (rx_buf[i] != (uint8_t)DEVICE_ID[i])
+            return false;
+    aes_load_key(DEVICE_AES_KEY);
+    aes_decrypt_block(&rx_buf[8], s_dl_plain);
+    if (s_dl_plain[0] != 'D' || s_dl_plain[1] != 'L' || s_dl_plain[14] != 'V' || s_dl_plain[15] != 'S')
+        return false;
+    if (s_dl_plain[2] != (uint8_t)(seq >> 8) || s_dl_plain[3] != (uint8_t)seq)
+        return false;
+    if (s_dl_plain[4] != (uint8_t)(s_chal >> 8) || s_dl_plain[5] != (uint8_t)s_chal)
+        return false;
+    for (i = 0; i < 4; i++)
+        if (s_dl_plain[8 + i] != (uint8_t)DEVICE_ID[i])
+            return false;
+    // the gateway has seen this poll (and with it any acknowledgement)
+    s_cmd_ack = false;
+    if (s_dl_plain[6] <= 1)
+        s_armed = s_dl_plain[6] != 0;
+    if (s_dl_plain[7] >= 0xD1 && s_dl_plain[7] <= 0xD3) {
+        s_dl_cmd = s_dl_plain[7];
+        s_cmd_ack = true;
+    }
+    return true;
+}
+
+// Power the Blackfin as bf_jtag_hold() does, without its long JTAG pauses: P1_2 = 1 at
+// reset release makes the boot selector start snap_link (0x8000). Then the link pins.
+static void bf_power_on(void) {
+    P0DIR |= 0x85;   // P0_0, P0_2 (1.2V), P0_7 (aux) = outputs
+    P0_0 = 0;
+    P1SEL &= ~0x3E;
+    P1DIR |= 0x07;
+    P1_1 = 0;
+    P1_2 = 1;
+    P1DIR &= ~0x38;  // SCK, MISO, MOSI tri-state during boot
+    P1INP |= 0x38;
+
+    P1_0 = 1;        // Q7 holds /RESET low
+    delay_ms(10);
+    P0_2 = 1;
+    delay_ms(10);
+    P0_7 = 1;
+    delay_ms(50);
+    P0_0 = 1;
+    delay_ms(20);
+    P1_0 = 0;        // release /RESET
+    delay_ms(BF_BOOT_WAIT_MS);
+
+    P1_2 = 0;
+    P1DIR |= 0x34;   // P1_2 (select), P1_4 (SCK), P1_5 (MOSI)
+    P1DIR &= ~0x08;  // P1_3 (MISO) input
+    P1_4 = 0;
+}
+
+// Back to the idle state of setup_gpio(): /RESET low (P0_0), aux and 1.2 V rails off in the
+// reverse order of bf_power_on(), Q7 off (P1_0), bus tri-state.
+static void bf_power_off(void) {
+    P0_0 = 0;
+    P0_7 = 0;
+    P0_2 = 0;
+    P1_0 = 0;
+    P1_1 = 0;
+    P1_2 = 1;
+    P1DIR &= ~0x38;
+    P1INP |= 0x38;
+}
+
+static void cam_alarm_loop(uint16_t *p_seq) {
+    uint16_t poll = BF_POLL_S * BF_TICKS_PER_S;   // first poll right away
+    uint16_t hold = 0, t;
+    uint32_t idle = 0;
+    uint8_t ev_pic = 0, cmd;
+    bool active = false, bf_on = false, was_armed = s_armed;
+
+    bf_power_off();
+    s_boot_noise = radio_noise_nonce();
+    for (;;) {
+        if (P1_7 == 0) {
+            if (!active) {
+                active = true;
+                ev_pic = 0;
+                // poll first (it already carries the motion flag) for a fresh alarm state,
+                // so the gateway is not busy with the B9 packet while the camera listens
+                poll = 0;
+                cam_poll(p_seq, true, bf_on);
+                transmit((*p_seq)++, true, false, false, 0xB9, 1, 0, 0);
+            }
+            hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
+        }
+        if (poll >= BF_POLL_S * BF_TICKS_PER_S) {
+            poll = 0;
+            cam_poll(p_seq, active, bf_on);
+        }
+        if (s_armed && !was_armed)
+            idle = 0;               // the armed idle picture counts from arming
+        was_armed = s_armed;
+
+        cmd = 0;
+        if (s_dl_cmd) {
+            cmd = s_dl_cmd;
+            s_dl_cmd = 0;
+        } else if (s_armed && active) {
+            cmd = BF_IMG_CMD;
+#if BF_IMG_HIRES_ON_MOTION
+            if (ev_pic == 1)
+                cmd = 0xD2;
+#endif
+            if (ev_pic < 2)
+                ev_pic++;
+        } else if (s_armed && BF_ARMED_IDLE_S && idle >= (uint32_t)BF_ARMED_IDLE_S * BF_TICKS_PER_S) {
+            cmd = BF_IMG_CMD;
+        }
+
+        if (cmd) {
+            if (!bf_on) {
+                bf_power_on();
+                bf_on = true;
+            }
+            bf_send_picture(cmd, p_seq);
+            idle = 0;
+            poll += BF_IMG_PIC_TICKS;
+            hold = hold > BF_IMG_PIC_TICKS ? hold - BF_IMG_PIC_TICKS : 0;
+            if (active) {
+                for (t = 0; t < BF_IMG_PAUSE_TICKS; t++) {
+                    delay_ms(10);
+                    poll++;
+                    if (P1_7 == 0)
+                        hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
+                    else if (hold)
+                        hold--;
+                }
+            }
+        } else {
+            delay_ms(10);
+            poll++;
+            idle++;
+            if (hold && P1_7 != 0)
+                hold--;
+        }
+
+        if (active && !hold && P1_7 != 0) {
+            active = false;
+            transmit((*p_seq)++, false, false, false, 0xB9, 0, 0, 0);
+        }
+        if (bf_on && !s_dl_cmd && (!active || !s_armed)) {
+            bf_power_off();
+            bf_on = false;
+        }
+    }
+}
+#endif
+
 void main(void) {
     uint16_t seq = 25000;
     uint8_t cur_p1;
@@ -2186,8 +2486,14 @@ void main(void) {
     delay_ms(100);
 
 #if BF_JTAG_HOLD
+#if BF_IMG_LINK && BF_IMG_ALARM
+    // seq continues above the announce (25000, whose power-on flag resets the gateway's
+    // replay filter), so the first poll is accepted before any picture packet is sent
+    cam_alarm_loop(&seq);
+#else
     seq = 2000; // above the earlier BF_JTAG_HOLD builds, for the gateway's replay filter
     bf_jtag_hold(&seq);
+#endif
 #elif BF_PROBE_AT_BOOT
     seq = 43000; // above anything earlier test builds sent, so the gateway's replay filter accepts it
     for (;;) {

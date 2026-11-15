@@ -31,7 +31,8 @@ REMOTE_NAME = "md_cam.bin"
 
 
 def sync_key_from_gateway() -> bool:
-    """Query Gateway active master key via HTTP /api/status (in memory only, never printed) and update config.h."""
+    """Derive config.h from the master key in secrets.h. Older gateways also returned their
+    active key in /api/status (in memory only, never printed); newer ones do not."""
     mk_hex = derive_key.get_master_key_from_secrets() or derive_key.DEFAULT_MASTER_KEY_HEX
     key_changed = False
     try:
@@ -45,6 +46,9 @@ def sync_key_from_gateway() -> bool:
                 if not matches_secrets:
                     key_changed = True
                 mk_hex = gw_mk
+            else:
+                # newer gateways never send the key back (only "master_key_set")
+                print("[+] Gateway does not expose its master key; using the key from secrets.h")
             sensors = data.get("sensors", [])
             print(f"[+] Currently registered sensors on Gateway: {[s.get('id') for s in sensors]}")
     except Exception as e:

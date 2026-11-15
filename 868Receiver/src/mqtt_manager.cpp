@@ -7,6 +7,7 @@
 #include "config_manager.h"
 #include "sensor_registry.h"
 #include "ha_discovery.h"
+#include "downlink.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
 
@@ -49,6 +50,95 @@ static void markDeviceDiscovered(const char* deviceId) {
  * @param deviceId Sensor identifier.
  * @param baseTopic Gateway base MQTT topic prefix.
  */
+/* ---- Camera downlink: alarm state and picture requests (see downlink.h) ---- */
+
+static String gatewayDeviceJson() {
+    return "\"device\":{\"identifiers\":[\"verisure_gateway\"],\"name\":\"Verisure 868 Gateway\"}";
+}
+
+static void publishAlarmState() {
+    const GatewayConfig& cfg = ConfigManager::get();
+    String t = String(cfg.mqttTopic) + "/alarm/state";
+    s_mqttClient.publish(t.c_str(), downlinkArmed() ? "ON" : "OFF", true);
+}
+
+/** Switch on the gateway device: the alarm state the cameras get. Its command topic also
+ *  takes Home Assistant alarm_control_panel states (armed_*, triggered, disarmed). */
+static void publishAlarmDiscovery(const char* baseTopic) {
+    String b(baseTopic);
+    String p = "{";
+    p += "\"name\":\"Alarm (cameras)\",";
+    p += "\"unique_id\":\"verisure_gateway_alarm\",";
+    p += "\"icon\":\"mdi:shield-home\",";
+    p += "\"command_topic\":\"" + b + "/alarm/set\",";
+    p += "\"state_topic\":\"" + b + "/alarm/state\",";
+    p += "\"availability_topic\":\"" + b + "/status\",";
+    p += gatewayDeviceJson();
+    p += "}";
+    s_mqttClient.publish("homeassistant/switch/verisure_gateway_alarm/config", p.c_str(), true);
+}
+
+/** Button on a camera device: take a 640x480 picture (sent with the camera's next poll). */
+static void publishPictureButtonDiscovery(const char* deviceId, const char* baseTopic) {
+    String id(deviceId), b(baseTopic);
+    String p = "{";
+    p += "\"name\":\"Take 640x480 picture\",";
+    p += "\"unique_id\":\"verisure_" + id + "_picture\",";
+    p += "\"icon\":\"mdi:camera\",";
+    p += "\"command_topic\":\"" + b + "/" + id + "/picture/set\",";
+    p += "\"payload_press\":\"D2\",";
+    p += "\"availability_topic\":\"" + b + "/status\",";
+    p += "\"device\":{\"identifiers\":[\"verisure_" + id + "\"]}";
+    p += "}";
+    String topic = "homeassistant/button/verisure_" + id + "_picture/config";
+    s_mqttClient.publish(topic.c_str(), p.c_str(), true);
+}
+
+/** ON/OFF from the switch, or an alarm_control_panel state. -1 = no change (arming, pending). */
+static int parseAlarmPayload(const String& v) {
+    if (v == "ON" || v.startsWith("armed") || v == "triggered") return 1;
+    if (v == "OFF" || v == "disarmed") return 0;
+    return -1;
+}
+
+static bool isDeviceIdText(const String& s) {
+    if (s.length() != 8) return false;
+    for (unsigned int i = 0; i < 8; i++) {
+        if (!isalnum((unsigned char)s[i])) return false;
+    }
+    return true;
+}
+
+static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
+    const GatewayConfig& cfg = ConfigManager::get();
+    String base = String(cfg.mqttTopic) + "/";
+    String t(topic);
+    if (!t.startsWith(base) || len > 32) return;
+    String v;
+    for (unsigned int i = 0; i < len; i++) v += (char)payload[i];
+    v.trim();
+    String rest = t.substring(base.length());
+
+    if (rest == "alarm/set") {
+        int a = parseAlarmPayload(v);
+        if (a < 0) return;
+        downlinkSetArmed(a == 1);
+        publishAlarmState();
+        Serial.printf("[Downlink] Alarm %s (MQTT \"%s\")\n", a ? "ARMED" : "DISARMED", v.c_str());
+        return;
+    }
+    const String suffix = "/picture/set";
+    if (rest.endsWith(suffix)) {
+        String dev = rest.substring(0, rest.length() - suffix.length());
+        if (!isDeviceIdText(dev) || !haIsMotionCameraSensor(dev.c_str())) return;
+        uint8_t cmd = 0xD2;
+        if (v == "D1") cmd = 0xD1;
+        else if (v == "D3") cmd = 0xD3;
+        bool ok = downlinkRequestPicture(dev.c_str(), cmd);
+        Serial.printf("[Downlink] Picture 0x%02X for %s %s\n", cmd, dev.c_str(), ok ? "queued" : "NOT queued");
+    }
+}
+
 static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) {
     bool isMotionCam = haIsMotionCameraSensor(deviceId);
     if (isMotionCam) {
@@ -73,6 +163,7 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
         String camTopic = haDiscoveryBuildCameraTopic(deviceId);
         String camPayload = haDiscoveryBuildCameraPayload(deviceId, baseTopic);
         s_mqttClient.publish(camTopic.c_str(), camPayload.c_str(), true); // Retained message
+        publishPictureButtonDiscovery(deviceId, baseTopic);
 
         markDeviceDiscovered(deviceId);
         Serial.printf("[MQTT] Published Home Assistant Discovery for Motion Camera \"%s\" (%d sensor entities + 1 camera retained)\n", deviceId, count);
@@ -112,6 +203,7 @@ static void publishGatewayDiscovery(const char* baseTopic) {
 
 void mqttInit() {
     s_mqttClient.setBufferSize(1024);
+    s_mqttClient.setCallback(onMqttMessage);
     s_numDiscovered = 0;
 }
 
@@ -183,6 +275,12 @@ static void checkMqttConnection() {
 
         // Immediately publish gateway discovery and announce all known sensors
         publishGatewayDiscovery(cfg.mqttTopic);
+        publishAlarmDiscovery(cfg.mqttTopic);
+        publishAlarmState();
+        String alarmSet = String(cfg.mqttTopic) + "/alarm/set";
+        String pictureSet = String(cfg.mqttTopic) + "/+/picture/set";
+        s_mqttClient.subscribe(alarmSet.c_str());
+        s_mqttClient.subscribe(pictureSet.c_str());
 
         int count = sensorRegistryGetCount();
         for (int i = 0; i < count; i++) {

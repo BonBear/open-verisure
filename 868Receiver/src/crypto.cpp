@@ -49,6 +49,20 @@ bool cryptoDeriveDeviceKey(const uint8_t masterKey[16], const char* deviceId, ui
     return true;
 }
 
+bool cryptoEncryptPayload(const uint8_t deviceKey[16], const uint8_t inPlain[16], uint8_t outCipher[16]) {
+    if (!deviceKey || !inPlain || !outCipher) return false;
+
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    if (mbedtls_aes_setkey_enc(&aes, deviceKey, 128) != 0) {
+        mbedtls_aes_free(&aes);
+        return false;
+    }
+    mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, inPlain, outCipher);
+    mbedtls_aes_free(&aes);
+    return true;
+}
+
 bool cryptoDecryptPayload(const uint8_t deviceKey[16], const uint8_t inCipher[16], uint8_t outPlain[16]) {
     if (!deviceKey || !inCipher || !outPlain) return false;
 

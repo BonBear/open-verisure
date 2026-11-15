@@ -38,6 +38,8 @@
 #include "serial_cli.h"
 #include "mqtt_manager.h"
 #include "image_receiver.h"
+#include "downlink.h"
+#include "ha_discovery.h"
 #include <WiFi.h>
 
 #include "hardware_pins.h"
@@ -92,6 +94,47 @@ void enterRxMode() {
 static bool s_radioOnline = false;
 
 /**
+ * @brief Send one 24-byte packet and return to RX (MCSM1 TXOFF_MODE = IDLE).
+ */
+static void radioTransmit(const uint8_t* pkt) {
+    ELECHOUSE_cc1101.SpiStrobe(CC1101_SIDLE);
+    ELECHOUSE_cc1101.SpiStrobe(CC1101_SFTX);
+    ELECHOUSE_cc1101.SpiWriteBurstReg(CC1101_TXFIFO, (byte*)pkt, VERISURE_PACKET_LEN);
+    ELECHOUSE_cc1101.SpiStrobe(CC1101_STX);
+    unsigned long t0 = millis();
+    while ((readStatusSafe(CC1101_MARCSTATE) & 0x1F) != 0x01 && millis() - t0 < 30) {
+        delayMicroseconds(200);
+    }
+    enterRxMode();
+}
+
+/**
+ * @brief Answer a camera poll (see downlink.h) with the alarm state and any queued
+ *        picture command. Called right after the poll was authenticated, because the
+ *        camera only listens for ~0.1 s.
+ */
+static void answerCameraPoll(const VerisureTelemetry& t) {
+    uint8_t key[16], plain[16], pkt[VERISURE_PACKET_LEN];
+    uint16_t nonce = ((uint16_t)t.rawP1 << 8) | t.rawP2;
+    bool armed = downlinkArmed();
+
+    if (!cryptoDeriveDeviceKey(ConfigManager::get().masterKey, t.deviceId, key)) return;
+    uint8_t cmd = downlinkCommandForPoll(t.deviceId, t.rawRst);
+    downlinkBuildPlain(t.sequence, nonce, armed, cmd, t.deviceId, plain);
+    memcpy(pkt, t.deviceId, 8);
+    bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
+    memset(key, 0, sizeof(key));
+    if (!ok) return;
+    radioTransmit(pkt);
+    Serial.printf("[Downlink] -> %s: armed %d, cmd 0x%02X (poll seq %u, camera state 0x%02X)\n",
+                  t.deviceId, armed ? 1 : 0, cmd, t.sequence, t.rawRst);
+    if (((t.rawRst & DOWNLINK_STATE_ARMED) != 0) != armed) {
+        Serial.printf("[Downlink] NOTE: %s reported armed %d before this answer\n",
+                      t.deviceId, (t.rawRst & DOWNLINK_STATE_ARMED) ? 1 : 0);
+    }
+}
+
+/**
  * @brief Configure all CC1101 registers to match the Verisure 868.950 MHz radio profile.
  */
 void initRadioRegisters() {
@@ -129,6 +172,10 @@ void initRadioRegisters() {
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_FREND1,   0x56);
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_FREND0,   0x10);
 
+    // TX power for the camera downlink (PATABLE[0], ~+10 dBm at 868 MHz)
+    byte pa = 0xC0;
+    ELECHOUSE_cc1101.SpiWriteBurstReg(CC1101_PATABLE, &pa, 1);
+
     // Packet Configuration: Fixed length 24 bytes + status bytes
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTLEN,   VERISURE_PACKET_LEN);
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL1, 0x04); // Append RSSI and LQI/CRC
@@ -165,6 +212,7 @@ void setup() {
 
     // 1. Initialize WebPortal, NVS Config, Serial CLI & MQTT
     webPortalInit();
+    downlinkInit();
     serialCliInit();
     mqttInit();
 
@@ -273,6 +321,9 @@ void loop() {
                 VerisureTelemetry telem;
                 const uint8_t* activeMasterKey = ConfigManager::get().masterKey;
                 if (cryptoProcessPacket(rxBuffer, packetRssi, rawLqi & 0x7F, activeMasterKey, &telem)) {
+                    if (telem.rawP0 == DOWNLINK_POLL_MARKER && haIsMotionCameraSensor(telem.deviceId)) {
+                        answerCameraPoll(telem);
+                    }
                     packetCount++;
                     sensorRegistryUpdate(telem); // Cache in memory
                     mqttPublishTelemetry(telem); // Publish to Home Assistant MQTT

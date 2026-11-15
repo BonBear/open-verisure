@@ -85,6 +85,12 @@ bool cryptoDeriveDeviceKey(const uint8_t masterKey[16], const char* deviceId, ui
 bool cryptoDecryptPayload(const uint8_t deviceKey[16], const uint8_t inCipher[16], uint8_t outPlain[16]);
 
 /**
+ * @brief Encrypt a 16-byte plaintext block using AES-128-ECB (downlink to a camera).
+ * @return True on success.
+ */
+bool cryptoEncryptPayload(const uint8_t deviceKey[16], const uint8_t inPlain[16], uint8_t outCipher[16]);
+
+/**
  * @brief Process, authenticate, decrypt and validate an incoming 24-byte RF packet.
  * @param rxBuf24 Pointer to 24-byte received radio buffer (8B ID + 16B Cipher).
  * @param rssi Packet RSSI in dBm.

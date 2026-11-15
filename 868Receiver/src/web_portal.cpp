@@ -196,7 +196,7 @@ button.danger:hover { background: #b91c1c; }
       <div class="form-group full">
         <label>Master AES-128 Encryption Key (32 hex characters)</label>
         <div class="input-row">
-          <input type="text" id="master_key" name="master_key" pattern="[0-9a-fA-F]{32}" maxlength="32" placeholder="0102030405060708090A0B0C0D0E0F10" required>
+          <input type="text" id="master_key" name="master_key" pattern="[0-9a-fA-F]{32}" maxlength="32" placeholder="Leave blank to keep the current key" autocomplete="off">
           <button type="button" class="secondary" onclick="generateKey()">Generate Key</button>
         </div>
         <small style="color: var(--text-muted); font-size: 11px; margin-top: 4px;">
@@ -264,7 +264,9 @@ async function fetchStatus() {
       document.getElementById('mqtt_port').value = data.config.mqtt_port || 1883;
       document.getElementById('mqtt_user').value = data.config.mqtt_user || '';
       document.getElementById('mqtt_topic').value = data.config.mqtt_topic || 'verisure';
-      document.getElementById('master_key').value = data.config.master_key || '';
+      document.getElementById('master_key').placeholder = data.config.master_key_set
+        ? 'Key is set (hidden). Leave blank to keep it.'
+        : '32 hex characters';
       initialLoaded = true;
     }
 
@@ -423,7 +425,8 @@ static void handleApiStatus() {
     json += "\"mqtt_port\":" + String(cfg.mqttPort) + ",";
     json += "\"mqtt_user\":\"" + String(cfg.mqttUser) + "\",";
     json += "\"mqtt_topic\":\"" + String(cfg.mqttTopic) + "\",";
-    json += "\"master_key\":\"" + String(cfg.masterKeyHex) + "\"},";
+    // The master key is never sent back to the browser, only whether one is set.
+    json += "\"master_key_set\":" + String(cfg.masterKeyHex[0] ? "true" : "false") + "},";
 
     json += "\"sensors\":[";
     int count = sensorRegistryGetCount();

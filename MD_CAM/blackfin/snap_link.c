@@ -435,6 +435,76 @@ static unsigned int sensor_init(void)
 
 #define SMP(i) ((int)((buf[i] >> 2) & 0xFF))
 
+/* White balance in software (grey world): the sensor output leans blue, so a constant
+ * offset is added to Cb and Cr. Every colour capture sums the raw Cb/Cr samples; awb_update()
+ * turns the sums into a pending offset that moves the mean 3/4 of the way to 128 (at most
+ * +-AWB_MAX). The pending offset is only applied (awb_apply()) before a picture that becomes
+ * a new delta reference, so delta pictures use the same offset as their reference.
+ * 0xFF80005C (set over JTAG): 0 = auto, 0x40000000 = off, 0x80000000 | dv << 8 | du = fixed
+ * offsets (signed bytes). 0xFF800060: applied offsets (dv << 8 | du, signed bytes).
+ * 0xFF800064: raw means of the last update (mean Cr << 8 | mean Cb). */
+#define AWB_MAX 24
+static int awb_du, awb_dv, awb_pu, awb_pv;
+static int awb_valid;                   /* a pending offset has been measured */
+static unsigned long awb_su, awb_sv, awb_n;
+
+static int awb_clamp(int v)
+{
+    return v < -AWB_MAX ? -AWB_MAX : v > AWB_MAX ? AWB_MAX : v;
+}
+
+/* a / b by shift and subtract (no libgcc in this build) */
+static unsigned long awb_udiv(unsigned long a, unsigned long b)
+{
+    unsigned long q = 0, r = 0;
+    int i;
+    for (i = 31; i >= 0; i--) {
+        r = (r << 1) | ((a >> i) & 1);
+        if (r >= b) {
+            r -= b;
+            q |= 1UL << i;
+        }
+    }
+    return q;
+}
+
+static void awb_update(void)
+{
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    int mu, mv;
+    if (awb_n == 0)
+        return;
+    mu = (int)awb_udiv(awb_su, awb_n);
+    mv = (int)awb_udiv(awb_sv, awb_n);
+    awb_su = awb_sv = awb_n = 0;
+    awb_valid = 1;
+    st[25] = (unsigned long)((mv << 8) | mu);
+    awb_pu = awb_clamp((128 - mu) * 3 / 4);
+    awb_pv = awb_clamp((128 - mv) * 3 / 4);
+}
+
+static void awb_apply(void)
+{
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    unsigned long c = st[23];
+    if (c & 0x80000000UL) {
+        awb_du = (signed char)(c & 0xFF);
+        awb_dv = (signed char)((c >> 8) & 0xFF);
+    } else if (c & 0x40000000UL) {
+        awb_du = awb_dv = 0;
+    } else {
+        awb_du = awb_pu;
+        awb_dv = awb_pv;
+    }
+    st[24] = (unsigned long)(((awb_dv & 0xFF) << 8) | (awb_du & 0xFF));
+}
+
+static unsigned char awb_px(int v, int d)
+{
+    v += d;
+    return (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
+}
+
 /* grab output rows row0 .. row0 + n - 1 into yout; if uout/vout are given, also the U/V
  * rows (half width) of the even output rows into uout/vout (row R/2 - row0/2).
  * hires 0: 320 wide, row R = sensor line 2R, pixel x = sensor pixel 2x;
@@ -507,8 +577,12 @@ static void capture(volatile unsigned char *yout, volatile unsigned char *uout, 
                 for (x = 0; x < ow / 2; x++) {
                     unsigned long gx = g + 2UL * ystep * x;     /* pixel pair of output pixel 2x */
                     if (gx + 3 >= g0 && gx + 3 < g1 && gx + 1 >= g0) {
-                        uout[cr * (ow / 2) + x] = (unsigned char)SMP(gx + 1 - g0);
-                        vout[cr * (ow / 2) + x] = (unsigned char)SMP(gx + 3 - g0);
+                        int u = SMP(gx + 1 - g0), v = SMP(gx + 3 - g0);
+                        awb_su += (unsigned long)u;
+                        awb_sv += (unsigned long)v;
+                        awb_n++;
+                        uout[cr * (ow / 2) + x] = awb_px(u, awb_du);
+                        vout[cr * (ow / 2) + x] = awb_px(v, awb_dv);
                     }
                 }
             }
@@ -599,9 +673,22 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
     unsigned char *blob = send + 2;
     static unsigned char chg[MCU_X * MCU_Y];
 
+    if (!allow_delta || !have_ref || since_full >= FULL_EVERY) {
+        /* this picture becomes the new reference. Right after power-up nothing has been
+         * measured yet: grab once only to measure, so the first picture is balanced too
+         * (the CC1110 powers the Blackfin per motion event) */
+        if (!awb_valid) {
+            for (row = 0; row < IMG_H; row += STRIP_H)
+                capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
+                        (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+            awb_update();
+        }
+        awb_apply();
+    }
     for (row = 0; row < IMG_H; row += STRIP_H)
         capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
                 (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+    awb_update();
     full = !allow_delta || !have_ref || since_full >= FULL_EVERY;
     if (!full) {
         for (m = 0; m < total; m++) {
@@ -692,6 +779,15 @@ static unsigned int grab_jpeg(unsigned int mode)
         send[1] = (unsigned char)(len >> 8);
         return (unsigned int)len + 2;
     }
+    if (hires && !awb_valid && !have_ref) {
+        /* 640x480 as the first picture after power-up: measure the colour first (no
+         * delta reference exists yet, so changing the offset is safe) */
+        for (row = 0; row < IMG_H; row += STRIP_H)
+            capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
+                    (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+        awb_update();
+        awb_apply();
+    }
     jpeg_begin(send + 2, max - 2, ow, oh, JPEG_QUALITY, mode != 0, 0, -1);
     for (row = 0; row < oh; row += STRIP_H) {
         if (mode != 0) {
@@ -703,6 +799,8 @@ static unsigned int grab_jpeg(unsigned int mode)
             jpeg_rows(strip + 8 * ow, ow);
         }
     }
+    if (mode != 0)
+        awb_update();
     len = jpeg_end();
     st[10] = len;                   /* 0xFF800028 */
     send[0] = (unsigned char)(len & 0xFF);
@@ -726,6 +824,9 @@ int main(void)
     st[17] = pll_init();            /* 0xFF800044: PLL_CTL << 16 | PLL_DIV afterwards */
     sdram_bad = sdram_init();
     have_ref = 0;                   /* .bss is not zeroed by a JTAG load */
+    awb_valid = 0;
+    awb_su = awb_sv = awb_n = 0;
+    awb_du = awb_dv = awb_pu = awb_pv = 0;
     full_id = 0;
     since_full = 0;
     st[19] = sdram_bad;             /* 0xFF80004C: bad SDRAM test words (0 = SDRAM in use) */
