@@ -1898,7 +1898,9 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
     uint8_t st = 0, tries, i, n;
     uint16_t len, off, idx;
     bf_link_xfer(cmd);
-    for (tries = 0; tries < 40; tries++) {
+    // ~0.83 s per try: 60 tries ~50 s. A cold 640x480 (0xD2) needed ~13 s, but snap_link's
+    // AEC wait after power-up can add up to ~15 s more in a scene that keeps changing
+    for (tries = 0; tries < 60; tries++) {
         delay_ms(300);
         bf_link_xfer(0xB0);
         st = bf_link_xfer(0xA0);      // answer to 0xB0
@@ -2436,7 +2438,10 @@ static void cam_alarm_loop(uint16_t *p_seq) {
             // keep it powered only after a good picture: a hung Blackfin gets power-cycled
             keep = bf_send_picture(cmd, p_seq) ? BF_KEEP_ON_S * BF_TICKS_PER_S : 0;
             idle = 0;
-            poll += BF_IMG_PIC_TICKS;
+            // a picture takes 20..80 s over RF but counts as BF_IMG_PIC_TICKS, so during
+            // motion the poll came only every ~3rd picture (seen: 172 s without one, so a
+            // disarm waited that long): poll after every picture instead
+            poll = BF_POLL_S * BF_TICKS_PER_S;
             hold = hold > BF_IMG_PIC_TICKS ? hold - BF_IMG_PIC_TICKS : 0;
             if (active) {
                 for (t = 0; t < BF_IMG_PAUSE_TICKS; t++) {
