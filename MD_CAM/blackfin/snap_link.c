@@ -713,7 +713,7 @@ static unsigned int have_ref, full_id, since_full;
 static unsigned long grab_color_delta(unsigned char *send, unsigned long max, int allow_delta)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
-    unsigned int row, m, changed = 0, total = MCU_X * MCU_Y, full;
+    unsigned int row, m, changed = 0, added = 0, total = MCU_X * MCU_Y, full;
     unsigned long thr = st[20] ? st[20] : DELTA_T, len;
     unsigned char *blob = send + 2;
     static unsigned char chg[MCU_X * MCU_Y];
@@ -748,6 +748,23 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
             chg[m] = (unsigned char)(d > 64UL * thr);
             changed += chg[m];
         }
+        /* hysteresis: a neighbour (left/right/up/down) of a changed MCU also counts from
+         * half the threshold, so the edges of a moving object are not left as stale
+         * blocks from the reference. Only first-pass MCUs (1) spread, added ones are 2.
+         * mcu_diff is computed again for those neighbours only (no room in L1 for a table). */
+        for (m = 0; m < total; m++) {
+            unsigned int mx = m % MCU_X;
+            if (chg[m])
+                continue;
+            if (((mx > 0 && chg[m - 1] == 1) || (mx < MCU_X - 1 && chg[m + 1] == 1) ||
+                 (m >= MCU_X && chg[m - MCU_X] == 1) || (m + MCU_X < total && chg[m + MCU_X] == 1)) &&
+                mcu_diff(m) > 32UL * thr) {
+                chg[m] = 2;
+                changed++;
+                added++;
+            }
+        }
+        st[27] = added;             /* 0xFF80006C: MCUs added by the hysteresis */
         if (changed * 2 > total)
             full = 1;
     }
