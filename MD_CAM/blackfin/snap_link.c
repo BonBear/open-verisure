@@ -821,7 +821,13 @@ int main(void)
     st[8] = 0;
     st[9] = 0;
     st[10] = 0;
-    st[17] = pll_init();            /* 0xFF800044: PLL_CTL << 16 | PLL_DIV afterwards */
+    /* control words read as input: after a flash boot they hold whatever L1 kept (seen:
+     * 0xFFA00000 in the AWB word = fixed offsets 0, 0x1000 as delta threshold). Set them
+     * over JTAG after start; st[11]/st[18] stay, the JTAG start test sets them before. */
+    st[13] = 0;                     /* 0xFF800034 sensor register write */
+    st[20] = 0;                     /* 0xFF800050 delta threshold (0 = DELTA_T) */
+    st[23] = 0;                     /* 0xFF80005C AWB control (0 = auto) */
+    st[17] = pll_init();           /* 0xFF800044: PLL_CTL << 16 | PLL_DIV afterwards */
     sdram_bad = sdram_init();
     have_ref = 0;                   /* .bss is not zeroed by a JTAG load */
     awb_valid = 0;
