@@ -96,7 +96,10 @@
 #define REF_V        0x00238000
 #define MCU_X        (OUT_W / 16)
 #define MCU_Y        (IMG_H / 16)
-#define DELTA_T      6           /* mean |difference| per 8x8 block that counts as a change */
+/* mean |difference| per 8x8 block that counts as a change. Calibrated 2026-11-15 with the
+ * histogram at 0xFF800080: a still, dim scene (Y ~60) 5 min apart gave MCU maxima up to 9
+ * (most 5..8), so 6 flagged 167 of 300 MCUs; 12 leaves a margin over that noise */
+#define DELTA_T      12
 #define FULL_EVERY   120         /* a full picture at least every this many delta pictures */
 #define JPEG_QUALITY 50
 
@@ -616,22 +619,27 @@ static unsigned long sad8(const volatile unsigned char *a, const volatile unsign
     return sum;
 }
 
-/* MCU m (16x16 Y + 8x8 Cb/Cr) of the current picture differs from the reference by more
- * than the noise: any of its six 8x8 blocks has a mean |difference| above the threshold */
-static int mcu_changed(unsigned int m, unsigned long thr)
+/* Largest sum of |difference| over the six 8x8 blocks (16x16 Y + 8x8 Cb/Cr) of MCU m
+ * between the current picture and the reference. The MCU counts as changed when this is
+ * above 64 * threshold, i.e. some block's mean |difference| is above the threshold. */
+static unsigned long mcu_diff(unsigned int m)
 {
     unsigned int mx = m % MCU_X, my = m / MCU_X;
     unsigned long yo = (unsigned long)my * 16 * OUT_W + mx * 16, co = (unsigned long)my * 8 * (OUT_W / 2) + mx * 8;
     const volatile unsigned char *cy = (const volatile unsigned char *)CUR_Y + yo;
     const volatile unsigned char *ry = (const volatile unsigned char *)REF_Y + yo;
-    unsigned long lim = 64UL * thr;
-    if (sad8(cy, ry, OUT_W) > lim || sad8(cy + 8, ry + 8, OUT_W) > lim ||
-        sad8(cy + 8 * OUT_W, ry + 8 * OUT_W, OUT_W) > lim || sad8(cy + 8 * OUT_W + 8, ry + 8 * OUT_W + 8, OUT_W) > lim)
-        return 1;
-    if (sad8((const volatile unsigned char *)CUR_U + co, (const volatile unsigned char *)REF_U + co, OUT_W / 2) > lim ||
-        sad8((const volatile unsigned char *)CUR_V + co, (const volatile unsigned char *)REF_V + co, OUT_W / 2) > lim)
-        return 1;
-    return 0;
+    unsigned long d, mx_d = sad8(cy, ry, OUT_W);
+    d = sad8(cy + 8, ry + 8, OUT_W);
+    if (d > mx_d) mx_d = d;
+    d = sad8(cy + 8 * OUT_W, ry + 8 * OUT_W, OUT_W);
+    if (d > mx_d) mx_d = d;
+    d = sad8(cy + 8 * OUT_W + 8, ry + 8 * OUT_W + 8, OUT_W);
+    if (d > mx_d) mx_d = d;
+    d = sad8((const volatile unsigned char *)CUR_U + co, (const volatile unsigned char *)REF_U + co, OUT_W / 2);
+    if (d > mx_d) mx_d = d;
+    d = sad8((const volatile unsigned char *)CUR_V + co, (const volatile unsigned char *)REF_V + co, OUT_W / 2);
+    if (d > mx_d) mx_d = d;
+    return mx_d;
 }
 
 /* encode MCU m of the current picture (independent restart interval) and copy it to the
@@ -691,8 +699,15 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
     awb_update();
     full = !allow_delta || !have_ref || since_full >= FULL_EVERY;
     if (!full) {
+        /* 0xFF800080..0xFF8000FC: histogram of the MCUs' largest block mean |difference|
+         * (bucket = mean, 31 = 31 and more), to calibrate DELTA_T against sensor noise */
+        volatile unsigned long *hist = st + 32;
+        for (m = 0; m < 32; m++)
+            hist[m] = 0;
         for (m = 0; m < total; m++) {
-            chg[m] = (unsigned char)mcu_changed(m, thr);
+            unsigned long d = mcu_diff(m), b = d >> 6;
+            hist[b > 31 ? 31 : b]++;
+            chg[m] = (unsigned char)(d > 64UL * thr);
             changed += chg[m];
         }
         if (changed * 2 > total)

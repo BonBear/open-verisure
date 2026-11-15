@@ -54,9 +54,18 @@ def sync_key_from_gateway() -> bool:
     except Exception as e:
         print(f"[!] Could not query {GATEWAY_HTTP}/api/status ({e}), using secrets.h")
 
+    print(f"[+] Master key check value {key_check_value(bytes.fromhex(mk_hex))} "
+          "(must match 'Master Key : set (check value ...)' in the gateway's status command)")
     dk = derive_key.derive_device_key(bytes.fromhex(mk_hex), DEVICE_ID)
     derive_key.write_config_header(DEVICE_ID, dk, CONFIG_H)
     return key_changed
+
+
+def key_check_value(key: bytes) -> str:
+    """First 3 bytes of AES(key, 0^16), as the gateway prints it: compares keys without showing them."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    enc = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    return (enc.update(bytes(16)) + enc.finalize())[:3].hex().upper()
 
 
 def compile_firmware() -> None:
