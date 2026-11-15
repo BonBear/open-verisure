@@ -1854,7 +1854,11 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_RX_WINDOW 40          // listen window after a poll, in delay_ms(1) steps (~2.75 ms each: ~110 ms)
 #define BF_BOOT_WAIT_MS 1100     // after /RESET release: boot selector, snap_link and sensor setup (~3 s)
 #define BF_ARMED_IDLE_S 1800     // armed without motion: one picture this often (0 = never)
-#define BF_KEEP_ON_S 120         // Blackfin stays powered this long after a picture (~0.14 A), so its
+#define BF_SLEEP_IDLE 0          // 1: with the Blackfin off, wait in PM2 (0.5 s timer / PIR edge) instead of
+                                 // busy-waiting. Off: tried 2026-11-16, the camera never woke from the sleep
+                                 // timer (no poll after the first) and the flasher's INIT read 0000 until a
+                                 // power cycle. Not needed for now: awake idle is already ~3 mA with LD1 off.
+#define BF_KEEP_ON_S 120        // Blackfin stays powered this long after a picture (~0.14 A), so its
                                  // SDRAM keeps the delta reference and a 0xD3 request within that
                                  // time is sent as a delta; 0 = power off right after each picture
 
@@ -2347,6 +2351,8 @@ static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
 static void bf_power_on(void) {
     P0DIR |= 0x85;   // P0_0, P0_2 (1.2V), P0_7 (aux) = outputs
     P0_0 = 0;
+    P0DIR &= ~0x4A;  // P0_1, P0_3, P0_6 (Blackfin BMODE/DSP) back to inputs with pull-up,
+    P0INP &= ~0x4A;  // as setup_gpio() has them for the boot (bf_power_off drives them low)
     P1SEL &= ~0x3E;
     P1DIR |= 0x07;
     P1_1 = 0;
@@ -2372,7 +2378,9 @@ static void bf_power_on(void) {
 }
 
 // Back to the idle state of setup_gpio(): /RESET low (P0_0), aux and 1.2 V rails off in the
-// reverse order of bf_power_on(), Q7 off (P1_0), bus tri-state.
+// reverse order of bf_power_on(), Q7 off (P1_0), bus tri-state. P0_1, P0_3 and P0_6 are
+// then driven low: as pull-up inputs they keep Q2 on the PIR board conducting, so the red
+// LD1 lit and the board drew ~20 mA instead of ~3 mA (memory PIR_INDICATOR_LED).
 static void bf_power_off(void) {
     P0_0 = 0;
     P0_7 = 0;
@@ -2382,7 +2390,24 @@ static void bf_power_off(void) {
     P1_2 = 1;
     P1DIR &= ~0x38;
     P1INP |= 0x38;
+    P0 &= ~0x4A;
+    P0DIR |= 0x4A;
 }
+
+#if BF_SLEEP_IDLE
+// With the Blackfin off, sleep in PM2 until the next 0.5 s sleep-timer tick or a PIR edge on
+// P1_7, instead of busy-waiting on the crystal (board ~22 mA awake, ~3 mA in PM2 as measured
+// with the earlier low-power build). Returns the loop ticks that passed: a whole timer period
+// after a tick, 1 after a PIR edge (exact time unknown; the loop reads P1_7 right away).
+static uint16_t cam_sleep(void) {
+    g_tick = 0;
+    g_pir_edge = 0;
+    clock_rcosc();
+    enter_pm2();
+    clock_xosc();
+    return g_tick ? (uint16_t)(BF_TICKS_PER_S * ST_WOREVT / 32) : 1;
+}
+#endif
 
 static void cam_alarm_loop(uint16_t *p_seq) {
     uint16_t poll = BF_POLL_S * BF_TICKS_PER_S;   // first poll right away
@@ -2393,6 +2418,9 @@ static void cam_alarm_loop(uint16_t *p_seq) {
 
     bf_power_off();
     s_boot_noise = radio_noise_nonce();
+#if BF_SLEEP_IDLE
+    sleep_timer_init();
+#endif
     for (;;) {
         if (P1_7 == 0) {
             if (!active) {
@@ -2454,13 +2482,18 @@ static void cam_alarm_loop(uint16_t *p_seq) {
                 }
             }
         } else {
-            delay_ms(10);
-            poll++;
-            idle++;
-            if (keep)
-                keep--;
-            if (hold && P1_7 != 0)
-                hold--;
+            uint16_t n = 1;
+#if BF_SLEEP_IDLE
+            if (!bf_on)
+                n = cam_sleep();
+            else
+#endif
+                delay_ms(10);
+            poll += n;
+            idle += n;
+            keep = keep > n ? keep - n : 0;
+            if (P1_7 != 0)
+                hold = hold > n ? hold - n : 0;
         }
 
         if (active && !hold && P1_7 != 0) {
