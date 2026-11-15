@@ -15,6 +15,7 @@ static WiFiClient s_wifiClient;
 static PubSubClient s_mqttClient(s_wifiClient);
 
 static unsigned long s_lastReconnectAttempt = 0;
+static unsigned long s_reconnectIntervalMs = 5000;
 static unsigned long s_lastGatewayStatePub = 0;
 static bool s_wasConnected = false;
 
@@ -230,11 +231,24 @@ static void checkMqttConnection() {
     const GatewayConfig& cfg = ConfigManager::get();
     if (cfg.mqttHost[0] == '\0') return; // MQTT is not configured
 
+    // Everything below blocks the radio loop, so keep each attempt short and back off
+    // (5 s, doubling to 60 s) while the broker stays unreachable.
     unsigned long now = millis();
-    if (now - s_lastReconnectAttempt < 5000) return; // Retry interval: 5 seconds
+    if (now - s_lastReconnectAttempt < s_reconnectIntervalMs) return;
     s_lastReconnectAttempt = now;
+    s_reconnectIntervalMs = (s_reconnectIntervalMs * 2 > 60000UL) ? 60000UL : s_reconnectIntervalMs * 2;
 
     s_mqttClient.setServer(cfg.mqttHost, cfg.mqttPort);
+    s_mqttClient.setSocketTimeout(2);   // CONNACK wait, seconds (default 15)
+
+    // Open TCP ourselves with a bounded timeout; PubSubClient reuses a connected client.
+    // (A host name still costs one blocking DNS lookup; an IP address does not.)
+    if (!s_wifiClient.connected() && !s_wifiClient.connect(cfg.mqttHost, cfg.mqttPort, 1500)) {
+        Serial.printf("[MQTT] Broker %s:%d not reachable, next try in %lu s\n",
+                      cfg.mqttHost, cfg.mqttPort, s_reconnectIntervalMs / 1000);
+        return;
+    }
+    s_wifiClient.setTimeout(3);   // connect() left 1.5 s send/receive timeouts; JPEG publishes need more
 
     // Build unique Client-ID from ESP32-S2 MAC address
     String clientId = "verisure-gw-" + WiFi.macAddress();
@@ -257,6 +271,7 @@ static void checkMqttConnection() {
     if (connected) {
         Serial.println("[MQTT] Connected to broker!");
         s_wasConnected = true;
+        s_reconnectIntervalMs = 5000;
 
         // Publish Gateway Online Status (Retained)
         s_mqttClient.publish(statusTopic.c_str(), "online", true);
@@ -290,7 +305,9 @@ static void checkMqttConnection() {
             }
         }
     } else {
-        Serial.printf("[MQTT] Connection error! rc=%d\n", s_mqttClient.state());
+        Serial.printf("[MQTT] Connection error! rc=%d, next try in %lu s\n",
+                      s_mqttClient.state(), s_reconnectIntervalMs / 1000);
+        s_wifiClient.stop();
     }
 }
 

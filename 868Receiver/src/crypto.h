@@ -91,6 +91,13 @@ bool cryptoDecryptPayload(const uint8_t deviceKey[16], const uint8_t inCipher[16
 bool cryptoEncryptPayload(const uint8_t deviceKey[16], const uint8_t inPlain[16], uint8_t outCipher[16]);
 
 /**
+ * @brief Key check value: first 3 bytes of AES(key, 0^16) as 6 hex chars. Lets two sides
+ *        compare keys without showing them (print this, never the key).
+ * @param out 7 bytes; "------" if key is null.
+ */
+void cryptoKeyCheckValue(const uint8_t key[16], char out[7]);
+
+/**
  * @brief Process, authenticate, decrypt and validate an incoming 24-byte RF packet.
  * @param rxBuf24 Pointer to 24-byte received radio buffer (8B ID + 16B Cipher).
  * @param rssi Packet RSSI in dBm.

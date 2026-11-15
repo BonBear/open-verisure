@@ -534,10 +534,14 @@ static void handleApiSave() {
     String topic= extractJsonString(body, "mqtt_topic");
     String key  = extractJsonString(body, "master_key");
 
+    // MQTT first: a rejected topic must leave every setting untouched
+    if (!ConfigManager::setMqtt(host.c_str(), (uint16_t)port, user.c_str(), mpass.c_str(), topic.length() ? topic.c_str() : "verisure")) {
+        s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid MQTT topic (allowed: A-Z a-z 0-9 _ - and single '/')\"}");
+        return;
+    }
     if (ssid.length() > 0) {
         ConfigManager::setWifi(ssid.c_str(), pass.c_str());
     }
-    ConfigManager::setMqtt(host.c_str(), (uint16_t)port, user.c_str(), mpass.c_str(), topic.length() ? topic.c_str() : "verisure");
 
     if (key.length() == 32) {
         if (!ConfigManager::setMasterKeyHex(key.c_str())) {
@@ -616,6 +620,13 @@ static void handleApiCameraTest() {
     String devId = "2NCEKS3T";
     if (s_server.hasArg("id")) {
         devId = s_server.arg("id");
+    }
+    // the ID becomes an MQTT topic level: 8 alphanumeric characters only
+    bool idOk = devId.length() == 8;
+    for (unsigned i = 0; idOk && i < devId.length(); i++) idOk = isalnum((unsigned char)devId[i]);
+    if (!idOk) {
+        s_server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid device ID\"}");
+        return;
     }
     bool ok = mqttPublishCameraImage(devId.c_str(), S_MINIMAL_JPEG, sizeof(S_MINIMAL_JPEG));
     if (ok) {

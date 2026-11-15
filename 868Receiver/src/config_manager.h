@@ -75,7 +75,8 @@ public:
      * @param pass Password.
      * @param topic Base topic.
      */
-    static void setMqtt(const char* host, uint16_t port, const char* user, const char* pass, const char* topic);
+    /** @return false if the topic was rejected (the other fields are still applied). */
+    static bool setMqtt(const char* host, uint16_t port, const char* user, const char* pass, const char* topic);
 
     /**
      * @brief Update Master AES Key from a 32-character hexadecimal string.

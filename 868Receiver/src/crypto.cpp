@@ -6,6 +6,7 @@
 #include "crypto.h"
 #include "mbedtls/aes.h"
 #include "image_receiver.h"
+#include <ctype.h>
 #include <string.h>
 
 /** @brief Maximum number of distinct sensor nodes tracked simultaneously in RAM. */
@@ -47,6 +48,18 @@ bool cryptoDeriveDeviceKey(const uint8_t masterKey[16], const char* deviceId, ui
     mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, paddedId, outDeviceKey);
     mbedtls_aes_free(&aes);
     return true;
+}
+
+void cryptoKeyCheckValue(const uint8_t key[16], char out[7]) {
+    static const char hex[] = "0123456789ABCDEF";
+    uint8_t zero[16] = {0}, enc[16];
+    strcpy(out, "------");
+    if (!key || !cryptoEncryptPayload(key, zero, enc)) return;
+    for (int i = 0; i < 3; i++) {
+        out[2 * i] = hex[enc[i] >> 4];
+        out[2 * i + 1] = hex[enc[i] & 0x0F];
+    }
+    out[6] = '\0';
 }
 
 bool cryptoEncryptPayload(const uint8_t deviceKey[16], const uint8_t inPlain[16], uint8_t outCipher[16]) {
@@ -111,6 +124,10 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
         devId[i] = (c >= 32 && c <= 126) ? c : '?';
     }
     devId[8] = '\0';
+    // IDs end up unescaped in MQTT topics and HA discovery JSON: alphanumeric only
+    for (int i = 0; i < 8; i++) {
+        if (!isalnum((unsigned char)devId[i])) return false;
+    }
 
     // 2. Derive unique Device Key from Master Key
     uint8_t devKey[16];
@@ -124,6 +141,15 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
         return false;
     }
 
+    // 3a. Our own downlink answers ('D','L', seq, chal, armed, cmd, id[0..3], 0, 0, 'V','S';
+    // see downlink.h) are never uplink: a replayed one with seq_hi 0x80/0x81 would otherwise
+    // pass as an image packet below. The full layout is matched so that a real image
+    // packet whose seq happens to be 0x444C ('DL') is not dropped.
+    if (plain[0] == 'D' && plain[1] == 'L' && plain[12] == 0 && plain[13] == 0 &&
+        memcmp(&plain[8], devId, 4) == 0 && plain[14] == 'V' && plain[15] == 'S') {
+        return false;
+    }
+
     // 3b. Check for RF Camera Image Chunk (plain[2] == 0x80, plain[14..15] == 'V', 'S')
     if (plain[2] == 0x80 && plain[14] == 'V' && plain[15] == 'S') {
         uint16_t seq = ((uint16_t)plain[0] << 8) | plain[1];
@@ -133,12 +159,11 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
         bool isFirst = (chunkFlags & 0x80) != 0;
         bool isLast  = (chunkFlags & 0x40) != 0;
 
+        // Camera data never moves the replay window: a replayed old chunk would
+        // otherwise rewind lastSeq and let old telemetry through again.
+        (void)seq;
         DeviceSession* sess = getOrCreateSession(devId);
-        if (sess) {
-            sess->lastSeq = seq;
-            sess->hasLastSeq = true;
-            sess->lastSeen = millis();
-        }
+        if (sess) sess->lastSeen = millis();
 
         imageReceiverProcessChunk(devId, chunkIdx, chunkLen, isFirst, isLast, &plain[6]);
         s_lastWasImage = true;
@@ -150,12 +175,11 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     if (plain[2] == 0x81 && plain[14] == 'V' && plain[15] == 'S') {
         uint16_t seq = ((uint16_t)plain[0] << 8) | plain[1];
         uint16_t tile = ((uint16_t)plain[3] << 8) | plain[4];
+        // Camera data never moves the replay window: a replayed old chunk would
+        // otherwise rewind lastSeq and let old telemetry through again.
+        (void)seq;
         DeviceSession* sess = getOrCreateSession(devId);
-        if (sess) {
-            sess->lastSeq = seq;
-            sess->hasLastSeq = true;
-            sess->lastSeen = millis();
-        }
+        if (sess) sess->lastSeen = millis();
         imageReceiverProcessTile(devId, tile, &plain[6]);
         s_lastWasImage = true;
         return false; // camera data, not telemetry

@@ -10,6 +10,7 @@
 #include "hardware_pins.h"
 #include "mqtt_manager.h"
 #include "downlink.h"
+#include "crypto.h"
 #include <WiFi.h>
 #include <SPI.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
@@ -117,7 +118,9 @@ static void printStatus() {
                   webPortalIsApMode() ? "Verisure-Gateway" : cfg.wifiSsid,
                   webPortalIsApMode() ? 0 : WiFi.RSSI());
     Serial.printf("  MQTT Status  : %s\n", mqttGetStatusString().c_str());
-    Serial.printf("  Master Key   : %s\n", cfg.masterKeyHex);
+    char kcv[7];
+    cryptoKeyCheckValue(cfg.masterKey, kcv);
+    Serial.printf("  Master Key   : set (check value %s)\n", kcv);   // never print the key
     Serial.printf("  Sensors      : %d registered\n", sensorRegistryGetCount());
 
     int count = sensorRegistryGetCount();
@@ -217,7 +220,9 @@ static void processCommand(char* cmd) {
         while (*keyStr == ' ') keyStr++;
         if (strlen(keyStr) == 32 && ConfigManager::setMasterKeyHex(keyStr)) {
             ConfigManager::save();
-            Serial.printf("[CLI] Master Key saved: %s\n", keyStr);
+            char kcv[7];
+            cryptoKeyCheckValue(ConfigManager::get().masterKey, kcv);
+            Serial.printf("[CLI] Master Key saved (check value %s)\n", kcv);
         } else {
             Serial.println("[CLI] Error: Key must be exactly 32 hex characters!");
         }
@@ -229,9 +234,10 @@ static void processCommand(char* cmd) {
         char topic[33] = "verisure";
         int parsed = sscanf(cmd + 8, "%64s %d %32s %64s %32s", host, &port, user, pass, topic);
         if (parsed >= 2) {
-            ConfigManager::setMqtt(host, (uint16_t)port, user, pass, topic);
-            ConfigManager::save();
-            Serial.printf("[CLI] MQTT saved: %s:%d (Topic: %s)\n", host, port, topic);
+            if (ConfigManager::setMqtt(host, (uint16_t)port, user, pass, topic)) {
+                ConfigManager::save();
+                Serial.printf("[CLI] MQTT saved: %s:%d (Topic: %s)\n", host, port, ConfigManager::get().mqttTopic);
+            }
         } else {
             Serial.println("[CLI] Usage: setmqtt <host> <port> [user] [pass] [topic]");
         }

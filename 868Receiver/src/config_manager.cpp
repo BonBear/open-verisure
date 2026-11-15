@@ -4,6 +4,7 @@
  */
 
 #include "config_manager.h"
+#include "crypto.h"
 #include <Preferences.h>
 #include <ctype.h>
 #include <string.h>
@@ -62,6 +63,22 @@ void ConfigManager::bytesToHex(const uint8_t* in, int len, char* out) {
     out[len * 2] = '\0';
 }
 
+// The base topic goes unescaped into MQTT topics and HA discovery JSON, so only plain
+// topic levels are allowed: [A-Za-z0-9_-] separated by single '/', no wildcards or quotes.
+static bool isValidBaseTopic(const char* t) {
+    size_t n = t ? strlen(t) : 0;
+    if (n == 0 || t[0] == '/' || t[n - 1] == '/') return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = t[i];
+        if (c == '/') {
+            if (t[i + 1] == '/') return false;
+        } else if (!isalnum((unsigned char)c) && c != '_' && c != '-') {
+            return false;
+        }
+    }
+    return true;
+}
+
 static inline int hexNibble(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -107,6 +124,11 @@ void ConfigManager::begin() {
     s_config.mqttPass[sizeof(s_config.mqttPass) - 1] = '\0';
     strncpy(s_config.mqttTopic, mTopic.c_str(), sizeof(s_config.mqttTopic) - 1);
     s_config.mqttTopic[sizeof(s_config.mqttTopic) - 1] = '\0';
+    if (!isValidBaseTopic(s_config.mqttTopic)) {
+        Serial.println("[Config] Stored MQTT topic is invalid, using the default.");
+        strncpy(s_config.mqttTopic, DEFAULT_MQTT_TOPIC, sizeof(s_config.mqttTopic) - 1);
+        s_config.mqttTopic[sizeof(s_config.mqttTopic) - 1] = '\0';
+    }
 
     // 3. Master Key (16 bytes)
     // If the firmware was recompiled with a new MASTER_KEY_HEX in secrets.h, automatically adopt it!
@@ -134,7 +156,9 @@ void ConfigManager::begin() {
     Serial.printf("         MQTT Broker : %s:%d (Topic: %s)\n",
                   s_config.mqttHost[0] ? s_config.mqttHost : "(not configured)",
                   s_config.mqttPort, s_config.mqttTopic);
-    Serial.printf("         Master Key  : %s\n", s_config.masterKeyHex);
+    char kcv[7];
+    cryptoKeyCheckValue(s_config.masterKey, kcv);
+    Serial.printf("         Master Key  : set (check value %s)\n", kcv);   // never print the key
 }
 
 const GatewayConfig& ConfigManager::get() {
@@ -181,7 +205,12 @@ void ConfigManager::setWifi(const char* ssid, const char* pass) {
     }
 }
 
-void ConfigManager::setMqtt(const char* host, uint16_t port, const char* user, const char* pass, const char* topic) {
+bool ConfigManager::setMqtt(const char* host, uint16_t port, const char* user, const char* pass, const char* topic) {
+    // validate first: a rejected call changes nothing
+    if (topic && topic[0] && (strlen(topic) >= sizeof(s_config.mqttTopic) || !isValidBaseTopic(topic))) {
+        Serial.println("[Config] MQTT topic rejected (allowed: A-Z a-z 0-9 _ - and single '/'), nothing changed.");
+        return false;
+    }
     if (host) {
         strncpy(s_config.mqttHost, host, sizeof(s_config.mqttHost) - 1);
         s_config.mqttHost[sizeof(s_config.mqttHost) - 1] = '\0';
@@ -195,10 +224,8 @@ void ConfigManager::setMqtt(const char* host, uint16_t port, const char* user, c
         strncpy(s_config.mqttPass, pass, sizeof(s_config.mqttPass) - 1);
         s_config.mqttPass[sizeof(s_config.mqttPass) - 1] = '\0';
     }
-    if (topic) {
-        strncpy(s_config.mqttTopic, topic, sizeof(s_config.mqttTopic) - 1);
-        s_config.mqttTopic[sizeof(s_config.mqttTopic) - 1] = '\0';
-    }
+    if (topic && topic[0]) strcpy(s_config.mqttTopic, topic);
+    return true;
 }
 
 bool ConfigManager::setMasterKeyHex(const char* hexStr) {
