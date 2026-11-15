@@ -8,6 +8,7 @@
 #include <string.h>
 #include <esp_heap_caps.h>
 #include "jpeg_splice.h"
+#include "downlink.h"
 
 /* ------------------------------ JPEG chunks (type 0x80) ------------------------------
  * Chunk n carries bytes 8n .. 8n+len-1 of the JPEG (the MD CAM sends 8-byte chunks, the
@@ -60,6 +61,22 @@ static unsigned int jpegWidth(const uint8_t* j, size_t len) {
     return 0;
 }
 
+// A delta that cannot be applied (the gateway restarted, or missed the full picture it
+// belongs to) is useless, and the camera keeps sending deltas against its own reference
+// while the Blackfin stays powered. Ask it for a full picture (0xD1) with its next poll,
+// at most once per BASE_REQUEST_MS so a camera that cannot deliver it is not flooded.
+#define BASE_REQUEST_MS 60000UL
+static void requestNewBase(void) {
+    static unsigned long s_lastRequest = 0;
+    static bool s_requested = false;
+    if (s_requested && millis() - s_lastRequest < BASE_REQUEST_MS) return;
+    s_requested = true;
+    s_lastRequest = millis();
+    bool ok = downlinkRequestPicture(s_activeDeviceId, 0xD1);
+    Serial.printf("[ImageReceiver] No base for this delta: full picture 0xD1 for %s %s\n", s_activeDeviceId,
+                  ok ? "queued" : "NOT queued");
+}
+
 // Finish the blob in s_imgBuf (len bytes; missing chunks stay zero): a full JPEG (kept as
 // the base for deltas if it is 320 wide, or as the large picture) or a delta blob that is
 // spliced into the base (jpeg_splice.cpp). The resulting picture is published on MQTT.
@@ -79,6 +96,8 @@ static void jpegFinish(size_t len) {
         Serial.printf("[ImageReceiver] Delta from %s: %u bytes for picture %d, %u blocks%s, %u/%u chunks missing\n",
                       s_activeDeviceId, (unsigned int)len, id, updated,
                       n ? "" : (id == s_baseId ? " (could not apply)" : " (other base, ignored)"), missing, chunks);
+        if (!n)
+            requestNewBase();
         if (n) {
             uint8_t* t = s_jpg;          // the spliced picture becomes the current one
             s_jpg = s_tmp;
