@@ -243,6 +243,7 @@ static void processCommand(char* cmd) {
         }
     } else if (strcmp(cmd, "alarm on") == 0 || strcmp(cmd, "alarm off") == 0) {
         downlinkSetArmed(cmd[7] == 'n');
+        mqttPublishAlarmState();   // keep the HA switch in step
         Serial.printf("[CLI] Alarm %s (sent to cameras with their next poll)\n", downlinkArmed() ? "ARMED" : "DISARMED");
     } else if (strcmp(cmd, "alarm") == 0) {
         Serial.printf("[CLI] Alarm is %s\n", downlinkArmed() ? "ARMED" : "DISARMED");

@@ -47,6 +47,9 @@ bool mqttPublishCameraImage(const char* deviceId, const uint8_t* jpegBuf, size_t
  */
 bool mqttIsConnected();
 
+/** Publish the current alarm state (retained) after it changed outside MQTT, e.g. on the CLI. */
+void mqttPublishAlarmState();
+
 /**
  * @brief Get human-readable connection status string.
  * @return "Connected (IP:Port)" or "Disconnected / Retrying...".

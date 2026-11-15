@@ -63,6 +63,10 @@ static void publishAlarmState() {
     s_mqttClient.publish(t.c_str(), downlinkArmed() ? "ON" : "OFF", true);
 }
 
+void mqttPublishAlarmState() {
+    if (s_mqttClient.connected()) publishAlarmState();   // on reconnect it is sent anyway
+}
+
 /** Switch on the gateway device: the alarm state the cameras get. Its command topic also
  *  takes Home Assistant alarm_control_panel states (armed_*, triggered, disarmed). */
 static void publishAlarmDiscovery(const char* baseTopic) {
