@@ -1854,6 +1854,9 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_RX_WINDOW 40          // listen window after a poll, in delay_ms(1) steps (~2.75 ms each: ~110 ms)
 #define BF_BOOT_WAIT_MS 1100     // after /RESET release: boot selector, snap_link and sensor setup (~3 s)
 #define BF_ARMED_IDLE_S 1800     // armed without motion: one picture this often (0 = never)
+#define BF_KEEP_ON_S 120         // Blackfin stays powered this long after a picture (~0.14 A), so its
+                                 // SDRAM keeps the delta reference and a 0xD3 request within that
+                                 // time is sent as a delta; 0 = power off right after each picture
 
 // Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
 // P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
@@ -2381,7 +2384,7 @@ static void bf_power_off(void) {
 
 static void cam_alarm_loop(uint16_t *p_seq) {
     uint16_t poll = BF_POLL_S * BF_TICKS_PER_S;   // first poll right away
-    uint16_t hold = 0, t;
+    uint16_t hold = 0, t, keep = 0;
     uint32_t idle = 0;
     uint8_t ev_pic = 0, cmd;
     bool active = false, bf_on = false, was_armed = s_armed;
@@ -2430,7 +2433,8 @@ static void cam_alarm_loop(uint16_t *p_seq) {
                 bf_power_on();
                 bf_on = true;
             }
-            bf_send_picture(cmd, p_seq);
+            // keep it powered only after a good picture: a hung Blackfin gets power-cycled
+            keep = bf_send_picture(cmd, p_seq) ? BF_KEEP_ON_S * BF_TICKS_PER_S : 0;
             idle = 0;
             poll += BF_IMG_PIC_TICKS;
             hold = hold > BF_IMG_PIC_TICKS ? hold - BF_IMG_PIC_TICKS : 0;
@@ -2448,6 +2452,8 @@ static void cam_alarm_loop(uint16_t *p_seq) {
             delay_ms(10);
             poll++;
             idle++;
+            if (keep)
+                keep--;
             if (hold && P1_7 != 0)
                 hold--;
         }
@@ -2456,7 +2462,7 @@ static void cam_alarm_loop(uint16_t *p_seq) {
             active = false;
             transmit((*p_seq)++, false, false, false, 0xB9, 0, 0, 0);
         }
-        if (bf_on && !s_dl_cmd && (!active || !s_armed)) {
+        if (bf_on && !s_dl_cmd && !keep && (!active || !s_armed)) {
             bf_power_off();
             bf_on = false;
         }

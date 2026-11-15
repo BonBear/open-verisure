@@ -665,6 +665,43 @@ static void mcu_encode_and_keep(unsigned int m)
     }
 }
 
+/* After power-up the sensor's AEC/AGC needs a while: the first picture ~3 s after power-on
+ * was ~11 % brighter than one taken a minute later (Y 101 -> 90), so the first delta
+ * against it flagged most MCUs and fell back to a full picture. The AEC moves by less than
+ * one level per grab, so comparing neighbouring grabs is not enough (stopped after 4).
+ * Grab the middle strip (luma only, ~0.2 s each) until its mean is within 1 of the mean
+ * AEC_SPAN grabs earlier, at most AEC_MAX grabs (the CC1110 waits ~33 s for a picture).
+ * 0xFF800068: grabs used << 16 | first mean << 8 | last mean. */
+#define AEC_SPAN     10
+#define AEC_MAX      75
+static void aec_settle(void)
+{
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    const volatile unsigned char *y = (const volatile unsigned char *)CUR_Y;
+    unsigned char hist[AEC_SPAN];
+    unsigned int n, i;
+    unsigned long mean = 0, first = 0, old, sum;
+
+    for (n = 0; n < AEC_MAX; n++) {
+        capture((unsigned char *)CUR_Y, 0, 0, (IMG_H - STRIP_H) / 2, STRIP_H, 0);
+        sum = 0;
+        for (i = 0; i < STRIP_H * OUT_W; i += 4)
+            sum += y[i];
+        mean = awb_udiv(sum, STRIP_H * OUT_W / 4);   /* no divide in this build */
+        if (n == 0)
+            first = mean;
+        if (n >= AEC_SPAN) {
+            old = hist[n % AEC_SPAN];
+            if ((mean > old ? mean - old : old - mean) <= 1) {
+                n++;
+                break;
+            }
+        }
+        hist[n % AEC_SPAN] = (unsigned char)mean;
+    }
+    st[26] = ((unsigned long)n << 16) | ((first & 0xFF) << 8) | (mean & 0xFF);
+}
+
 static unsigned int have_ref, full_id, since_full;
 
 /* 320x240 colour picture as a full JPEG (restart marker after every MCU, COM 'I' id) or,
@@ -686,6 +723,7 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
          * measured yet: grab once only to measure, so the first picture is balanced too
          * (the CC1110 powers the Blackfin per motion event) */
         if (!awb_valid) {
+            aec_settle();
             for (row = 0; row < IMG_H; row += STRIP_H)
                 capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
                         (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
@@ -797,6 +835,7 @@ static unsigned int grab_jpeg(unsigned int mode)
     if (hires && !awb_valid && !have_ref) {
         /* 640x480 as the first picture after power-up: measure the colour first (no
          * delta reference exists yet, so changing the offset is safe) */
+        aec_settle();
         for (row = 0; row < IMG_H; row += STRIP_H)
             capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
                     (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
