@@ -97,10 +97,76 @@ def get_latest_log_id(session: requests.Session, host: str) -> int:
         return 0
 
 
+def flash_serial(port: str) -> None:
+    """Flash over the flasher's USB serial port (ESP_CC_Flasher src/serial_cmd.cpp), no WiFi.
+    DTR/RTS stay low so opening the port does not reset the ESP32."""
+    import zlib
+    import serial
+
+    with open(BIN_PATH, "rb") as f:
+        data = f.read()
+    s = serial.Serial()
+    s.port, s.baudrate, s.timeout = port, 115200, 0.5
+    s.dtr = False
+    s.rts = False
+    s.open()
+
+    def answer(timeout: float) -> str:
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            line = s.readline().decode("utf-8", "replace").strip()
+            if line.startswith("#"):
+                return line
+            if line:
+                print(f"    {line}")
+        return "#TIMEOUT"
+
+    try:
+        s.reset_input_buffer()
+        s.write(b"PING\n")
+        if answer(3) != "#PONG":
+            print(f"[-] Flasher on {port} does not answer PING (needs the serial command firmware).")
+            sys.exit(1)
+        s.write(b"INIT\n")
+        init = answer(10)
+        print(f"[+] {init}")
+        parts = init.split()
+        if len(parts) != 3 or parts[0] != "#INIT" or parts[1] != "0104":
+            print("[-] Target is not responding with CC1110F32 (0104). Check wires/battery.")
+            sys.exit(1)
+        if int(parts[2], 16) & 0x04:
+            print("[-] Target has DEBUG_LOCKED=1 (locked reference board). Aborting.")
+            sys.exit(1)
+        print(f"[*] Flashing {len(data)} bytes over {port}...")
+        s.write(f"FLASH {len(data)} {zlib.crc32(data) & 0xFFFFFFFF:08x}\n".encode())
+        if answer(5) != "#READY":
+            print("[-] Flasher did not get ready.")
+            sys.exit(1)
+        s.write(data)
+        got = answer(15)
+        if got != "#GOT":
+            print(f"[-] Transfer failed: {got}")
+            sys.exit(1)
+        done = answer(90)
+        if done != "#DONE OK":
+            print(f"[-] Flashing failed: {done}")
+            sys.exit(1)
+        print("[+] FLASHING & VERIFICATION SUCCEEDED! (CC1110 reset and running)")
+    finally:
+        s.close()
+
+
 def main():
     sync_key_from_gateway()
     compile_firmware()
+    if "--serial" in sys.argv:
+        flash_serial(sys.argv[sys.argv.index("--serial") + 1])
+    else:
+        flash_http()
+    verify_on_gateway()
 
+
+def flash_http():
     session = requests.Session()
     session.auth = HTTPBasicAuth(CC_USER, CC_PASS)
 
@@ -170,6 +236,8 @@ def main():
     except Exception:
         pass
 
+
+def verify_on_gateway():
     # 4. Poll Gateway HTTP /api/status to verify 2NCEKT3X registration!
     print(f"[*] Polling {GATEWAY_HTTP}/api/status for sensor {DEVICE_ID} telemetry...")
     for _ in range(10):
