@@ -85,7 +85,7 @@ def main() -> None:
     elf = os.path.join(BUILD, name + ".elf")
     ldr = os.path.join(BUILD, name + ".ldr")
 
-    run([GCC, "-mcpu=bf512-0.2", "-nostdlib", "-nostartfiles", "-Wl,-T,bf512_l1.ld", "-o", elf] + sources)
+    run([GCC, "-mcpu=bf512-0.2", "-O2", "-nostdlib", "-nostartfiles", "-Wl,-T,bf512_l1.ld", "-o", elf] + sources)
     print(f"[+] {elf}")
     if elf_only:
         return

@@ -29,7 +29,7 @@
  * Needs DMEM_CONTROL 0x00001001 (data bank A all SRAM), set over JTAG before running.
  * L1: 0xFF800000 magic 0x5B1F11CC once running, 0xFF800004 quarters grabbed,
  *     0xFF800008 bytes sent, 0xFF80000C last command, 0xFF800010 sensor setup TWI errors,
- *     0xFF800014 last band, 0xFF800018 duplicate/luma phase, 0xFF800020 SEQSTAT and
+ *     0xFF800014 last band, 0xFF800018 last grab + encode time (CCLK/256), 0xFF800020 SEQSTAT and
  *     0xFF800024 RETX after an exception, 0xFF800028 last JPEG length,
  *     0xFF801000 16-row strip, 0xFF802800 picture to send (raw quarter or length + JPEG).
  * Tables and variables: 0xFF800100..0xFF800FFF (bf512_l1.ld).
@@ -1192,7 +1192,9 @@ int main(void)
             /* 0xD0 grayscale, 0xD1 colour, 0xD2 640x480 colour, 0xD3 colour delta, 0xD4
              * grayscale with flash, 0xD5/0xD6 alarm pictures (flash in the dark);
              * 0xFF800048 (JTAG test) overrides the mode of 0xD0 */
+            unsigned long c0 = cycles();
             size = grab_jpeg(rx == 0xD0 ? st[18] : rx - 0xD0);
+            st[6] = (cycles() - c0) >> 8;   /* 0xFF800018: last grab + encode, CCLK/256 (~1.07 us) */
             ready = 1;
             ptr = 0;
             st[1]++;
