@@ -875,6 +875,7 @@ static uint8_t s_boot_tries;    // pings until snap_link answered (BF_IMG_TIMING
 static void bf_power_on(void) {
     P0DIR |= 0x85;   // P0_0, P0_2 (1.2V), P0_7 (aux) = outputs
     P0_0 = 0;
+    P0_7 = 0;        // high while off (bf_power_off); low first so the sequence below is unchanged
     P0DIR &= ~0x4A;  // P0_1, P0_3, P0_6 (Blackfin BMODE/DSP) back to inputs with pull-up,
     P0INP &= ~0x4A;  // as setup_gpio() has them for the boot (bf_power_off drives them low)
     P1SEL &= ~0x3E;
@@ -911,9 +912,11 @@ static void bf_power_on(void) {
 }
 
 // Back to the idle state of setup_gpio(): /RESET low (P0_0), aux and 1.2 V rails off in the
-// reverse order of bf_power_on(), Q7 off (P1_0), bus tri-state. P0_1, P0_3 and P0_6 are
-// then driven low: as pull-up inputs they keep Q2 on the PIR board conducting, so the red
-// LD1 lit and the board drew ~20 mA instead of ~3 mA (memory PIR_INDICATOR_LED).
+// reverse order of bf_power_on(), Q7 off (P1_0), bus tri-state. P0_1 and P0_3 are then
+// driven low: as pull-up inputs they kept Q2 on the PIR board conducting, so the red LD1
+// lit and the board drew ~20 mA instead of ~3 mA (memory PIR_INDICATOR_LED). P0_6 and P0_7
+// are driven HIGH: the PIR board pulls both up to VBAT (5.8 and 3.7 kOhm), so holding them
+// low sank ~0.9 mA all the time (Otii 2026-11-16: idle floor 1.16 -> 0.30 mA; LD1 stays off).
 static void bf_power_off(void) {
     s_pic_len = 0;   // the picture in snap_link's buffer is gone
     P0_0 = 0;
@@ -924,8 +927,9 @@ static void bf_power_off(void) {
     P1_2 = 0;        // link enable off (~30 uA less in PM2 than high; bf_power_on sets it again)
     P1DIR &= ~0x38;
     P1INP |= 0x38;
-    P0 &= ~0x4A;
-    P0DIR |= 0x4A;
+    P0 &= ~0x0A;     // P0_1, P0_3 low
+    P0 |= 0xC0;      // P0_6, P0_7 high (pulled up to VBAT on the PIR board)
+    P0DIR |= 0xCA;
 }
 
 #if BF_SLEEP_IDLE
