@@ -7,7 +7,7 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 
 - [x] **Visa blixtbilder på gatewayens webbsida.** Klart 2026-11-16: `/api/camera.jpg` visar den nyaste av färgbilden och blixtbilden (verifierat D1 -> färg, D4 -> svartvit, D1 -> färg).
 - [x] **Utöka e2e-testet** (`MD_CAM/test_camera_e2e.py`). Klart 2026-11-16: kollar nu 56-byte-paket (antal paket = byte/40), D4 svartvit på MQTT, D3 efter D4 som delta, D5/D6 (färg i ljus, blixtbild i mörker). 11/11 godkända.
-- [ ] **Uppdatera protokolldokumentationen** (`MD_CAM/docs/Blackfin_CC1110_Interprocessor_Protocol_Analysis.md` m.fl.) med kommandona 0xD4–0xD6, bildpaket 0x82 (56 byte, CBC) och gatewayens 58-byte-mottagning med mjukvaru-CRC.
+- [x] **Uppdatera protokolldokumentationen.** Klart 2026-11-16: nytt dokument `MD_CAM/docs/Kamera_protokoll.md` (SPI-kommandon 0xD0–0xD6, delta-format, radiopaket 24/56 byte, gatewayens 58-byte-mottagning, nedlänk, MQTT, kamerans tillstånd); hänvisning från den gamla analysen.
 - [ ] **Mjukvaruskärpning** i snap_link (lätt unsharp mask på Y) mot linsens oskärpa; mät brus och filstorlek före/efter.
 - [ ] **Delta-brus från färgen:** brusgolvet i delta-histogrammet ligger på 6–7 (max ~10, tröskel 12). Undersök om U/V (förstärkta x7/4) dominerar och om de bör vägas ned, så att tröskeln kan sänkas och små rörelser fångas.
 - [ ] **Städning i CC1110-firmware:** gamla testvägar (rå-tiles 0x81, 8-byte-bildpaket 0x80, `BF_IMG_TIMING`) som inte längre används av kamerans normala flöde.
