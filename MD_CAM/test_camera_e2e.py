@@ -191,8 +191,11 @@ def main() -> int:
     m = log.mark()
     publish(f"{dev}/picture/set", "D3")
     r = log.wait(picture_rx, 120, m)
-    check("D3 after D4", bool(r and "Delta" in r[1] and "ignored" not in r[1] and "could not" not in r[1]),
-          r[1].split("] ", 1)[1] if r else "no picture in 120 s")
+    # a delta against the colour base, or a full colour picture if the camera found more than
+    # half the picture changed (the exposure can move after the flash frame); never "ignored"
+    ok = bool(r and (("Delta" in r[1] and "ignored" not in r[1] and "could not" not in r[1]) or
+                     ("JPEG" in r[1] and "width 320" in r[1] and "id -1" not in r[1])))
+    check("D3 after D4", ok, r[1].split("] ", 1)[1] if r else "no picture in 120 s")
 
     # 8. alarm pictures: colour with light, flash picture in the dark
     for cmd in ("D5", "D6"):
