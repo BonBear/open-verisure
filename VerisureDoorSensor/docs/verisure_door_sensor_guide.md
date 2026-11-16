@@ -238,14 +238,14 @@ Byte 6..7 : Sequence No    -> 2-digit Hex Counter ("00" to "FF")
 Packets are received by an **ESP32-C3 Super Mini + CC1101** receiver connected to the host via USB Serial (`COM11`):
 
 ```text
->>> [#0042] MOTTAGET: "VS:C.05" | RSSI: -36 dBm | LQI: 255 (0xFF) | CRC: OK
-  ==> [TELEMETRI] Magnet: STÄNGD (Säkrad) | Skak: Lugnt | Knapp: Normal drift | Seq: 05
+>>> [#0042] RECEIVED: "VS:C.05" | RSSI: -36 dBm | LQI: 255 (0xFF) | CRC: OK
+  ==> [TELEMETRY] Magnet: CLOSED (Secured) | Shock: Quiet | Button: Normal operation | Seq: 05
 
->>> [#0043] MOTTAGET: "VS:OS.06" | RSSI: -35 dBm | LQI: 255 (0xFF) | CRC: OK
-  ==> [TELEMETRI] Magnet: ÖPPEN (LARM!) | Skak: SKAK/VIBRATION DETEKTERAD! | Knapp: Normal drift | Seq: 06
+>>> [#0043] RECEIVED: "VS:OS.06" | RSSI: -35 dBm | LQI: 255 (0xFF) | CRC: OK
+  ==> [TELEMETRY] Magnet: OPEN (ALARM!) | Shock: SHOCK/VIBRATION DETECTED! | Button: Normal operation | Seq: 06
 
->>> [#0044] MOTTAGET: "VS:C.B00" | RSSI: -36 dBm | LQI: 255 (0xFF) | CRC: OK
-  ==> [TELEMETRI] Magnet: STÄNGD (Säkrad) | Skak: Lugnt | Knapp: NEDTRYCKT / RESET (SW1) | Seq: 00
+>>> [#0044] RECEIVED: "VS:C.B00" | RSSI: -36 dBm | LQI: 255 (0xFF) | CRC: OK
+  ==> [TELEMETRY] Magnet: CLOSED (Secured) | Shock: Quiet | Button: PRESSED / RESET (SW1) | Seq: 00
 ```
 
 With an RSSI of **-36 to -35 dBm**, an LQI of **255/255**, and **100% CRC pass rate**, the custom firmware demonstrates complete reverse-engineering and hardware control of the Verisure CC1110 sensor.

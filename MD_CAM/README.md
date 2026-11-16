@@ -40,7 +40,7 @@ In the dark it takes grayscale pictures lit by its infrared flash.
   restarts the CC1110 if it ever hangs.
 
 The protocol between the parts and over the air is described in
-[docs/Kamera_protokoll.md](docs/Kamera_protokoll.md).
+[docs/Camera_protocol.md](docs/Camera_protocol.md).
 
 ## Build and flash
 
@@ -102,6 +102,6 @@ python MD_CAM/test_resend.py 7 D1 D2           # gateway drops every 7th chunk; 
 | `build_and_flash_md_cam.py` | Build and flash the CC1110 firmware |
 | `dump_cc1110.py` | Read out (back up) the CC1110 flash without erasing it |
 | `test_camera_e2e.py` | End-to-end test through the gateway and MQTT |
-| `docs/` | Protocol, measurements and reverse-engineering notes (mostly Swedish) and images |
+| `docs/` | Protocol, measurements and reverse-engineering notes and images |
 
 Open work, including what needs someone at the bench, is listed in [TODO.md](../TODO.md).

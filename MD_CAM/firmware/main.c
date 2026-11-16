@@ -12,7 +12,7 @@
  * Tamper polarity (wall mount): batteries are ALWAYS inserted while the unit is off the
  * wall, so the boot state = SW3 released = TAMPER. SW3 pressed against the wall = CLEAR.
  *
- * Pin map: see docs/Hardware_Pinout_och_Matprotokoll.md (J6: DD=P2_1, DC=P2_2, RESET_N).
+ * Pin map: see docs/Hardware_pinout_and_measurements.md (J6: DD=P2_1, DC=P2_2, RESET_N).
  */
 
 #include <cc1110.h>
@@ -200,35 +200,35 @@ static void clock_rcosc(void) {
  * ============================================================================ */
 
 void setup_gpio(void) {
-    // Port 0 & Port 1 baskonfiguration
+    // Port 0 & Port 1 base configuration
     P0SEL = 0x00;
     P1SEL = 0x00;
     P2SEL &= ~0x07;
 
-    // CC1110 SPI-pinnar hålls i 3-state
-    P1DIR &= ~0x38; // P1_3..P1_5 = Ingångar
-    P1INP |= 0x38;  // 3-state utan pull-motstånd
+    // CC1110 SPI pins kept tri-state
+    P1DIR &= ~0x38; // P1_3..P1_5 = inputs
+    P1INP |= 0x38;  // tri-state, no pull resistor
 
-    // Styrpinnar till spänningsregulatorer sätts som utgångar och drivs LÅGA (0V):
-    P0DIR |= 0x85;  // P0_0 (/RESET), P0_2 (1.2V Core), P0_7 (Aux/Q2) som utgångar
-    P0 &= ~0x85;    // Alla drivs till 0.0 V
-    P2DIR |= 0x01;  // P2_0 som utgång
+    // Regulator control pins as outputs, driven LOW (0 V):
+    P0DIR |= 0x85;  // P0_0 (/RESET), P0_2 (1.2V core), P0_7 (aux/Q2) as outputs
+    P0 &= ~0x85;    // all driven to 0.0 V
+    P2DIR |= 0x01;  // P2_0 as output
     P2_0 = 0;
 
-    // BMODE- och DSP-pinnar (P0_1, P0_3, P0_6) som INGÅNGAR med PULL-UP (exakt som vid verifierat JEDEC-test!):
+    // BMODE and DSP pins (P0_1, P0_3, P0_6) as INPUTS with PULL-UP (exactly as in the verified JEDEC test):
     P0DIR &= ~0x4A;
     P0INP &= ~0x4A;
     P2INP &= ~0x20;
 
-    P1DIR |= 0x07;  // P1_0 (3.3V), P1_1 (Bus Switch), P1_2 (SS) = Utgångar
+    P1DIR |= 0x07;  // P1_0 (3.3V), P1_1 (bus switch), P1_2 (SS) = outputs
     P1_0 = 0;       // 3.3V Switched rail OFF
-    P1_1 = 0;       // Bus Switch OFF (Isolerad i viloläge!)
+    P1_1 = 0;       // bus switch OFF (isolated while idle)
     P1_2 = 1;       // SS idle HIGH
 
-    // Håll knappen SW3 (P1_6) och PIR (P1_7) strikt som ingångar med pull-UP:
+    // Keep switch SW3 (P1_6) and the PIR (P1_7) as inputs with pull-UP:
     P1DIR &= ~0xC0;
     P1INP &= ~0xC0; // Enable pull
-    P2INP &= ~0x40; // Port 1 pull-UP (PIR P1_7 kräver pull-up!)
+    P2INP &= ~0x40; // Port 1 pull-UP (the PIR on P1_7 needs it)
 }
 
 /* ============================================================================

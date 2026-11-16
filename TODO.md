@@ -1,41 +1,42 @@
 # TODO
 
-Två listor: det Claude kan göra helt själv, och det som behöver dig vid kameran eller ett
-beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
+Two lists: what Claude can do on its own, and what needs someone at the camera or a decision.
+Tick items with `[x]` and add a short result after the item.
 
-**Läge 2026-11-16 kväll:** kameran fungerar på bänken (bilder 5–8 s, 640 ~12 s, deltor, IR-blixt i
-mörker, omsändning, PM2-sömn, e2e 12/12). Allt ligger på `main`. Det som återstår för kameran är
-mätningar och prov på plats (lista B). Kvar att göra självständigt: dörrsensorns sömn (kräver en
-dörrsensor på flashern). Bänkrutiner (flashning, JTAG, HOLD) står i `MD_CAM/README.md`.
+**Status, 2026-11-16 evening:** the camera works on the bench (pictures in 5–8 s, 640x480 in ~12 s,
+deltas, IR flash in the dark, resend, PM2 sleep, e2e 12/12). Everything is on `main`. What is left
+for the camera is measurements and tests on site (list B). Left to do unattended: sleep for the
+door sensor (needs a door sensor on the flasher). Bench routines (flashing, JTAG, HOLD) are in
+`MD_CAM/README.md`.
 
-## A. Claude kan göra autonomt
+## A. Claude can do unattended
 
-- [x] **Visa blixtbilder på gatewayens webbsida.** Klart 2026-11-16: `/api/camera.jpg` visar den nyaste av färgbilden och blixtbilden (verifierat D1 -> färg, D4 -> svartvit, D1 -> färg).
-- [x] **Utöka e2e-testet** (`MD_CAM/test_camera_e2e.py`). Klart 2026-11-16: kollar nu 56-byte-paket (antal paket = byte/40), D4 svartvit på MQTT, D3 efter D4 som delta, D5/D6 (färg i ljus, blixtbild i mörker). 11/11 godkända.
-- [x] **Uppdatera protokolldokumentationen.** Klart 2026-11-16: nytt dokument `MD_CAM/docs/Kamera_protokoll.md` (SPI-kommandon 0xD0–0xD6, delta-format, radiopaket 24/56 byte, gatewayens 58-byte-mottagning, nedlänk, MQTT, kamerans tillstånd); hänvisning från den gamla analysen.
-- [x] **Mjukvaruskärpning.** Klart 2026-11-16: skärpning q4 (y + q/32·(4y − grannar)) bara när ett MCU kodas, referensen hålls oskärpt så deltorna påverkas inte. Detalj (Laplace-sd) 16,9 -> 22,6, fil +7 %, brus på jämn yta oförändrat; q8 gav 27,6 men mer brus. Gäller 320-färgbilder (hel och delta). Trimbart via JTAG 0xFF800030. L1-kod utökad till 32 KB (provat via JTAG).
-- [x] **Delta-brus från färgen.** Utrett 2026-11-16: med U/V-vikt 4/2/0 (bara Y) låg brusgolvet ändå på 4–6; det är ljusheten (troligen lampflimmer mellan bildrutor), inte färgen. Ingen ändring, `DELTA_T` 12 behålls.
-- [x] **Städning i CC1110-firmware.** 2026-11-16: inaktuella kommentarer rättade (paketformat 0x82, 640-bild ~12 s). Testverktygen bakom avstängda brytare (pinnvandring, SPI-test, prober, U3-dump, rå-tiles) är kvar; om de ska bort är ett beslut för dig, se B7.
-- [x] **Optimeringsflaggor för snap_link.** Klart 2026-11-16: -O2, fångst+kodning 3–4x snabbare (320: 0,86 -> 0,29 s, 640: 2,61 -> 0,60 s).
-- [x] **Korta Blackfins uppstartsväntan.** Klart 2026-11-16: fast väntan (~3 s) ersatt med ping (0xE5 -> 0xA5) efter ~140 ms; snap_link svarar efter ~1,2 s (37 pingar). Kall bild 8 s -> 6–7 s från kommando, ~2 s mindre Blackfin-tid per larmhändelse. e2e 11/11.
-- [ ] **Dörrsensorn sover inte.** `VerisureDoorSensor/main.c` läser reed/sabotage/skak varje ms i en aktiv loop (ingen PM2, inga avbrott), vilket begränsar batteritiden. Inför PM2 med port-avbrott (P1_7, P1_2, P0_1) och sömntimer för hjärtslaget, med watchdog som i kameran. Kräver en dörrsensor på flashern för test.
-- [x] **Exponeringen efter kallstart.** Klart 2026-11-16: det var färgen, inte exponeringen (Cb +4..5 de första sekunderna, Y oförändrat; sensorns vitbalans, 0x3406 hjälpte inte). snap_link mäter nu färgförskjutningen mot referensen i block där ljusheten inte ändrats och kompenserar före delta-jämförelsen: första deltan efter kallstart 118–134 block -> 0. e2e 12/12.
-- [x] **Radera originalfirmwaren i Blackfins boot-flash.** Klart 2026-11-16: alla dumpar kopierade till `C:\repo\verisure_firmware_dumps\` (med SHA-256-lista och README), kopian på 0x10000 läst ur chippet och identisk med dumpen, sedan raderad (0x10000–0x17FFF, kontrollerad tom). Kameran startar som förut, e2e 12/12. Dörrsensorns original finns inte dumpat.
-- [x] **Omsändning av saknade bildpaket.** Klart 2026-11-16: gatewayen begär saknade delar (nedlänk 0xF0–0xFF, upp till 16 delar) med svaret på pollen efter bilden, kameran skickar dem som 0x83 ur Blackfins buffert (snap_link 0xE1). Testat med gatewayens `drop <n>`: var 7:e tappad -> komplett efter 10 omgångar/3,2 s (640: 23 omgångar/7,6 s, även med förlorat JPEG-huvud), var 3:e -> 13 omgångar/4,1 s. Nyttan i verklig placering visar räckviddstestet (B5).
+- [x] **Show flash pictures on the gateway's web page.** Done 2026-11-16: `/api/camera.jpg` serves the newest of the colour picture and the flash picture (verified D1 -> colour, D4 -> grayscale, D1 -> colour).
+- [x] **Extend the e2e test** (`MD_CAM/test_camera_e2e.py`). Done 2026-11-16: now checks 56-byte packets (packets = bytes / 40), D4 grayscale on MQTT, D3 after D4 as a delta, D5/D6 (colour with light, flash picture in the dark). 11/11 passed.
+- [x] **Update the protocol documentation.** Done 2026-11-16: new document `MD_CAM/docs/Camera_protocol.md` (SPI commands 0xD0–0xD6, delta format, 24/56-byte radio packets, the gateway's 58-byte reception, downlink, MQTT, the camera's states), referenced from the old analysis.
+- [x] **Software sharpening.** Done 2026-11-16: sharpening q4 (y + q/32·(4y − neighbours)) only where an MCU is encoded; the reference stays unsharpened, so deltas are not affected. Detail (Laplacian sd) 16.9 -> 22.6, file +7 %, noise on flat areas unchanged; q8 gave 27.6 but more noise. Applies to 320x240 colour pictures (full and delta). Tunable over JTAG at 0xFF800030. L1 code extended to 32 KB (probed over JTAG).
+- [x] **Colour share of the delta noise.** Investigated 2026-11-16: with U/V weight 4/2/0 (0 = luma only) the noise floor stayed at 4–6; it is luma (probably lamp flicker between frames), not colour. No change, `DELTA_T` 12 is kept.
+- [x] **Tidy the CC1110 firmware.** 2026-11-16: stale comments fixed (packet format 0x82, 640x480 picture ~12 s). The test tools behind switched-off flags were removed later (see B7).
+- [x] **Optimisation flags for snap_link.** Done 2026-11-16: -O2, grab + encode 3–4x faster (320: 0.86 -> 0.29 s, 640: 2.61 -> 0.60 s).
+- [x] **Shorten the Blackfin boot wait.** Done 2026-11-16: the fixed wait (~3 s) is replaced by a ping (0xE5 -> 0xA5) after ~140 ms; snap_link answers after ~1.2 s (37 pings). Cold picture 8 s -> 6–7 s from the command, ~2 s less Blackfin time per alarm event. e2e 11/11.
+- [ ] **The door sensor does not sleep.** `VerisureDoorSensor/main.c` reads reed/tamper/shock every ms in a busy loop (no PM2, no interrupts), which limits battery life. Add PM2 with port interrupts (P1_7, P1_2, P0_1) and the sleep timer for the heartbeat, with a watchdog as in the camera. Needs a door sensor on the flasher for testing.
+- [x] **Exposure after a cold start.** Done 2026-11-16: it was the colour, not the exposure (Cb +4..5 in the first seconds, luma unchanged; the sensor's white balance; 0x3406 did not help). snap_link now measures the colour shift against the reference in blocks whose luma did not change and compensates before the delta check: first delta after a cold start 118–134 blocks -> 0. e2e 12/12.
+- [x] **Erase the factory firmware from the Blackfin boot flash.** Done 2026-11-16: all dumps copied to `C:\repo\verisure_firmware_dumps\` (with a SHA-256 list and a README), the copy at 0x10000 read back from the chip and identical to the dump, then erased (0x10000–0x17FFF, checked blank). The camera boots as before, e2e 12/12. The door sensor's factory firmware was never dumped.
+- [x] **Resend missing picture chunks.** Done 2026-11-16: the gateway asks for missing chunks (downlink 0xF0–0xFF, up to 16 chunks) with the answer to the poll after the picture; the camera sends them as 0x83 from the Blackfin's buffer (snap_link 0xE1). Tested with the gateway's `drop <n>`: every 7th dropped -> complete after 10 rounds / 3.2 s (640x480: 23 rounds / 7.6 s, also with the JPEG header lost), every 3rd -> 13 rounds / 4.1 s. The benefit on site shows in the range test (B5).
 
-## B. Behöver dig
+## B. Needs you
 
-- [ ] **0. Byt huvudnyckel före driftsättning.** Den nuvarande nyckeln har legat i två dokument på publika `origin/main` sedan 2026-10-22 (ersatt med platshållare i commit 75062aa, finns kvar i git-historiken). Inte allvarligt så länge systemet inte används på riktigt, men innan det tas i drift: ny nyckel (`python derive_key.py --generate-master`) i gatewayens `secrets.h`, nya `config.h` och omflashning av gatewayen, alla sensorer och kameran.
+- [ ] **0. Change the master key before deployment.** The current key was in two documents on the public `origin/main` from 2026-10-22 (replaced with a placeholder in commit 75062aa, still in the git history). Not serious while the system is not in real use, but before it is: a new key (`python derive_key.py --generate-master`) in the gateway's `secrets.h`, new `config.h` files, and reflash the gateway, all sensors and the camera.
 
-- [ ] **1. Viloström med Otii.** Firmware sover nu i PM2 när Blackfin är av; nätaggregatet visar bara "under 1 mA".
-  - Mät i serie vid 3,0 V minst 2 min i vila (larm av): snitt, golv, toppar för pollen (var ~28 s, sändning + ~110 ms lyssning) och uppvakningen var 0,5 s.
-  - Samma med larmet på, och en hel bild (D1 via MQTT `verisure/2NCEKS3T/picture/set`): Blackfin ~0,14 A i ~5–8 s plus 15 s påslagen efteråt (`BF_KEEP_ON_S`).
-  - Utifrån resultatet: beslut om `BF_POLL_S` (30 s) och `BF_KEEP_ON_S` (sänkt från 120 till 15 s 2026-11-16 i väntan på mätningen) ska ändras. Obs: 120 s påslagen efter varje bild kostar ~17 As (0,14 A), mer än själva bilden; nu när en hel bild bara tar ~5 s kan en kortare tid vara värd att deltor ibland blir hela bilder.
-- [ ] **2. PIR väcker ur viloläget** (ej provat med den här byggen).
-  - Larmet av: rör dig framför kameran, gatewayloggen ska visa B9 inom någon sekund.
-  - Larmet på (`verisure/alarm/set` ON): rörelse ska ge en larmbild (0xD5) inom ~10 s.
-- [ ] **3. Larm i mörker med IR-blixt.** Mörklägg rummet och stäng av den andra kamerans IR-ljus; larmet på och rörelse ska ge svartvita blixtbilder (scenmedel under `DARK_Y` 40). Tänd: samma rörelse ska ge färgbilder och deltor.
-- [ ] **4. Nattbilder utan blixt (idé).** Originalet förlänger bildrutan (VTS, 0x380E/0x380F) i mörker. Kräver mörkt rum; Claude kan köra testet via JTAG (`MD_CAM/blackfin/jtag/bf_set.sh 0xFF800034 ...`) när rummet är mörkt.
-- [ ] **5. Räckvidd i verklig placering.** Sätt kameran på sin tänkta plats; några D1/D2 visar saknade paket per bild ("x/y chunks missing") och RSSI i gatewayloggen.
-- [ ] **6. Granska och slå ihop grenen.** `md-cam/u3-flash-dump` har mycket nytt (blixt, hastighet, bildkvalitet, viloläge). Säg till om Claude ska öppna en PR mot `main`.
-- [x] **7. Testverktyg i CC1110-firmware.** Borttagna 2026-11-16 efter ditt OK: main.c 2924 -> ~1000 rader, firmware 22490 -> 5989 byte, e2e 11/11. Finns kvar i git-historiken.
+- [ ] **1. Idle current with the Otii.** The firmware now sleeps in PM2 while the Blackfin is off; the bench supply only shows "below 1 mA".
+  - Measure in series at 3.0 V for at least 2 min idle (alarm off): mean, floor, peaks for the poll (every ~28 s, transmit + ~110 ms listening) and the wake-up every 0.5 s.
+  - The same with the alarm on, and one full picture (D1 via MQTT `verisure/2NCEKS3T/picture/set`): Blackfin ~0.14 A for ~5–8 s plus 15 s on afterwards (`BF_KEEP_ON_S`).
+  - From the result: decide whether `BF_POLL_S` (30 s) and `BF_KEEP_ON_S` (lowered from 120 to 15 s on 2026-11-16 pending this measurement) should change. Note: 120 s on after every picture costs ~17 As (0.14 A), more than the picture itself; now that a full picture takes only ~5 s, a shorter time can be worth the occasional full picture instead of a delta.
+- [ ] **2. PIR wakes the camera from sleep** (not tried with this build).
+  - Alarm off: move in front of the camera; the gateway log should show B9 within a second or so.
+  - Alarm on (`verisure/alarm/set` ON): motion should give an alarm picture (0xD5) within ~10 s.
+- [ ] **3. Alarm in the dark with the IR flash.** Darken the room and switch off the other camera's IR light; alarm on and motion should give grayscale flash pictures (scene mean below `DARK_Y` 40). Light on: the same motion should give colour pictures and deltas.
+- [ ] **4. Night pictures without the flash (idea).** The factory firmware lengthens the frame (VTS, 0x380E/0x380F) in the dark. Needs a dark room; Claude can run the test over JTAG (`MD_CAM/blackfin/jtag/bf_set.sh 0xFF800034 ...`) once the room is dark.
+- [ ] **5. Range in the real location.** Put the camera where it will be mounted; a few D1/D2 show missing chunks per picture ("x/y chunks missing"), resend rounds and RSSI in the gateway log.
+- [x] **6. Review and merge the branch.** `md-cam/u3-flash-dump` was merged into `main` (fast-forward) and pushed on 2026-11-16.
+- [x] **7. Test tools in the CC1110 firmware.** Removed on 2026-11-16 after your OK: main.c 2924 -> ~1000 lines, firmware 22490 -> 5989 bytes, e2e 11/11. Still in the git history.

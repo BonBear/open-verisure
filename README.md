@@ -10,7 +10,7 @@ Repurpose **Verisure Sub-1GHz (868.950 MHz) alarm hardware** with open-source fi
 it into **Home Assistant** through an **ESP32-S2 + CC1101 gateway**: local, no cloud, no subscription.
 
 > [!NOTE]
-> **Minska elavfall (reducing e-waste):** the project started as a way to give leftover alarm
+> **Reducing e-waste:** the project started as a way to give leftover alarm
 > hardware a second life instead of throwing it away. The devices become reliable, local and
 > subscription-free parts of the smart home.
 
@@ -117,7 +117,7 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 * [CC-Flasher wiring (J2 header)](documentation/hardware_cc_flasher.md)
 * [Home Assistant & MQTT](documentation/homeassistant_mqtt.md)
 * [Door sensor hardware](documentation/verisure_sensor_hardware.md)
-* [Camera protocol as implemented](MD_CAM/docs/Kamera_protokoll.md) (Swedish)
+* [Camera protocol as implemented](MD_CAM/docs/Camera_protocol.md)
 
 ---
 

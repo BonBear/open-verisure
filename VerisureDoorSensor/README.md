@@ -65,7 +65,7 @@ your network (default `http://cc.local`). Generate the master key and set up the
 | :--- | :--- |
 | `main.c` | Sensor firmware: GPIO, PM2 sleep, AES, radio |
 | `config.h.example` | Template for the device ID and derived key |
-| `docs/` | Reverse-engineering notes and board photos (Swedish/English): [door sensor guide](docs/verisure_door_sensor_guide.md), [hardware mapping](docs/hardware_mapping.md), [CC1110 quirks, DMA & SDCC](docs/cc1110_quirks_dma_toolchain.md), [radio registers](docs/radio_registers_reference.md), [early project overview](docs/project_overview.md) |
+| `docs/` | Reverse-engineering notes and board photos: [door sensor guide](docs/verisure_door_sensor_guide.md), [hardware mapping](docs/hardware_mapping.md), [CC1110 quirks, DMA & SDCC](docs/cc1110_quirks_dma_toolchain.md), [radio registers](docs/radio_registers_reference.md), [early project overview](docs/project_overview.md) |
 
 More: [sensor PCB mapping](../documentation/verisure_sensor_hardware.md),
 [protocol & cryptography](../documentation/cryptography_and_protocol.md).

@@ -1,47 +1,47 @@
-# Projektöversikt: Verisure CC1110 till ESP32-C3 (CC1101) RF-länk
+# Project Overview: Verisure CC1110 to ESP32-C3 (CC1101) RF Link
 
-Detta dokument är huvudindex för projektet. För att spara kontextfönster är den tekniska dokumentationen i `VerisureDoorSensor/docs/` uppdelad i modulära filer. Läs endast in de underfiler eller bilder som behövs för den aktuella uppgiften.
-
----
-
-## 1. Projektmål
-
-1. **Sändare (Verisure-kort, TI CC1110F32):** Läsa av kortets sensorer (Reed-kontakt på `P1_7`, skaksensor på `P1_2`, knapp på `P2_0`) och sända ett 8-bytes paket (`"HB:ALIVE"`) på **868.950 MHz** (2-FSK, 38.4 kBaud, synkord `0xD3 0x91`, fast längd med hårdvaru-CRC).
-2. **Mottagare (ESP32-C3 Super Mini #1 + CC1101):** Ta emot paketet via SPI, verifiera hårdvaru-CRC och logga payload, RSSI och frekvensoffset via USB Serial (`COM11`).
-3. **Referensnod (ESP32-C3 Super Mini #2 + GERUI CC1101):** Identiskt kopplad ESP32-C3 + CC1101 som fungerar som referenssändare/mottagare.
-4. **Автоmatiserad HIL-loop (Hardware-in-the-Loop):** Bygga med SDCC, flasha CC1110 direkt från terminalen via ESP32 CC-Flasher (`http://cc.local`) och verifiera resultat i realtid via ESP32-mottagarens serieport.
+This document is the main index for the project. To save context window, the technical documentation in `VerisureDoorSensor/docs/` is split into modular files. Load only the sub-files or images needed for the current task.
 
 ---
 
-## 2. Nuläge & Verifierad Baslinje
+## 1. Project Goals
 
-* **ESP32 #2 $\rightarrow$ ESP32 #1 (100 % Verifierad):** Referenslänken mellan de två ESP32-C3-enheterna fungerar felfritt på 868.950 MHz och ger `MOTTAGET: "HB:ALIVE" | RSSI: -42 dBm | Offset: -4.8 kHz | CRC: OK` varannan sekund.
-* **Verisure CC1110 $\rightarrow$ ESP32 #1 (100 % Verifierad med Telemetri):** 
-  - **Kristall:** Verifierad till **27.000 MHz** (märkt "27.000" på X1). Radioregistren `FREQ2..0 = 0x202EEF` och `MDMCFG3 = 0x75` ger exakt 868.950 MHz och 38.38 kBaud.
-  - **Sändning:** DMA Kanal 0 med Trigger 19 (`DMA_TRIG_RADIO`) mot `0xDFD9` (`X_RFD`) levererar kontinuerliga sändningar utan underflow.
-  - **Länkprestanda:** Mottagaren loggar paketen med **`RSSI: -36 dBm`**, **`LQI: 0xFF` (255/255)** och **`CRC: OK`**!
-  - **Händelsestyrd sändning & Telemetri:** Paketformat `VS:<Reed><Shock><Button><Seq>`:
-    - **Omedelbar sändning vid trigger:** Så fort magnetkontakten (`P1_7`) ändrar läge eller skaksensorn (`P1_2`) registrerar en stöt avbryts vänteläget direkt och ett paket sänds omedelbart (< 2 ms latens).
-    - **Röd LED (`P0_2`):** Lyser röd så länge magneten är öppen (`P1_7 == 1`, larmtillstånd) eller under stöt/vibrationsförlopp (hålls tänd 1000 ms). Släckt vid stängd dörr och lugnt läge.
-    - **Grön LED (`P0_4`):** Ger en kort 40 ms puls vid varje aktiv radiosändning.
-    - **Knapp (`SW1` på Pin 31 / `RESET_N`):** Hårdvarureset-knapp; rapporterar `'B'` under de första 5 paketen efter knapptryck.
-  - **HIL CLI-loop:** Automatiserad med `python build_and_flash.py` (kompilerar med SDCC, laddar upp och flashar via ESP_CC_Flasher på `http://192.168.0.80`, och övervakar `COM11`).
+1. **Transmitter (Verisure board, TI CC1110F32):** Read the board's sensors (reed switch on `P1_7`, shock sensor on `P1_2`, button on `P2_0`) and transmit an 8-byte packet (`"HB:ALIVE"`) on **868.950 MHz** (2-FSK, 38.4 kBaud, sync word `0xD3 0x91`, fixed length with hardware CRC).
+2. **Receiver (ESP32-C3 Super Mini #1 + CC1101):** Receive the packet via SPI, verify the hardware CRC and log payload, RSSI and frequency offset via USB Serial (`COM11`).
+3. **Reference node (ESP32-C3 Super Mini #2 + GERUI CC1101):** Identically wired ESP32-C3 + CC1101 that acts as a reference transmitter/receiver.
+4. **Automated HIL loop (Hardware-in-the-Loop):** Build with SDCC, flash the CC1110 directly from the terminal via the ESP32 CC-Flasher (`http://cc.local`) and verify results in real time via the ESP32 receiver's serial port.
 
 ---
 
-## 3. Modulärt Filindex i `VerisureDoorSensor/docs/` (Lazy-Loading Guide)
+## 2. Current Status & Verified Baseline
 
-* **`verisure_door_sensor_guide.md`** $\rightarrow$ **Komplett huvuddokumentation:** Detaljerad genomgång av hårdvaran, pinouts, knapp (`SW1`), magnetkontakt, skaksensor, J2-kontakten för flashning, 27 MHz-kristallberäkningar, `FSCAL0` vs `PA_TABLE0`-fällan, DMA Trigger 19 och telemetriprotokollet (med inbäddade bilder).
-* **`hardware_mapping.md`** $\rightarrow$ *Öppna när du arbetar med GPIO, sensorer (`P1_7` reed, `P1_2` shock, knapp via `RESET_N`), lysdioder (`P0_2`/`P0_4`), SPI-koppling på ESP32-C3 eller RF-hårdvaran (`U2` SAW-filter).*
-* **`registers.md`** $\rightarrow$ *Öppna när du konfigurerar eller verifierar radioregistren (`FREQ`, `MDMCFG`, `DEVIATN`, `PKTCTRL`, `PA_TABLE0`).*
-* **`cc1110_quirks_and_dma.md`** $\rightarrow$ *Öppna när du skriver sändningslogik i C för CC1110, sätter upp DMA Kanal 0 (Trigger 19), hanterar SDCC-kompilatorflaggor eller automatiserar flashning mot `http://cc.local`.*
+* **ESP32 #2 $\rightarrow$ ESP32 #1 (100 % Verified):** The reference link between the two ESP32-C3 units works flawlessly on 868.950 MHz and gives `RECEIVED: "HB:ALIVE" | RSSI: -42 dBm | Offset: -4.8 kHz | CRC: OK` every other second.
+* **Verisure CC1110 $\rightarrow$ ESP32 #1 (100 % Verified with Telemetry):** 
+  - **Crystal:** Verified as **27.000 MHz** (marked "27.000" on X1). The radio registers `FREQ2..0 = 0x202EEF` and `MDMCFG3 = 0x75` give exactly 868.950 MHz and 38.38 kBaud.
+  - **Transmission:** DMA Channel 0 with Trigger 19 (`DMA_TRIG_RADIO`) targeting `0xDFD9` (`X_RFD`) delivers continuous transmissions without underflow.
+  - **Link performance:** The receiver logs the packets with **`RSSI: -36 dBm`**, **`LQI: 0xFF` (255/255)** and **`CRC: OK`**!
+  - **Event-driven transmission & Telemetry:** Packet format `VS:<Reed><Shock><Button><Seq>`:
+    - **Immediate transmission on trigger:** As soon as the magnetic contact (`P1_7`) changes state or the shock sensor (`P1_2`) registers an impact, the wait state is aborted at once and a packet is transmitted immediately (< 2 ms latency).
+    - **Red LED (`P0_2`):** Lights red as long as the magnet is open (`P1_7 == 1`, alarm state) or during a shock/vibration event (held on for 1000 ms). Off when the door is closed and things are quiet.
+    - **Green LED (`P0_4`):** Gives a short 40 ms pulse on every active radio transmission.
+    - **Button (`SW1` on Pin 31 / `RESET_N`):** Hardware reset button; reports `'B'` during the first 5 packets after a button press.
+  - **HIL CLI loop:** Automated with `python build_and_flash.py` (compiles with SDCC, uploads and flashes via ESP_CC_Flasher at `http://192.168.0.80`, and monitors `COM11`).
 
-### Bildfiler i `VerisureDoorSensor/docs/` (Öppna vid behov av visuell hårdvaruverifiering)
-* `pcb_bottom_mapped.png`: Översikt över baksidan med mappning av J2-kontakten, U1, batterianslutningar och sensorer.
-* `fig_j2_connector_detail.jpg`: Detaljerad närbild på J2-flashningskontakten (Pin 1 kvadratisk padd).
-* `fig_top_sensors_sw1.jpg`: Detaljerad närbild på ovansidan: batteriklämma, knapp `SW1` och reed-kontakt.
-* `fig_cc1110_rf_crystal.jpg`: Närbild på CC1110, 27.000 MHz-kristallen `X1`, balun och RF-väg.
-* `U2-1.jpeg` & `U2-2.jpeg`: Mikroskopbilder på RF-balun och passivt SAW-filter `U2` (EPCOS B3716, 868–870 MHz).
-* `CC1110.jpeg`: Mikroskopbild på CC1110F32-chippet.
-* `PXL_20261015_200824175.jpg` & `PXL_20261015_200955005~2.jpg`: Närbilder på 27.000 MHz-kristallen `X1`.
-* `board-top.jpg`, `board-bottom-1.jpg`, `board-bottom-2.jpg`: Högupplösta originalfoton av kretskortet.
+---
+
+## 3. Modular File Index in `VerisureDoorSensor/docs/` (Lazy-Loading Guide)
+
+* **`verisure_door_sensor_guide.md`** $\rightarrow$ **Complete main documentation:** Detailed walkthrough of the hardware, pinouts, button (`SW1`), magnetic contact, shock sensor, the J2 connector for flashing, 27 MHz crystal calculations, the `FSCAL0` vs `PA_TABLE0` pitfall, DMA Trigger 19 and the telemetry protocol (with embedded images).
+* **`hardware_mapping.md`** $\rightarrow$ *Open when working with GPIO, sensors (`P1_7` reed, `P1_2` shock, button via `RESET_N`), LEDs (`P0_2`/`P0_4`), SPI wiring on the ESP32-C3 or the RF hardware (`U2` SAW filter).*
+* **`registers.md`** $\rightarrow$ *Open when configuring or verifying the radio registers (`FREQ`, `MDMCFG`, `DEVIATN`, `PKTCTRL`, `PA_TABLE0`).*
+* **`cc1110_quirks_and_dma.md`** $\rightarrow$ *Open when writing transmit logic in C for the CC1110, setting up DMA Channel 0 (Trigger 19), handling SDCC compiler flags or automating flashing against `http://cc.local`.*
+
+### Image files in `VerisureDoorSensor/docs/` (Open when visual hardware verification is needed)
+* `pcb_bottom_mapped.png`: Overview of the bottom side with mapping of the J2 connector, U1, battery connections and sensors.
+* `fig_j2_connector_detail.jpg`: Detailed close-up of the J2 flashing connector (Pin 1 square pad).
+* `fig_top_sensors_sw1.jpg`: Detailed close-up of the top side: battery clip, button `SW1` and reed switch.
+* `fig_cc1110_rf_crystal.jpg`: Close-up of the CC1110, the 27.000 MHz crystal `X1`, balun and RF path.
+* `U2-1.jpeg` & `U2-2.jpeg`: Microscope images of the RF balun and passive SAW filter `U2` (EPCOS B3716, 868–870 MHz).
+* `CC1110.jpeg`: Microscope image of the CC1110F32 chip.
+* `PXL_20261015_200824175.jpg` & `PXL_20261015_200955005~2.jpg`: Close-ups of the 27.000 MHz crystal `X1`.
+* `board-top.jpg`, `board-bottom-1.jpg`, `board-bottom-2.jpg`: High-resolution original photos of the circuit board.

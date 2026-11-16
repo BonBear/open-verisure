@@ -1,88 +1,89 @@
 # Multi-Agent Engineering Architecture & Guidelines
 
-Detta dokument definierar samarbetsavtalet, ansvarsfördelningen, modellvalen och kvalitetskraven (Quality Gates) för alla AI-agenter och utvecklare i **Verisure Sub-1GHz Sensor & Home Assistant Gateway**-projektet.
+This document defines the collaboration agreement, the division of responsibilities, the model choices and the quality requirements (Quality Gates) for all AI agents and developers in the **Verisure Sub-1GHz Sensor & Home Assistant Gateway** project.
 
 ---
 
-## 1. Agentroller, Modeller och Tankenivåer
+## 1. Agent Roles, Models and Thinking Levels
 
-Varje agent i systemet är optimerad för en specifik roll med anpassad modellnivå, verktygsbehörighet och tankenivå (Thinking Level):
+Each agent in the system is optimized for a specific role with an adapted model tier, tool permissions and thinking level (Thinking Level):
 
-| Roll | Subagent / Identitet | Rekommenderad Modell | Tankenivå (Reasoning) | Verktygsbehörighet | Huvudansvar |
+| Role | Subagent / Identity | Recommended Model | Thinking Level (Reasoning) | Tool Permissions | Main Responsibility |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Orchestrator** | Huvudagent (Antigravity) | `Gemini Flash / Pro` | Hög | Samtliga verktyg | Analyserar användarens mål, delar upp uppgifter, dirigerar subagenter och syntetiserar slutsvar. |
-| **Hardware & Protocol Analyst** | `hardware_analyst` | **`pro`** | **Maximal (High Thinking)** | Read-Only (Läs, Sök, Webb) | Analyserar TI CC1110/CC1101 datablad, ESP32-S2 pinmux/DMA, RF 868.950 MHz-paket och AES-128 KDF. |
-| **Embedded Coder** | `embedded_coder` | `flash` *(alt. `pro` vid komplex logik)* | Balanserad | Full (Läs, Skriv, Edit) | Skriver ren och resurssnål C/C++ (PlatformIO, SDCC 8051) och Python-automationsskript. |
-| **QA & Test Runner** | `qa_tester` | `flash` | Snabb / Standard | Exekvering (Kör kommandon, Tester) | Kompilerar firmware (`pio run`), kör Python-tester, verifierar regressioner och edge cases. |
-| **Security & Code Reviewer** | `code_reviewer` | **`pro`** | **Maximal (High Thinking)** | Read-Only (Läs, Granska diff) | Oberoende audit av minnessäkerhet, ISR/interrupts, kryptohygien, replay-filter och kodstandard. |
+| **Orchestrator** | Main agent (Antigravity) | `Gemini Flash / Pro` | High | All tools | Analyzes the user's goals, breaks down tasks, directs subagents and synthesizes final answers. |
+| **Hardware & Protocol Analyst** | `hardware_analyst` | **`pro`** | **Maximum (High Thinking)** | Read-Only (Read, Search, Web) | Analyzes TI CC1110/CC1101 datasheets, ESP32-S2 pinmux/DMA, RF 868.950 MHz packets and AES-128 KDF. |
+| **Embedded Coder** | `embedded_coder` | `flash` *(alt. `pro` for complex logic)* | Balanced | Full (Read, Write, Edit) | Writes clean and resource-efficient C/C++ (PlatformIO, SDCC 8051) and Python automation scripts. |
+| **QA & Test Runner** | `qa_tester` | `flash` | Fast / Standard | Execution (Run commands, Tests) | Compiles firmware (`pio run`), runs Python tests, verifies regressions and edge cases. |
+| **Security & Code Reviewer** | `code_reviewer` | **`pro`** | **Maximum (High Thinking)** | Read-Only (Read, Review diff) | Independent audit of memory safety, ISR/interrupts, crypto hygiene, replay filter and coding standard. |
 
 ---
 
-## 2. Arbetsflöde & Quality Gates
+## 2. Workflow & Quality Gates
 
-Inget kodförslag anses färdigt för slutleverans utan att ha passerat genom projektets Quality Gates:
+No code proposal is considered ready for final delivery without having passed through the project's Quality Gates:
 
 ```mermaid
 flowchart TD
-    User(["Användarens Förfrågan"]) --> Step1["1. Orchestrator: Behovsanalys & Planering"]
-    Step1 --> Step2{"Kräver hårdvaru- / protokollanalys?"}
-    Step2 -- Ja --> Step3["2. Hardware Analyst (Pro): Spec & Registermappning"]
-    Step2 -- Nej --> Step4["3. Embedded Coder: Implementering & Refaktorering"]
+    User(["User's Request"]) --> Step1["1. Orchestrator: Needs Analysis & Planning"]
+    Step1 --> Step2{"Requires hardware / protocol analysis?"}
+    Step2 -- Yes --> Step3["2. Hardware Analyst (Pro): Spec & Register Mapping"]
+    Step2 -- No --> Step4["3. Embedded Coder: Implementation & Refactoring"]
     Step3 --> Step4
-    Step4 --> Step5["4. QA & Test Runner: Byggverifiering & Testkörning"]
-    Step5 -- Byggfel / Testfel --> Step4
-    Step5 -- Godkänd --> Step6["5. Security & Code Reviewer (Pro): Audit & Säkerhet"]
-    Step6 -- Ändringsbehov --> Step4
-    Step6 -- Godkänd --> Step7["6. Orchestrator: Slutleverans till användaren"]
+    Step4 --> Step5["4. QA & Test Runner: Build Verification & Test Run"]
+    Step5 -- Build error / Test failure --> Step4
+    Step5 -- Approved --> Step6["5. Security & Code Reviewer (Pro): Audit & Security"]
+    Step6 -- Changes needed --> Step4
+    Step6 -- Approved --> Step7["6. Orchestrator: Final delivery to the user"]
 ```
 
-### Fas 1: Specifikation & Arkitektur (Hardware Analyst)
-- Används vid ändringar i RF-protokoll, krypto, periferienheter eller register.
-- Verifierar att inga pin-konflikter uppstår på ESP32-S2 (särskilt ADC1 vs Wi-Fi-koexistens).
-- Skapar tydliga bitmasker, datastrukturer och krav innan Coder börjar skriva.
+### Phase 1: Specification & Architecture (Hardware Analyst)
+- Used for changes to the RF protocol, crypto, peripherals or registers.
+- Verifies that no pin conflicts arise on the ESP32-S2 (especially ADC1 vs Wi-Fi coexistence).
+- Creates clear bitmasks, data structures and requirements before the Coder starts writing.
 
-### Fas 2: Implementering (Embedded Coder)
-- Skriver minimal, ändamålsenlig och icke-blockerande kod.
-- Följer mikrocontrollerspecifika begränsningar:
-  - Undvik dynamisk minnesallokering (`malloc` / heap-fragmentering).
-  - Håll ISR (Interrupt Service Routines) extremt korta och använd `volatile` för delade variabler.
-  - Bevara existerande kommentarer och arkitektur.
+### Phase 2: Implementation (Embedded Coder)
+- Writes minimal, purposeful and non-blocking code.
+- Follows microcontroller-specific constraints:
+  - Avoid dynamic memory allocation (`malloc` / heap fragmentation).
+  - Keep ISRs (Interrupt Service Routines) extremely short and use `volatile` for shared variables.
+  - Preserve existing comments and architecture.
 
-### Fas 3: Verifiering (QA & Test Runner)
-- Firmware måste bygga utan varningar eller fel (`pio run` för ESP32, SDCC för CC1110).
-- Skript (`build_and_flash.py`, `derive_key.py`, `monitor.py`) verifieras mot syntax och körtid.
-- Edge cases testas (t.ex. rullande sekvensräknare, paketspill, avbruten seriekommunikation).
+### Phase 3: Verification (QA & Test Runner)
+- Firmware must build without warnings or errors (`pio run` for ESP32, SDCC for CC1110).
+- Scripts (`build_and_flash.py`, `derive_key.py`, `monitor.py`) are verified for syntax and runtime.
+- Edge cases are tested (e.g. rolling sequence counter, packet overflow, interrupted serial communication).
 
-### Fas 4: Säkerhetsgranskning (Security Reviewer)
-- Granskaren körs med `pro`-modellen för djup resonemangsförmåga.
-- Kontrollerar:
-  - Inga hårdkodade master-nycklar eller känsliga hemligheter i repot.
-  - Korrekt hantering av AES-128 KDF och skydd mot replay-attacker.
-  - Buffertgränser vid mottagning av RF-paket via SPI/DMA.
-
----
-
-## 3. Guardrails & Säkerhetspolicy (Deterministiska regler)
-
-För att spara tokens och förhindra misstag tillämpas följande strikta regler:
-
-1. **Inga hemligheter i Git:** Master-krypteringsnycklar, unika enhetsnycklar eller personliga Wi-Fi/MQTT-uppgifter får aldrig hårdkodas eller checkas in utanför lokala `.env` eller interaktiva konfiguratorer.
-2. **Read-only för granskare:** Subagenterna `hardware_analyst` och `code_reviewer` har inte verktygsbehörighet att ändra filer. Detta garanterar en objektiv granskning utan oavsiktliga sidoeffekter.
-3. **Resurseffektivitet:**
-   - Enkla kodändringar och testkörningar körs på `flash` för minimal latens och token-förbrukning.
-   - `pro` (High Thinking) reserveras för Arkitektur/Hardware-analys och slutgiltig Security Review.
+### Phase 4: Security Review (Security Reviewer)
+- The reviewer runs with the `pro` model for deep reasoning capability.
+- Checks:
+  - No hardcoded master keys or sensitive secrets in the repo.
+  - Correct handling of the AES-128 KDF and protection against replay attacks.
+  - Buffer bounds when receiving RF packets via SPI/DMA.
 
 ---
 
-## 4. Långtidsminne & Kunskapsbank (`.agents/memory.md`)
+## 3. Guardrails & Security Policy (Deterministic Rules)
 
-För att bevara kunskap och undvika återkommande misstag över sessioner använder teamet en gemensam minnesbank: [memory.md](file:///.agents/memory.md).
+To save tokens and prevent mistakes, the following strict rules apply:
 
-### Regler för minneshantering:
-1. **Läs före start:** Innan en subagent påbörjar ett moment inom hårdvara, protokoll eller byggsystem ska relevanta sektioner i `.agents/memory.md` konsulteras.
-2. **Kvalificera nya lärdomar:** När ett svårlöst problem, en hårdvaruquirk (t.ex. registeregenskaper, timing, pin-begränsningar) eller byggfix har bekräftats fungera, ska det dokumenteras.
-3. **Format & Koncision:** Nya insikter sparas i formatet:
-   `- [ÅÅÅÅ-MM-DD] [OMRÅDE/KOMPONENT]: Konkret regel, begränsning eller lärdom.`
-   Inga långa kodblock eller råa loggar får dumpas i minnesbanken.
-4. **Uppdatering:** `embedded_coder` eller `Orchestrator` uppdaterar filen efter att lösningen verifierats av `qa_tester`.
+1. **No secrets in Git:** Master encryption keys, unique device keys or personal Wi-Fi/MQTT credentials must never be hardcoded or checked in outside of local `.env` files or interactive configurators.
+2. **Read-only for reviewers:** The subagents `hardware_analyst` and `code_reviewer` do not have tool permissions to modify files. This guarantees an objective review without unintended side effects.
+3. **Resource efficiency:**
+   - Simple code changes and test runs are run on `flash` for minimal latency and token consumption.
+   - `pro` (High Thinking) is reserved for Architecture/Hardware analysis and the final Security Review.
+4. **English in the repository:** Everything committed to the repository (documentation, TODO, code comments, memory bank entries, file names) is written in English.
+
+---
+
+## 4. Long-Term Memory & Knowledge Bank (`.agents/memory.md`)
+
+To preserve knowledge and avoid recurring mistakes across sessions, the team uses a shared memory bank: [memory.md](file:///.agents/memory.md).
+
+### Rules for memory management:
+1. **Read before starting:** Before a subagent starts a task involving hardware, protocols or the build system, the relevant sections of `.agents/memory.md` must be consulted.
+2. **Qualify new lessons learned:** When a hard-to-solve problem, a hardware quirk (e.g. register properties, timing, pin limitations) or a build fix has been confirmed to work, it must be documented.
+3. **Format & Conciseness:** New insights are saved in the format:
+   `- [YYYY-MM-DD] [AREA/COMPONENT]: Concrete rule, limitation or lesson learned.`
+   No long code blocks or raw logs may be dumped into the memory bank.
+4. **Updating:** `embedded_coder` or `Orchestrator` updates the file after the solution has been verified by `qa_tester`.
 
