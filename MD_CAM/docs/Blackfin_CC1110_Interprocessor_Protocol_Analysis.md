@@ -1,6 +1,7 @@
 # Teknisk Hårdvaru- & Protokollanalys: Inter-Processor-Arkitektur (CC1110 <-> ADSP-BF512)
 
 > **Obs (2026-11-16):** detta är den tidiga analysen. Protokollet som det faktiskt fungerar nu (SPI-kommandon, radiopaket, gatewayens mottagning, MQTT) beskrivs i [Kamera_protokoll.md](Kamera_protokoll.md).
+
 **Kameradetektor:** Verisure GW MD CAM2 (`SECUR-PCAM-BLACKFIN P/N3204965 D`, LED-kort `P/N3302042 C`)  
 **Roll:** Hardware & Protocol Analyst (Pro / High Thinking)  
 **Mottagare:** Orchestrator (Parent Agent)
