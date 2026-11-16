@@ -34,6 +34,17 @@ const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing);
 /** Last finished JPEG wider than 320 pixels (640x480), nullptr if none yet. */
 const uint8_t* imageReceiverJpegLarge(size_t* len, uint16_t* missing);
 
+/** A chunk resent on the gateway's request (packet type 0x83): patched into the last picture,
+ *  which is published again once complete. */
+void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen, bool isLast,
+                                const uint8_t* data);
+
+/** A poll from this camera arrived: finish a picture that is still open (its end was lost). */
+void imageReceiverPollSeen(const char* deviceId);
+
+/** Test: drop every n-th 56-byte picture chunk (0 = off), to exercise the resend. */
+void imageReceiverSetDrop(uint32_t n);
+
 /** Call from loop(): finishes a picture whose last chunk was lost (after a pause). */
 void imageReceiverLoop(void);
 

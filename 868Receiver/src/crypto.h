@@ -113,6 +113,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
  *        chained as CBC with a zero IV (C0 = E(P0), C1 = E(P1 ^ C0), C2 = E(P2 ^ C1)). Plain:
  *        [0..1] seq, [2] 0x82, [3..4] chunk number, [5] flags (0x80 first, 0x40 last, bits 0..5
  *        length 1..40), [6..45] data, [46] 'V', [47] 'S'. Handled by the image receiver.
+ *        Type 0x83 is the same for a chunk resent on the gateway's request.
  * @return True if the packet was a valid 0x82 packet of a known-format device ID.
  */
 bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16]);

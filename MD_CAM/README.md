@@ -33,7 +33,8 @@ In the dark it takes grayscale pictures lit by its infrared flash.
   cold start) is measured against the reference before each delta and compensated, so only real
   changes are sent.
 * **Speed:** a 320x240 picture (~8 KB) arrives 5–8 s after the command, 640x480 (~18 KB) in ~12 s
-  (56-byte radio packets with 40 bytes of JPEG each).
+  (56-byte radio packets with 40 bytes of JPEG each). Chunks the gateway missed are resent on
+  request while the Blackfin still holds the picture.
 * **Power:** the Blackfin (~0.14 A) is powered only for pictures and 15 s after; the CC1110 sleeps
   in PM2 otherwise (idle below 1 mA on the bench supply; exact figure pending). A watchdog
   restarts the CC1110 if it ever hangs.

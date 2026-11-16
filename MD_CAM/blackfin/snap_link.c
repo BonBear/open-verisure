@@ -21,6 +21,7 @@
  *   0xB0      answer 0x5A if a picture is ready, else 0x00
  *   0xA0      reset the read pointer (next answer is byte 0)
  *   0xE5      ping: answer 0xA5 (the CC1110 polls this after power-on instead of a fixed wait)
+ *   0xE1 h l  read the picture again from chunk (h << 8 | l), 40 bytes per chunk (resend)
  *   other     answer the next picture byte (CC sends 0x00 while reading)
  *
  * Capture: PPI without frame syncs (PPI_CONTROL 0x383D) after a software VSYNC wait on PG7,
@@ -1198,7 +1199,7 @@ int main(void)
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
     volatile unsigned char *out;
     unsigned long out_max;
-    unsigned int tx = 0, rx, ptr = 0, ready = 0, size = 0, hold = 0;
+    unsigned int tx = 0, rx, ptr = 0, ready = 0, size = 0, hold = 0, seek = 0, seek_hi = 0;
 
     st[1] = 0;
     st[2] = 0;
@@ -1258,6 +1259,21 @@ int main(void)
         if (rx & 0x100)
             continue;               /* aborted transfer: keep the same answer */
         st[3] = rx;
+        if (seek) {
+            /* 0xE1 hi lo: next answers are the picture from chunk (hi << 8 | lo), 40 bytes
+             * per chunk after the 2 length bytes (resending chunks the gateway missed) */
+            if (seek == 2) {
+                seek_hi = rx;
+                seek = 1;
+                tx = 0;
+            } else {
+                unsigned long p = 2UL + 40UL * ((seek_hi << 8) | (rx & 0xFF));
+                seek = 0;
+                ptr = p < size ? p : size;
+                tx = (ptr < size) ? out[ptr++] : 0;
+            }
+            continue;
+        }
         if (hold && (rx >= 0xD0 && rx <= 0xD6 || (rx & 0xF0) == 0xC0)) {
             tx = 0x5A;
         } else if (rx >= 0xD0 && rx <= 0xD6) {
@@ -1286,6 +1302,9 @@ int main(void)
             tx = ready ? 0x5A : 0x00;
         } else if (rx == 0xE5) {
             tx = 0xA5;              /* ping: snap_link is up (the CC1110 waits for it at boot) */
+        } else if (rx == 0xE1) {
+            seek = 2;               /* two argument bytes follow */
+            tx = 0;
         } else if (rx == 0xA0) {
             ptr = 0;
             tx = out[ptr++];

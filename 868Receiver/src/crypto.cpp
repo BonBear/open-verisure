@@ -133,12 +133,16 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
     }
     memset(devKey, 0, sizeof(devKey));
     uint8_t len = plain[5] & 0x3F;
-    if (plain[2] != 0x82 || plain[46] != 'V' || plain[47] != 'S' || len == 0 || len > 40) return false;
+    if ((plain[2] != 0x82 && plain[2] != 0x83) || plain[46] != 'V' || plain[47] != 'S' || len == 0 || len > 40)
+        return false;
     // camera data never moves the replay window (as the 0x80 chunks)
     DeviceSession* sess = getOrCreateSession(devId);
     if (sess) sess->lastSeen = millis();
-    imageReceiverProcessChunk(devId, ((uint16_t)plain[3] << 8) | plain[4], len, (plain[5] & 0x80) != 0,
-                              (plain[5] & 0x40) != 0, &plain[6], 40);
+    uint16_t idx = ((uint16_t)plain[3] << 8) | plain[4];
+    if (plain[2] == 0x83)       // a chunk resent on request: patched into the last picture
+        imageReceiverProcessResend(devId, idx, len, (plain[5] & 0x40) != 0, &plain[6]);
+    else
+        imageReceiverProcessChunk(devId, idx, len, (plain[5] & 0x80) != 0, (plain[5] & 0x40) != 0, &plain[6], 40);
     return true;
 }
 
@@ -174,7 +178,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     // see downlink.h) are never uplink: a replayed one with seq_hi 0x80/0x81 would otherwise
     // pass as an image packet below. The full layout is matched so that a real image
     // packet whose seq happens to be 0x444C ('DL') is not dropped.
-    if (plain[0] == 'D' && plain[1] == 'L' && plain[12] == 0 && plain[13] == 0 &&
+    if (plain[0] == 'D' && plain[1] == 'L' &&
         memcmp(&plain[8], devId, 4) == 0 && plain[14] == 'V' && plain[15] == 'S') {
         return false;
     }

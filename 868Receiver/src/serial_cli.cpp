@@ -11,6 +11,7 @@
 #include "mqtt_manager.h"
 #include "downlink.h"
 #include "crypto.h"
+#include "image_receiver.h"
 #include <WiFi.h>
 #include <SPI.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
@@ -33,6 +34,7 @@ static void printHelp() {
     Serial.println("  setkey <32-hex-characters> - Configure Master AES Key");
     Serial.println("  setmqtt <host> <port> [user] [pass] [topic] - Configure MQTT broker");
     Serial.println("  alarm [on|off]             - Show or set the alarm state sent to cameras");
+    Serial.println("  drop <n>                   - Test: drop every n-th camera picture chunk (0 = off)");
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
@@ -245,6 +247,10 @@ static void processCommand(char* cmd) {
         downlinkSetArmed(cmd[7] == 'n');
         mqttPublishAlarmState();   // keep the HA switch in step
         Serial.printf("[CLI] Alarm %s (sent to cameras with their next poll)\n", downlinkArmed() ? "ARMED" : "DISARMED");
+    } else if (strncmp(cmd, "drop ", 5) == 0) {
+        unsigned long n = strtoul(cmd + 5, nullptr, 10);
+        imageReceiverSetDrop((uint32_t)n);
+        Serial.printf("[CLI] Dropping every %lu-th picture chunk%s\n", n, n ? "" : " (off)");
     } else if (strcmp(cmd, "alarm") == 0) {
         Serial.printf("[CLI] Alarm is %s\n", downlinkArmed() ? "ARMED" : "DISARMED");
     } else if (strcmp(cmd, "reset") == 0) {

@@ -24,6 +24,7 @@ Varje byte som tas emot bestämmer svaret i *nästa* överföring.
 | `0xB0` | svar 0x5A när bilden är klar, annars 0x00 |
 | `0xA0` | nollställ läspekaren |
 | `0xE5` | ping: svar 0xA5 (CC1110 väntar på det efter påslag, i stället för en fast väntan) |
+| `0xE1` h l | läs bilden igen från del (h << 8 \| l), 40 byte per del efter längdbytena (omsändning) |
 | övrigt | nästa bildbyte (CC1110 skickar 0x00 när den läser) |
 
 Efter 0x5A läser CC1110 längden (2 byte, little endian) och sedan datat.
@@ -62,6 +63,7 @@ Klartext: `seq(2) flags batt% mv(2) id[0..3] 'V' 'S' p0 p1 p2 p3`. Kameran anvä
 `seq(2) 0x82 chunk(2) flags data[40] 'V' 'S'`, flags: 0x80 första, 0x40 sista, bit 0–5 längd.
 Chunk n bär byte 40n.. av bilden. Ungefär 20 ms per paket: en 320-bild på ~7 KB tar
 ~4 s i luften, 5–8 s från kommando till färdig bild.
+**Omsänd del, 56 byte, typ 0x83:** samma format som 0x82, skickas bara på gatewayens begäran.
 (Äldre bildpaket typ 0x80 i 24 byte med 8 byte data hanteras fortfarande av gatewayen.)
 
 ## 3. Gatewayens mottagning
@@ -80,7 +82,12 @@ PKTLEN 24 och CRC på, sedan tillbaka till 58.
 
 Bilddelarna sätts ihop per paketnummer; saknade delar blir nollor. En bild avslutas av
 sista delen, av första delen i nästa bild, eller efter 5 s tystnad ("end lost", EOI läggs
-till). Hel 320-bild med COM-id blir bas för deltor; svartvita bilder utan id hålls separat
+till). **Omsändning:** saknas delar i en hel bild (0x82) publiceras den ändå, och med svaret på
+kamerans nästa poll (som kommer direkt efter bilden) begär gatewayen upp till 16 delar från den
+första saknade; kameran skickar dem som 0x83 och pollar igen, tills bilden är hel (högst 40
+omgångar / 60 s). Den hela bilden lagras och publiceras sedan som vanligt. En poll medan en bild
+fortfarande är öppen avslutar den (sista delen förlorad), så att omsändningen hinner medan
+Blackfin är på. Hel 320-bild med COM-id blir bas för deltor; svartvita bilder utan id hålls separat
 (webbsidan visar den nyaste); 640-bilder hålls separat.
 
 ## 4. Radio nedlänk (gateway → kamera)
@@ -88,7 +95,8 @@ till). Hel 320-bild med COM-id blir bas för deltor; svartvita bilder utan id h�
 Svar på varje poll inom ~0,1 s, 24 byte: ID + AES-block med klartext
 `'D' 'L' seq(2) chal(2) armed cmd id[0..3] 0 0 'V' 'S'`. Kameran godtar bara ett svar vars
 seq och utmaning matchar dess senaste poll. `cmd` 0 = inget, 0xD1–0xD6 = ta bild, 0xE8 = HOLD (service: Blackfin på i 10 min
-utan bild, för JTAG-flashning; MQTT `HOLD`).
+utan bild, för JTAG-flashning; MQTT `HOLD`), 0xF0–0xFF = skicka om (låg nibble + 1) delar från
+delnumret i [12..13].
 
 ## 5. MQTT (basämne `verisure`)
 

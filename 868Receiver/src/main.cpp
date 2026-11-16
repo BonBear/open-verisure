@@ -153,15 +153,19 @@ static void answerCameraPoll(const VerisureTelemetry& t) {
     bool armed = downlinkArmed();
 
     if (!cryptoDeriveDeviceKey(ConfigManager::get().masterKey, t.deviceId, key)) return;
-    uint8_t cmd = downlinkCommandForPoll(t.deviceId, t.rawRst);
-    downlinkBuildPlain(t.sequence, nonce, armed, cmd, t.deviceId, plain);
+    uint16_t arg = 0;
+    imageReceiverPollSeen(t.deviceId);   // may queue a resend for a picture that lost its end
+    uint8_t cmd = downlinkCommandForPoll(t.deviceId, t.rawRst, &arg);
+    downlinkBuildPlain(t.sequence, nonce, armed, cmd, arg, t.deviceId, plain);
     memcpy(pkt, t.deviceId, 8);
     bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
     memset(key, 0, sizeof(key));
     if (!ok) return;
     radioTransmit(pkt);
-    Serial.printf("[Downlink] -> %s: armed %d, cmd 0x%02X (poll seq %u, camera state 0x%02X)\n",
+    Serial.printf("[Downlink] -> %s: armed %d, cmd 0x%02X (poll seq %u, camera state 0x%02X)",
                   t.deviceId, armed ? 1 : 0, cmd, t.sequence, t.rawRst);
+    if (cmd >= 0xF0) Serial.printf(", resend %u chunks from %u", (cmd & 0x0F) + 1, arg);
+    Serial.println();
     if (((t.rawRst & DOWNLINK_STATE_ARMED) != 0) != armed) {
         Serial.printf("[Downlink] NOTE: %s reported armed %d before this answer\n",
                       t.deviceId, (t.rawRst & DOWNLINK_STATE_ARMED) ? 1 : 0);

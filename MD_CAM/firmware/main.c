@@ -497,7 +497,7 @@ static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
 // The gateway receives 58-byte frames and tells this from the 24-byte packets by the CRC.
 static __xdata uint8_t s_big_plain[48];
 
-static void transmit_big_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk_len,
+static void transmit_big_chunk(uint8_t type, uint16_t seq, uint16_t chunk_idx, uint8_t chunk_len,
                                bool is_first, bool is_last, const uint8_t *data) {
     uint8_t i, b, flags = chunk_len & 0x3F;
 
@@ -508,7 +508,7 @@ static void transmit_big_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk_l
     if (is_last)  flags |= 0x40;
     s_big_plain[0] = (uint8_t)(seq >> 8);
     s_big_plain[1] = (uint8_t)(seq & 0xFF);
-    s_big_plain[2] = 0x82;
+    s_big_plain[2] = type;          // 0x82 picture chunk, 0x83 resent chunk
     s_big_plain[3] = (uint8_t)(chunk_idx >> 8);
     s_big_plain[4] = (uint8_t)(chunk_idx & 0xFF);
     s_big_plain[5] = flags;
@@ -612,6 +612,8 @@ static uint16_t t1_now(void) {
 // packet (type 0x82, chunk number, length, first/last flags; transmit_big_chunk); the gateway
 // places the chunks by number. RF on a failure: B8, tries, status. Returns true if the
 // picture was sent. (Before 2026-11-16: 8 bytes per 24-byte packet, ~9 ms each.)
+static uint16_t s_pic_len;      // length of the last picture, still in snap_link's send buffer
+
 static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
     uint8_t st = 0, tries, i, n;
     uint16_t len, off, idx;
@@ -635,6 +637,7 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
         transmit((*p_seq)++, false, false, false, 0xB8, 0xFF, (uint8_t)len, (uint8_t)(len >> 8));
         return false;
     }
+    s_pic_len = len;
 #if BF_IMG_TIMING
     {
     uint32_t t_spi = 0, t_tx = 0, t_all = 0;
@@ -653,7 +656,7 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
         b = t1_now();
         t_spi += (uint16_t)(b - a);
 #endif
-        transmit_big_chunk((*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
+        transmit_big_chunk(0x82, (*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
         WDT_FEED();
 #if BF_IMG_TIMING
         a = t1_now();
@@ -801,6 +804,9 @@ static uint16_t radio_noise_nonce(void) {
 }
 
 // Poll the gateway and take its answer. Returns true for a valid answer.
+static uint16_t s_rs_idx;       // resend request from the last poll answer (s_rs_count 0 = none)
+static uint8_t s_rs_count;
+
 static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
     uint16_t seq = (*p_seq)++;
     uint8_t i, state = 0;
@@ -834,8 +840,32 @@ static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
         s_dl_plain[7] == BF_CMD_HOLD) {
         s_dl_cmd = s_dl_plain[7];
         s_cmd_ack = true;
+    } else if (s_dl_plain[7] >= 0xF0) {
+        // resend request: count - 1 in the low nibble, first chunk in [12..13]
+        s_rs_idx = ((uint16_t)s_dl_plain[12] << 8) | s_dl_plain[13];
+        s_rs_count = (s_dl_plain[7] & 0x0F) + 1;
     }
     return true;
+}
+
+// Resend chunks the gateway missed (downlink 0xF0 | count - 1, chunk number in [12..13]): snap_link
+// seeks to the chunk (0xE1 hi lo) in the picture it still holds, and the chunks go out as type
+// 0x83 so the gateway patches them into that picture instead of starting a new one.
+static void bf_resend(uint16_t idx, uint8_t count, uint16_t *p_seq) {
+    uint16_t off = idx * BF_IMG_CHUNK;
+    uint8_t i, n;
+    if (!s_pic_len || off >= s_pic_len)
+        return;
+    bf_link_xfer(0xE1);
+    bf_link_xfer((uint8_t)(idx >> 8));
+    bf_link_xfer((uint8_t)idx);
+    for (; count && off < s_pic_len; count--, idx++, off += n) {
+        n = (s_pic_len - off) > BF_IMG_CHUNK ? BF_IMG_CHUNK : (uint8_t)(s_pic_len - off);
+        for (i = 0; i < n; i++)
+            s_img_blk[i] = bf_link_xfer(0x00);
+        transmit_big_chunk(0x83, (*p_seq)++, idx, n, idx == 0, off + n >= s_pic_len, s_img_blk);
+        WDT_FEED();
+    }
 }
 
 // Power the Blackfin as bf_jtag_hold() does, without its long JTAG pauses: P1_2 = 1 at
@@ -885,6 +915,7 @@ static void bf_power_on(void) {
 // then driven low: as pull-up inputs they keep Q2 on the PIR board conducting, so the red
 // LD1 lit and the board drew ~20 mA instead of ~3 mA (memory PIR_INDICATOR_LED).
 static void bf_power_off(void) {
+    s_pic_len = 0;   // the picture in snap_link's buffer is gone
     P0_0 = 0;
     P0_7 = 0;
     P0_2 = 0;
@@ -942,6 +973,14 @@ static void cam_alarm_loop(uint16_t *p_seq) {
         if (poll >= BF_POLL_S * BF_TICKS_PER_S) {
             poll = 0;
             cam_poll(p_seq, active, bf_on);
+        }
+        if (s_rs_count) {
+            if (bf_on) {
+                bf_resend(s_rs_idx, s_rs_count, p_seq);
+                keep = BF_KEEP_ON_S * BF_TICKS_PER_S;
+                poll = BF_POLL_S * BF_TICKS_PER_S;   // poll again right away for the next request
+            }
+            s_rs_count = 0;
         }
         if (s_armed && !was_armed)
             idle = 0;               // the armed idle picture counts from arming

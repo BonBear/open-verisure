@@ -16,7 +16,7 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 - [ ] **Dörrsensorn sover inte.** `VerisureDoorSensor/main.c` läser reed/sabotage/skak varje ms i en aktiv loop (ingen PM2, inga avbrott), vilket begränsar batteritiden. Inför PM2 med port-avbrott (P1_7, P1_2, P0_1) och sömntimer för hjärtslaget, med watchdog som i kameran. Kräver en dörrsensor på flashern för test.
 - [x] **Exponeringen efter kallstart.** Klart 2026-11-16: det var färgen, inte exponeringen (Cb +4..5 de första sekunderna, Y oförändrat; sensorns vitbalans, 0x3406 hjälpte inte). snap_link mäter nu färgförskjutningen mot referensen i block där ljusheten inte ändrats och kompenserar före delta-jämförelsen: första deltan efter kallstart 118–134 block -> 0. e2e 12/12.
 - [ ] **Radera originalfirmwaren i Blackfins boot-flash** (0x10000.., ditt OK 2026-11-16). Först: kopiera alla dumpar (`MD_CAM/md_cam_orig.bin` = kamerans CC1110, `MD_CAM/blackfin/build/fw_dump/` = Blackfin-originalet) till en säker mapp utanför `build/`. Sedan öppna `flash_write.c` för radering av just det området. Dörrsensorns CC1110-original finns inte dumpat.
-- [ ] **Omsändning av saknade bildpaket** (gatewayen begär saknade paketnummer vid nästa poll; Blackfin har bilden i 120 s). Görs om räckviddstestet (B5) visar förluster.
+- [x] **Omsändning av saknade bildpaket.** Klart 2026-11-16: gatewayen begär saknade delar (nedlänk 0xF0–0xFF, upp till 16 delar) med svaret på pollen efter bilden, kameran skickar dem som 0x83 ur Blackfins buffert (snap_link 0xE1). Testat med gatewayens `drop <n>`: var 7:e tappad -> komplett efter 10 omgångar/3,2 s (640: 23 omgångar/7,6 s, även med förlorat JPEG-huvud), var 3:e -> 13 omgångar/4,1 s. Nyttan i verklig placering visar räckviddstestet (B5).
 
 ## B. Behöver dig
 

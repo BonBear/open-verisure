@@ -43,6 +43,32 @@ static uint8_t* s_jpgGray = nullptr;
 static size_t s_jpgGrayLen = 0;
 static uint16_t s_jpgGrayMissing = 0;
 static bool s_grayNewest = false;
+
+// Resend of missing chunks (56-byte packets only): a full picture with holes (or a lost end)
+// is published as it is and also copied to s_rsImg; with its next poll answer the gateway asks
+// the camera for up to 16 chunks from the first missing one. The camera sends them as type
+// 0x83, they are patched into s_rsImg, and the next run is asked for, until the picture is
+// complete: then it goes through jpegFinish() again (stored and published like a picture
+// without holes). Limits: RS_MAX_ROUNDS requests, RS_TIMEOUT_MS without an answer, RS_TOTAL_MS.
+#define RS_MAX_ROUNDS 40
+#define RS_TIMEOUT_MS 20000
+#define RS_TOTAL_MS 60000
+static bool s_rsActive = false;
+static char s_rsDevice[10];
+static uint8_t* s_rsImg = nullptr;   // the picture being completed
+static unsigned long s_rsStart;
+static size_t s_rsLen;               // data length known so far (without an added EOI)
+static bool s_rsEndSeen;
+static uint16_t s_rsChunks;          // chunks of the data known so far
+static uint8_t s_rsHave[JPEG_MAX_CHUNKS / 8];
+static uint8_t s_rsRounds;
+static uint16_t s_rsReqEnd;          // last chunk of the current request
+static unsigned long s_rsTime;
+
+// test (serial command "drop <n>"): drop every n-th 56-byte picture chunk, 0 = off
+static uint32_t s_dropEvery = 0, s_dropCount = 0;
+static bool s_noResend = false;      // finishing because the next picture started: no resend
+void imageReceiverSetDrop(uint32_t n) { s_dropEvery = n; s_dropCount = 0; }
 static uint8_t* s_tmp = nullptr;             // splice output, swapped with s_jpg
 static int s_baseId = -1;                    // COM id of the full picture deltas apply to
 static uint16_t s_deltaCount = 0;            // deltas applied since the last full picture
@@ -54,6 +80,8 @@ static uint8_t* allocBig(size_t n) {
     if (!p) p = (uint8_t*)malloc(n);
     return p;
 }
+
+static void jpegFinish(size_t len, bool endSeen = true);
 
 static void jpegReset(void) {
     if (s_imgBuf) memset(s_imgBuf, 0, MAX_IMAGE_SIZE);
@@ -87,12 +115,73 @@ static void requestNewBase(void) {
                   ok ? "queued" : "NOT queued");
 }
 
+static bool rsHave(uint16_t i) { return (s_rsHave[i >> 3] >> (i & 7)) & 1; }
+
+// Ask for the next run of missing chunks (up to 16 from the first one), or finish.
+static void rsRequestNext(void) {
+    uint16_t first = 0xFFFF, last = 0, i;
+    for (i = 0; i < s_rsChunks; i++) {
+        if (!rsHave(i)) {
+            if (first == 0xFFFF) first = i;
+            if (i < first + 16) last = i;
+        }
+    }
+    if (first == 0xFFFF) {
+        if (s_rsEndSeen) {               // complete: store and publish it as a normal picture
+            Serial.printf("[ImageReceiver] Picture from %s complete after resend: %u bytes, %u round(s), %lu ms\n",
+                          s_rsDevice, (unsigned int)s_rsLen, s_rsRounds, millis() - s_rsStart);
+            s_rsActive = false;
+            if (s_lastIdx >= 0) return;  // a new picture is coming in (cannot happen: it cancels)
+            memcpy(s_imgBuf, s_rsImg, s_rsLen);
+            s_chunkSize = JPEG_CHUNK_MAX;
+            s_haveCount = s_rsChunks;
+            strncpy(s_activeDeviceId, s_rsDevice, 9);
+            s_noResend = true;
+            jpegFinish(s_rsLen, true);
+            s_noResend = false;
+            return;
+        }
+        first = s_rsChunks;              // the end is missing: ask for what follows
+        last = first + 15;
+    }
+    if (++s_rsRounds > RS_MAX_ROUNDS || millis() - s_rsStart > RS_TOTAL_MS) {
+        Serial.printf("[ImageReceiver] Resend for %s stopped after %u rounds\n", s_rsDevice, s_rsRounds - 1);
+        s_rsActive = false;
+        return;
+    }
+    s_rsReqEnd = last;
+    s_rsTime = millis();
+    bool ok = downlinkRequestResend(s_rsDevice, first, (uint8_t)(last - first + 1));
+    Serial.printf("[ImageReceiver] Resend of chunks %u..%u from %s %s\n", first, last, s_rsDevice,
+                  ok ? "queued" : "NOT queued");
+}
+
+void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen, bool isLast,
+                                const uint8_t* data) {
+    if (!s_rsActive || !deviceId || !data || strcmp(deviceId, s_rsDevice) != 0 || chunkLen == 0 ||
+        chunkLen > JPEG_CHUNK_MAX || chunkIdx >= JPEG_MAX_CHUNKS) return;
+    size_t off = (size_t)chunkIdx * JPEG_CHUNK_MAX;
+    if (off + chunkLen > MAX_IMAGE_SIZE) return;
+    memcpy(s_rsImg + off, data, chunkLen);
+    s_rsHave[chunkIdx >> 3] |= (uint8_t)(1 << (chunkIdx & 7));
+    if (isLast) {
+        s_rsLen = off + chunkLen;
+        s_rsEndSeen = true;
+        s_rsChunks = chunkIdx + 1;
+    } else if (off + chunkLen > s_rsLen) {
+        s_rsLen = off + chunkLen;
+        if (chunkIdx + 1 > s_rsChunks) s_rsChunks = chunkIdx + 1;
+    }
+    s_rsTime = millis();
+    if (chunkIdx >= s_rsReqEnd || isLast) rsRequestNext();
+}
+
 // Finish the blob in s_imgBuf (len bytes; missing chunks stay zero): a full JPEG (kept as
 // the base for deltas if it is 320 wide, or as the large picture) or a delta blob that is
 // spliced into the base (jpeg_splice.cpp). The resulting picture is published on MQTT.
 // endSeen false: the last chunk never came (the blob ended by a pause or the next blob), so
 // the missing count cannot include the lost end; a JPEG gets its EOI back so it decodes.
-static void jpegFinish(size_t len, bool endSeen = true) {
+static void jpegFinish(size_t len, bool endSeen) {
     if (len < 4 || !s_jpg || !s_tmp) {
         jpegReset();
         return;
@@ -100,6 +189,7 @@ static void jpegFinish(size_t len, bool endSeen = true) {
     uint16_t chunks = (len + s_chunkSize - 1) / s_chunkSize;
     uint16_t missing = chunks > s_haveCount ? chunks - s_haveCount : 0;
     const char* endNote = endSeen ? "" : " (end lost)";
+    size_t dataLen = len;
     if (!endSeen && !jpegIsDelta(s_imgBuf, len) && len + 2 <= MAX_IMAGE_SIZE &&
         !(s_imgBuf[len - 2] == 0xFF && s_imgBuf[len - 1] == 0xD9)) {
         s_imgBuf[len++] = 0xFF;
@@ -131,7 +221,10 @@ static void jpegFinish(size_t len, bool endSeen = true) {
     }
     bool soi = s_imgBuf[0] == 0xFF && s_imgBuf[1] == 0xD8;
     unsigned int w = jpegWidth(s_imgBuf, len);
-    if (w > 320) {                           // large (640x480) picture: kept apart, no base
+    if (w == 0) {
+        // no frame header (lost with a chunk): published, but neither stored as the base
+        // nor as the large picture until a resend completes it
+    } else if (w > 320) {                           // large (640x480) picture: kept apart, no base
         if (s_jpgLarge) {
             memcpy(s_jpgLarge, s_imgBuf, len);
             s_jpgLargeLen = len;
@@ -159,7 +252,29 @@ static void jpegFinish(size_t len, bool endSeen = true) {
                   (unsigned int)len, w, jpegCommentId(s_imgBuf, len), missing, chunks, soi ? "" : " (no SOI)", endNote);
     if (!mqttPublishCameraImage(s_activeDeviceId, s_imgBuf, len))
         Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
+    if (!s_noResend && s_chunkSize == JPEG_CHUNK_MAX && (missing || !endSeen)) {
+        if (!s_rsImg) s_rsImg = allocBig(MAX_IMAGE_SIZE);
+    }
+    if (s_rsImg && !s_noResend && s_chunkSize == JPEG_CHUNK_MAX && (missing || !endSeen)) {
+        s_rsActive = true;
+        strncpy(s_rsDevice, s_activeDeviceId, 9);
+        s_rsDevice[9] = '\0';
+        memcpy(s_rsImg, s_imgBuf, dataLen);
+        s_rsStart = millis();
+        s_rsLen = dataLen;
+        s_rsEndSeen = endSeen;
+        s_rsChunks = (dataLen + JPEG_CHUNK_MAX - 1) / JPEG_CHUNK_MAX;
+        memcpy(s_rsHave, s_have, sizeof(s_rsHave));
+        s_rsRounds = 0;
+        rsRequestNext();
+    }
     jpegReset();
+}
+
+void imageReceiverPollSeen(const char* deviceId) {
+    // the camera polls right after a picture: a picture still open lost its last chunk; finish
+    // it now so a resend request can go out with this poll's answer (the Blackfin is still on)
+    if (deviceId && s_lastIdx >= 0 && strcmp(deviceId, s_activeDeviceId) == 0) jpegFinish(s_imgEnd, false);
 }
 
 void imageReceiverInit(void) {
@@ -173,6 +288,8 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
     if (!deviceId || !data || chunkSize == 0 || chunkSize > JPEG_CHUNK_MAX || chunkLen == 0 ||
         chunkLen > chunkSize || chunkIdx >= JPEG_MAX_CHUNKS ||
         (size_t)chunkIdx * chunkSize + chunkLen > MAX_IMAGE_SIZE) return;
+    if (s_rsActive) s_rsActive = false;   // a new picture: the stored one may change (deltas)
+    if (s_dropEvery && chunkSize == JPEG_CHUNK_MAX && ++s_dropCount % s_dropEvery == 0) return;   // test
     if (!s_imgBuf) {
         s_imgBuf = allocBig(MAX_IMAGE_SIZE);
         s_jpg = allocBig(MAX_IMAGE_SIZE);
@@ -190,7 +307,9 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
     if (otherDevice || stale) {
         jpegReset();
     } else if ((isFirst || wrapped || resized) && s_lastIdx >= 0) {
+        s_noResend = true;              // the camera's buffer already holds the next picture
         jpegFinish(s_imgEnd, false);    // previous picture lost its last chunk
+        s_noResend = false;
     }
     s_chunkSize = chunkSize;
     if (otherDevice) {
@@ -234,4 +353,8 @@ void imageReceiverLoop(void) {
     // a JPEG/delta whose last chunk was lost: finish it after a pause instead of dropping it
     // when the next picture comes more than 15 s later (stale)
     if (s_lastIdx >= 0 && now - s_lastChunkTime > JPEG_QUIET_MS) jpegFinish(s_imgEnd, false);
+    if (s_rsActive && now - s_rsTime > RS_TIMEOUT_MS) {
+        Serial.printf("[ImageReceiver] Resend for %s given up (no answer)\n", s_rsDevice);
+        s_rsActive = false;
+    }
 }

@@ -48,6 +48,10 @@ Settings can also be changed later in the web portal (stored in NVS).
   picture's first chunk or 5 s of silence. Full 320x240 pictures are the base that deltas are
   spliced into; if a delta has no base the gateway asks the camera for a full picture. Grayscale
   flash pictures and 640x480 pictures are kept apart. Every picture is published on MQTT.
+* **Resend:** a full picture with missing chunks is published as it is, then the gateway asks the
+  camera (with the answer to the poll that follows the picture) for up to 16 chunks from the first
+  missing one, repeatedly, until it is complete (tested with every 3rd chunk dropped: complete in
+  ~4 s); the complete picture is stored and published again.
 
 ## MQTT topics (base topic `verisure`)
 
@@ -67,7 +71,8 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   list. API: `/api/status`, `/api/radio`, `/api/scan`, `/api/save`, `/api/reboot`, `/api/reset`,
   `/api/camera.jpg` (newest 320x240 picture, colour or flash), `/api/camera_large.jpg` (640x480),
   `/api/camera_test` (publishes a small test JPEG to MQTT).
-* **Serial console** (USB, 115200): `help`, `status`, `scan`, `alarm`, `testspi`, `reboot`, `reset`.
+* **Serial console** (USB, 115200): `help`, `status`, `scan`, `alarm`, `testspi`, `reboot`, `reset`,
+  `drop <n>` (test: drop every n-th picture chunk to exercise the resend).
   The master key is never printed, only its check value.
 
 ## Source files
