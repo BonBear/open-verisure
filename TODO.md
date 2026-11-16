@@ -26,4 +26,4 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 - [ ] **4. Nattbilder utan blixt (idé).** Originalet förlänger bildrutan (VTS, 0x380E/0x380F) i mörker. Kräver mörkt rum; Claude kan köra testet via JTAG (`MD_CAM/blackfin/jtag/bf_set.sh 0xFF800034 ...`) när rummet är mörkt.
 - [ ] **5. Räckvidd i verklig placering.** Sätt kameran på sin tänkta plats; några D1/D2 visar saknade paket per bild ("x/y chunks missing") och RSSI i gatewayloggen.
 - [ ] **6. Granska och slå ihop grenen.** `md-cam/u3-flash-dump` har mycket nytt (blixt, hastighet, bildkvalitet, viloläge). Säg till om Claude ska öppna en PR mot `main`.
-- [ ] **7. Testverktyg i CC1110-firmware:** ska undersökningsverktygen bakom avstängda brytare (`BF_PIN_WALK`, `BF_SPI_WALK`, `BF_SPI1_TEST`, `BF_PROBE_AT_BOOT`, `BF_P0_0_TOGGLE`, U3-dumpen, rå-tiles 0x81) tas bort eller sparas? De kostar inget när de är avstängda men gör `main.c` (~2900 rader) svårare att läsa.
+- [x] **7. Testverktyg i CC1110-firmware.** Borttagna 2026-11-16 efter ditt OK: main.c 2924 -> ~1000 rader, firmware 22490 -> 5989 byte, e2e 11/11. Finns kvar i git-historiken.
