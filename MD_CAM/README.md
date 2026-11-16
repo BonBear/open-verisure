@@ -88,6 +88,7 @@ With the camera powered and the gateway on USB:
 ```bash
 python MD_CAM/test_camera_e2e.py            # 12 checks: polls, pictures, deltas, flash, alarm
 python MD_CAM/test_camera_e2e.py --gateway-restart
+python MD_CAM/test_resend.py 7 D1 D2           # gateway drops every 7th chunk; checks the resend
 ```
 
 ## Files

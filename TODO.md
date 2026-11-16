@@ -3,6 +3,11 @@
 Två listor: det Claude kan göra helt själv, och det som behöver dig vid kameran eller ett
 beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 
+**Läge 2026-11-16 kväll:** kameran fungerar på bänken (bilder 5–8 s, 640 ~12 s, deltor, IR-blixt i
+mörker, omsändning, PM2-sömn, e2e 12/12). Allt ligger på `main`. Det som återstår för kameran är
+mätningar och prov på plats (lista B). Kvar att göra självständigt: dörrsensorns sömn (kräver en
+dörrsensor på flashern). Bänkrutiner (flashning, JTAG, HOLD) står i `MD_CAM/README.md`.
+
 ## A. Claude kan göra autonomt
 
 - [x] **Visa blixtbilder på gatewayens webbsida.** Klart 2026-11-16: `/api/camera.jpg` visar den nyaste av färgbilden och blixtbilden (verifierat D1 -> färg, D4 -> svartvit, D1 -> färg).
