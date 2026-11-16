@@ -105,8 +105,16 @@ void urx1_isr(void) __interrupt(URX1_VECTOR) {
  * ============================================================================ */
 
 /** @brief Busy-wait ms delay calibrated for 27 MHz (takes 2x longer on 13.5 MHz RCOSC). */
+/* Watchdog (WDCTL, 32 kHz clock, also runs in PM2): resets the chip if it is not fed for
+ * ~1 s, e.g. if the CPU never wakes from PM2 again (seen once on 2026-11-16: no poll after
+ * the first, only a power cycle helped). Started in cam_alarm_loop; fed in delay_ms, after
+ * every sleep and per picture chunk. Feeding before it is started has no effect. */
+#define WDT_FEED() do { WDCTL = 0xA8; WDCTL = 0x58; } while (0)
+
 void delay_ms(uint16_t ms) {
     while (ms--) {
+        if (WDCTL & 0x08)           // per ms: delay_ms(1100) takes ~3 s (runs ~2.75x slow)
+            WDT_FEED();
         for (uint16_t i = 0; i < 2180; i++) {
             __asm nop __endasm;
         }
@@ -1905,10 +1913,11 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_RX_WINDOW 40          // listen window after a poll, in delay_ms(1) steps (~2.75 ms each: ~110 ms)
 #define BF_BOOT_WAIT_MS 1100     // after /RESET release: boot selector, snap_link and sensor setup (~3 s)
 #define BF_ARMED_IDLE_S 1800     // armed without motion: one picture this often (0 = never)
-#define BF_SLEEP_IDLE 0          // 1: with the Blackfin off, wait in PM2 (0.5 s timer / PIR edge) instead of
-                                 // busy-waiting. Off: tried 2026-11-16, the camera never woke from the sleep
-                                 // timer (no poll after the first) and the flasher's INIT read 0000 until a
-                                 // power cycle. Not needed for now: awake idle is already ~3 mA with LD1 off.
+#define BF_SLEEP_IDLE 1          // 1: with the Blackfin off, wait in PM2 (0.5 s timer / PIR edge) instead of
+                                 // busy-waiting: idle below 1 mA (PSU resolution) instead of ~3 mA. A first
+                                 // try (2026-11-16) never woke from the sleep timer and needed a power
+                                 // cycle; a later build ran fine (likely code placement), and the watchdog
+                                 // (WDT_FEED) now resets the chip if it ever hangs like that again.
 #define BF_AUTO_FLASH 1          // pictures while armed (motion and the idle one): snap_link takes a
                                  // grayscale flash picture instead when the room is dark (0xD5 for 0xD3,
                                  // 0xD6 for 0xD2). The flash board is infrared, so nobody sees it
@@ -2006,6 +2015,7 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
         t_spi += (uint16_t)(b - a);
 #endif
         transmit_big_chunk((*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
+        WDT_FEED();
 #if BF_IMG_TIMING
         a = t1_now();
         t_tx += (uint16_t)(a - b);
@@ -2496,6 +2506,7 @@ static uint16_t cam_sleep(void) {
     g_pir_edge = 0;
     clock_rcosc();
     enter_pm2();
+    WDT_FEED();
     clock_xosc();
     return g_tick ? (uint16_t)(BF_TICKS_PER_S * ST_WOREVT / 32) : 1;
 }
@@ -2513,6 +2524,7 @@ static void cam_alarm_loop(uint16_t *p_seq) {
 #if BF_SLEEP_IDLE
     sleep_timer_init();
 #endif
+    WDCTL = 0x08;                   // watchdog on, ~1 s (32768 periods of 32 kHz); cannot be stopped
     for (;;) {
         if (P1_7 == 0) {
             if (!active) {
