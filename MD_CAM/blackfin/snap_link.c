@@ -522,6 +522,8 @@ static unsigned int shade_k = SHADE_K, sat_q = SAT_Q;
  * delta must use the quality of its full picture (the gateway splices its MCUs into it with
  * that picture's tables), so the full picture keeps it in ref_q. */
 static unsigned int jpeg_q = JPEG_QUALITY, ref_q = JPEG_QUALITY;
+#define SHARP_Q 4                   /* sharpening, see sharpen_mcu() */
+static unsigned int sharp_q = SHARP_Q;
 
 static void tune_load(void)
 {
@@ -534,6 +536,8 @@ static void tune_load(void)
         shade_k = SHADE_K;
         sat_q = SAT_Q;
     }
+    w = st[12];
+    sharp_q = (w >> 16) == 0x5AA0 && (w & 0xFF) <= 16 ? (w & 0xFF) : SHARP_Q;
     w = st[16];
     jpeg_q = (w >> 16) == 0x0A17 && (w & 0xFF) >= 10 && (w & 0xFF) <= 95 ? (w & 0xFF) : JPEG_QUALITY;
 }
@@ -812,13 +816,42 @@ static unsigned long mcu_diff(unsigned int m)
 
 /* encode MCU m of the current picture (independent restart interval) and copy it to the
  * reference */
+/* Sharpening against the soft lens, only where an MCU is encoded: y + q/32 * (4y - the four
+ * neighbours), i.e. q = 4 adds half of (y - neighbour mean). The reference keeps the
+ * unsharpened pixels, so the delta check (CUR vs REF) sees no extra noise. Neighbours come
+ * from the whole picture in CUR_Y (outside the picture: the pixel itself). Tuning over JTAG:
+ * 0xFF800030 = 0x5AA00000 | q (0 = off); anything else = SHARP_Q (sharp_q, see tune_load). */
+
+static void sharpen_mcu(const unsigned char *cy, unsigned int mx, unsigned int my, unsigned char *out)
+{
+    unsigned int r, x;
+    for (r = 0; r < 16; r++) {
+        unsigned int yy = my * 16 + r;
+        const unsigned char *row = cy + r * OUT_W;
+        for (x = 0; x < 16; x++) {
+            unsigned int xx = mx * 16 + x;
+            int c = row[x];
+            int up = yy > 0 ? row[x - OUT_W] : c, dn = yy < IMG_H - 1 ? row[x + OUT_W] : c;
+            int lf = xx > 0 ? row[x - 1] : c, rt = xx < OUT_W - 1 ? row[x + 1] : c;
+            int v = c + (((4 * c - up - dn - lf - rt) * (int)sharp_q) >> 5);
+            out[r * 16 + x] = (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
+        }
+    }
+}
+
 static void mcu_encode_and_keep(unsigned int m)
 {
     unsigned int mx = m % MCU_X, my = m / MCU_X, r;
     unsigned long yo = (unsigned long)my * 16 * OUT_W + mx * 16, co = (unsigned long)my * 8 * (OUT_W / 2) + mx * 8;
     unsigned char *cy = (unsigned char *)CUR_Y + yo, *cu = (unsigned char *)CUR_U + co, *cv = (unsigned char *)CUR_V + co;
     unsigned char *ry = (unsigned char *)REF_Y + yo, *ru = (unsigned char *)REF_U + co, *rv = (unsigned char *)REF_V + co;
-    jpeg_mcu(cy, OUT_W, cu, cv, OUT_W / 2);
+    if (sharp_q) {
+        unsigned char sy[256];
+        sharpen_mcu(cy, mx, my, sy);
+        jpeg_mcu(sy, 16, cu, cv, OUT_W / 2);
+    } else {
+        jpeg_mcu(cy, OUT_W, cu, cv, OUT_W / 2);
+    }
     for (r = 0; r < 16; r++) {
         unsigned int x;
         for (x = 0; x < 16; x++)
@@ -1118,6 +1151,7 @@ int main(void)
     st[30] = 0;                     /* 0xFF800078 flash test word */
     st[15] = 0;                     /* 0xFF80003C shading/saturation tuning (see tune_load) */
     st[16] = 0;                     /* 0xFF800040 JPEG quality tuning (see tune_load) */
+    st[12] = 0;                     /* 0xFF800030 sharpening tuning (see sharpen_mcu) */
     __asm__ volatile("R0 = SYSCFG; BITSET (R0, 1); SYSCFG = R0; CSYNC;" ::: "R0");  /* CCEN: CYCLES runs */
     have_ref = 0;                   /* .bss is not zeroed by a JTAG load */
     awb_valid = 0;

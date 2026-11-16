@@ -2,6 +2,7 @@
 # Write one 32-bit word into the running snap_link over JTAG: bf_set.sh <addr> <value>
 # (the core is halted for the write and resumed by detach). Tuning words, see snap_link.c:
 #   0xFF800034 = 0x80000000 | reg << 8 | value   one sensor register before the next picture
+#   0xFF800030 = 0x5AA00000 | q                   sharpening (0 = off, default 4)
 #   0xFF80003C = 0x51A70000 | shade_k << 8 | sat lens shading / saturation
 #   0xFF800040 = 0x0A170000 | quality             JPEG quality
 #   0xFF800050 = threshold                        delta threshold (0 = DELTA_T)

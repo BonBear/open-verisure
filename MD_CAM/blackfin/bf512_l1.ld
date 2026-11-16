@@ -1,5 +1,6 @@
 /* ADSP-BF512 L1 layout for our own programs.
- * Code in L1 instruction SRAM bank A (16 KB). Constant tables and variables in L1 data
+ * Code in L1 instruction SRAM 0xFFA00000..0xFFA07FFF (32 KB: probed over JTAG on 2026-11-16,
+ * 0xFFA08000 reads 0xADADADAD = not there). Constant tables and variables in L1 data
  * bank A at 0xFF800100..0xFF800FFF: .rodata placed in instruction memory cannot be read
  * with data loads. 0xFF800000..0xFF8000FF is left for the status words that the programs
  * and JTAG scripts use. Needs DMEM_CONTROL 0x1001 (data bank A all SRAM). .bss is not
@@ -8,7 +9,7 @@ ENTRY(_start)
 
 MEMORY
 {
-    L1_CODE : ORIGIN = 0xFFA00000, LENGTH = 0x4000
+    L1_CODE : ORIGIN = 0xFFA00000, LENGTH = 0x8000
     L1_DATA : ORIGIN = 0xFF800100, LENGTH = 0x0F00
 }
 
