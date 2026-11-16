@@ -1,0 +1,28 @@
+# TODO
+
+Två listor: det Claude kan göra helt själv, och det som behöver dig vid kameran eller ett
+beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
+
+## A. Claude kan göra autonomt
+
+- [ ] **Visa blixtbilder på gatewayens webbsida.** `/api/camera.jpg` visar fortfarande senaste färgbilden; svartvita blixtbilder (0xD4/0xD5 i mörker) går bara till MQTT.
+- [ ] **Utöka e2e-testet** (`MD_CAM/test_camera_e2e.py`) med D4 (svartvit blixtbild), D5/D6 och kontroll av att bildpaketen är 56-byte (typ 0x82).
+- [ ] **Uppdatera protokolldokumentationen** (`MD_CAM/docs/Blackfin_CC1110_Interprocessor_Protocol_Analysis.md` m.fl.) med kommandona 0xD4–0xD6, bildpaket 0x82 (56 byte, CBC) och gatewayens 58-byte-mottagning med mjukvaru-CRC.
+- [ ] **Mjukvaruskärpning** i snap_link (lätt unsharp mask på Y) mot linsens oskärpa; mät brus och filstorlek före/efter.
+- [ ] **Delta-brus från färgen:** brusgolvet i delta-histogrammet ligger på 6–7 (max ~10, tröskel 12). Undersök om U/V (förstärkta x7/4) dominerar och om de bör vägas ned, så att tröskeln kan sänkas och små rörelser fångas.
+- [ ] **Städning i CC1110-firmware:** gamla testvägar (rå-tiles 0x81, 8-byte-bildpaket 0x80, `BF_IMG_TIMING`) som inte längre används av kamerans normala flöde.
+- [ ] **Omsändning av saknade bildpaket** (gatewayen begär saknade paketnummer vid nästa poll; Blackfin har bilden i 120 s). Görs om räckviddstestet (B5) visar förluster.
+
+## B. Behöver dig
+
+- [ ] **1. Viloström med Otii.** Firmware sover nu i PM2 när Blackfin är av; nätaggregatet visar bara "under 1 mA".
+  - Mät i serie vid 3,0 V minst 2 min i vila (larm av): snitt, golv, toppar för pollen (var ~28 s, sändning + ~110 ms lyssning) och uppvakningen var 0,5 s.
+  - Samma med larmet på, och en hel bild (D1 via MQTT `verisure/2NCEKS3T/picture/set`): Blackfin ~0,14 A i ~5–8 s plus 120 s påslagen efteråt (`BF_KEEP_ON_S`).
+  - Utifrån resultatet: beslut om `BF_POLL_S` (30 s) och `BF_KEEP_ON_S` (120 s) ska ändras.
+- [ ] **2. PIR väcker ur viloläget** (ej provat med den här byggen).
+  - Larmet av: rör dig framför kameran, gatewayloggen ska visa B9 inom någon sekund.
+  - Larmet på (`verisure/alarm/set` ON): rörelse ska ge en larmbild (0xD5) inom ~10 s.
+- [ ] **3. Larm i mörker med IR-blixt.** Mörklägg rummet och stäng av den andra kamerans IR-ljus; larmet på och rörelse ska ge svartvita blixtbilder (scenmedel under `DARK_Y` 40). Tänd: samma rörelse ska ge färgbilder och deltor.
+- [ ] **4. Nattbilder utan blixt (idé).** Originalet förlänger bildrutan (VTS, 0x380E/0x380F) i mörker. Kräver mörkt rum; Claude kan köra testet via JTAG (`MD_CAM/blackfin/jtag/bf_set.sh 0xFF800034 ...`) när rummet är mörkt.
+- [ ] **5. Räckvidd i verklig placering.** Sätt kameran på sin tänkta plats; några D1/D2 visar saknade paket per bild ("x/y chunks missing") och RSSI i gatewayloggen.
+- [ ] **6. Granska och slå ihop grenen.** `md-cam/u3-flash-dump` har mycket nytt (blixt, hastighet, bildkvalitet, viloläge). Säg till om Claude ska öppna en PR mot `main`.

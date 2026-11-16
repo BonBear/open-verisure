@@ -67,3 +67,4 @@ Desktop.ini
 .antigravity/
 .agents/*.json
 .mcp.json
+MD_CAM/blackfin/jtag/gdbproxy.log
