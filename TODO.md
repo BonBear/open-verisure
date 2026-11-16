@@ -32,6 +32,11 @@ door sensor (needs a door sensor on the flasher). Bench routines (flashing, JTAG
   - Measure in series at 3.0 V for at least 2 min idle (alarm off): mean, floor, peaks for the poll (every ~28 s, transmit + ~110 ms listening) and the wake-up every 0.5 s.
   - The same with the alarm on, and one full picture (D1 via MQTT `verisure/2NCEKS3T/picture/set`): Blackfin ~0.14 A for ~5–8 s plus 15 s on afterwards (`BF_KEEP_ON_S`).
   - From the result: decide whether `BF_POLL_S` (30 s) and `BF_KEEP_ON_S` (lowered from 120 to 15 s on 2026-11-16 pending this measurement) should change. Note: 120 s on after every picture costs ~17 As (0.14 A), more than the picture itself; now that a full picture takes only ~5 s, a shorter time can be worth the occasional full picture instead of a delta.
+  - **First run 2026-11-16** (Arc as the 3.0 V supply, Otii monitor values at ~1.3 Hz; the 4 kHz recording was lost when Otii 3 closed and deleted its temporary project):
+    - Idle, alarm off (150 s): mean 1.23 mA, floor 1.19 mA. Alarm on (90 s): mean 1.28 mA, floor 1.19 mA.
+    - Polls every 27.3 s plus the 0.5 s wake-ups add only ~0.04 mA on top of the floor, so `BF_POLL_S` hardly matters. The 1.19 mA floor dominates (~29 mAh/day); PM2 on the CC1110 alone should be µA, so something else on the board draws it (PIR, regulator, Blackfin switch leakage, sensor board?).
+    - One D1 picture: Blackfin on ~20.8 s (6.7 s capture and send at ~190 mA, then 14 s at ~169 mA for `BF_KEEP_ON_S`), ~3.5 As (~1 mAh) per picture, of which the keep-on time is ~2.4 As. The Blackfin draws ~0.17–0.19 A at 3.0 V, not 0.14 A. `BF_KEEP_ON_S` 15 s stays for now (cheap next to the floor: ~1 day of idle = ~30 pictures).
+    - Still to do: a 4 kHz recording exported from Otii 3 (poll and wake-up peaks), and finding what draws the 1.19 mA floor (measure with parts disconnected).
 - [ ] **2. PIR wakes the camera from sleep** (not tried with this build).
   - Alarm off: move in front of the camera; the gateway log should show B9 within a second or so.
   - Alarm on (`verisure/alarm/set` ON): motion should give an alarm picture (0xD5) within ~10 s.
