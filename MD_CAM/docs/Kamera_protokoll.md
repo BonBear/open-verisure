@@ -23,6 +23,7 @@ Varje byte som tas emot bestämmer svaret i *nästa* överföring.
 | `0xC0`+q | rå kvart q (test) |
 | `0xB0` | svar 0x5A när bilden är klar, annars 0x00 |
 | `0xA0` | nollställ läspekaren |
+| `0xE5` | ping: svar 0xA5 (CC1110 väntar på det efter påslag, i stället för en fast väntan) |
 | övrigt | nästa bildbyte (CC1110 skickar 0x00 när den läser) |
 
 Efter 0x5A läser CC1110 längden (2 byte, little endian) och sedan datat.

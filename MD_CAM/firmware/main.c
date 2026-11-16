@@ -543,7 +543,10 @@ static void transmit_big_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk_l
 #define BF_ARMED_AT_BOOT 1       // alarm state until the gateway has answered a poll (armed: fail safe)
 #define BF_POLL_S 30             // poll the gateway (alarm state, picture requests) this often
 #define BF_RX_WINDOW 40          // listen window after a poll, in delay_ms(1) steps (~2.75 ms each: ~110 ms)
-#define BF_BOOT_WAIT_MS 1100     // after /RESET release: boot selector, snap_link and sensor setup (~3 s)
+#define BF_BOOT_MIN_MS 50        // after /RESET release P1_2 stays 1 this long (~140 ms) so the boot
+                                 // selector sees PH0 low and starts snap_link, not the factory firmware
+#define BF_BOOT_MAX_TRIES 200    // then ping (0xE5 -> 0xA5) every ~30 ms until snap_link answers,
+                                 // at most ~6 s (it used to be a fixed wait of ~3 s)
 #define BF_ARMED_IDLE_S 1800     // armed without motion: one picture this often (0 = never)
 #define BF_SLEEP_IDLE 1          // 1: with the Blackfin off, wait in PM2 (0.5 s timer / PIR edge) instead of
                                  // busy-waiting: idle below 1 mA (PSU resolution) instead of ~3 mA. A first
@@ -591,6 +594,7 @@ static uint8_t s_img_blk[BF_IMG_CHUNK];
 #define BF_IMG_TIMING 0          // test: after a picture, RF B7 with the mean time per chunk of the
                                  // SPI read, the RF send and the whole loop (units of 0.25 ms, Timer 1).
                                  // 2026-11-16 after the AES fix: 0.75 / 8 / 9 ms (before: 0.5 / 52 / 53)
+                                 // also RF B6 after power-on: pings until snap_link answered (37, ~1.2 s)
 #if BF_IMG_TIMING
 static uint16_t t1_now(void) {
     uint8_t l = T1CNTL;          // reading T1CNTL latches T1CNTH
@@ -831,6 +835,8 @@ static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
 
 // Power the Blackfin as bf_jtag_hold() does, without its long JTAG pauses: P1_2 = 1 at
 // reset release makes the boot selector start snap_link (0x8000). Then the link pins.
+static uint8_t s_boot_tries;    // pings until snap_link answered (BF_IMG_TIMING reports it)
+
 static void bf_power_on(void) {
     P0DIR |= 0x85;   // P0_0, P0_2 (1.2V), P0_7 (aux) = outputs
     P0_0 = 0;
@@ -852,12 +858,21 @@ static void bf_power_on(void) {
     P0_0 = 1;
     delay_ms(20);
     P1_0 = 0;        // release /RESET
-    delay_ms(BF_BOOT_WAIT_MS);
+    delay_ms(BF_BOOT_MIN_MS);
 
     P1_2 = 0;
     P1DIR |= 0x34;   // P1_2 (select), P1_4 (SCK), P1_5 (MOSI)
     P1DIR &= ~0x08;  // P1_3 (MISO) input
     P1_4 = 0;
+    // snap_link answers 0xE5 with 0xA5 in the next transfer once it is in its command loop
+    // (boot ROM, selector, PLL, SDRAM test, sensor setup); two answers in a row, so a floating
+    // MISO cannot pass by chance
+    for (s_boot_tries = 0; s_boot_tries < BF_BOOT_MAX_TRIES; s_boot_tries++) {
+        bf_link_xfer(0xE5);
+        if (bf_link_xfer(0xE5) == 0xA5 && bf_link_xfer(0x00) == 0xA5)
+            break;
+        delay_ms(10);
+    }
 }
 
 // Back to the idle state of setup_gpio(): /RESET low (P0_0), aux and 1.2 V rails off in the
@@ -956,6 +971,9 @@ static void cam_alarm_loop(uint16_t *p_seq) {
         if (cmd) {
             if (!bf_on) {
                 bf_power_on();
+#if BF_IMG_TIMING
+                transmit((*p_seq)++, false, false, false, 0xB6, s_boot_tries, 0, 0);
+#endif
                 bf_on = true;
             }
             // keep it powered only after a good picture: a hung Blackfin gets power-cycled

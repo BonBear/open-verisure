@@ -20,6 +20,7 @@
  *   0xC0 | q  grab raw quarter q (0..3) now, then answer 0x5A
  *   0xB0      answer 0x5A if a picture is ready, else 0x00
  *   0xA0      reset the read pointer (next answer is byte 0)
+ *   0xE5      ping: answer 0xA5 (the CC1110 polls this after power-on instead of a fixed wait)
  *   other     answer the next picture byte (CC sends 0x00 while reading)
  *
  * Capture: PPI without frame syncs (PPI_CONTROL 0x383D) after a software VSYNC wait on PG7,
@@ -1212,6 +1213,8 @@ int main(void)
             tx = 0x5A;
         } else if (rx == 0xB0) {
             tx = ready ? 0x5A : 0x00;
+        } else if (rx == 0xE5) {
+            tx = 0xA5;              /* ping: snap_link is up (the CC1110 waits for it at boot) */
         } else if (rx == 0xA0) {
             ptr = 0;
             tx = out[ptr++];
