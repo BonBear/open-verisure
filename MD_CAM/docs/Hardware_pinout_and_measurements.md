@@ -74,7 +74,7 @@ When you read the text (*"CC1110 F32 TI..."*) the right way up, **Pin 1 is at th
 | **Pin 11** | **`P0_5`** | Test pad **`RX`** | UART RX (`USART1 Alt. 1`). **Not** visible on Blackfin PF/PG/PH (verified 2026-11-11) |
 | **Pin 12** | **`P0_6`** | *(Not connected / Unused)* | Unused |
 | **Pin 13** | **`P0_7`** | Connector **`J2 Pin 4`** / DSP rail | **Power-Enable / Switched Auxiliary rail** (6 kΩ to J2-4) |
-| **Pin 14** | `P2_0` | *(Not connected)* | Unused |
+| **Pin 14** | `P2_0` | *(Pulled up to VBAT somewhere, ~10 kΩ; target not traced)* | Driven high while idle: low it sinks ~0.30 mA (Otii 2026-11-16) |
 | **Pin 15** | **`P2_1` (`DD`)** | **`J6-2`** | **Debug Data (`DD`)** for the CC-Flasher |
 | **Pin 16** | **`P2_2` (`DC`)** | **`J6-3`** | **Debug Clock (`DC`)** for the CC-Flasher |
 | **Pin 17** | `P2_3` (`XOSC32K_Q1`) | Crystal `Y2` (32.768 kHz) | Sleep Timer crystal |

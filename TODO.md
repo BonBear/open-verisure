@@ -4,7 +4,7 @@ Two lists: what Claude can do on its own, and what needs someone at the camera o
 Tick items with `[x]` and add a short result after the item.
 
 **Status, 2026-11-16 evening:** the camera works on the bench (pictures in 5–8 s, 640x480 in ~12 s,
-deltas, IR flash in the dark, resend, PM2 sleep at ~0.37 mA idle, e2e 12/12). Everything is on `main`. What is left
+deltas, IR flash in the dark, resend, PM2 sleep at ~0.05 mA idle, e2e 12/12). Everything is on `main`. What is left
 for the camera is measurements and tests on site (list B). Left to do unattended: sleep for the
 door sensor (needs a door sensor on the flasher). Bench routines (flashing, JTAG, HOLD) are in
 `MD_CAM/README.md`.
@@ -22,11 +22,12 @@ door sensor (needs a door sensor on the flasher). Bench routines (flashing, JTAG
 - [ ] **The door sensor does not sleep.** `VerisureDoorSensor/main.c` reads reed/tamper/shock every ms in a busy loop (no PM2, no interrupts), which limits battery life. Add PM2 with port interrupts (P1_7, P1_2, P0_1) and the sleep timer for the heartbeat, with a watchdog as in the camera. Needs a door sensor on the flasher for testing.
 - [x] **Exposure after a cold start.** Done 2026-11-16: it was the colour, not the exposure (Cb +4..5 in the first seconds, luma unchanged; the sensor's white balance; 0x3406 did not help). snap_link now measures the colour shift against the reference in blocks whose luma did not change and compensates before the delta check: first delta after a cold start 118–134 blocks -> 0. e2e 12/12.
 - [x] **Erase the factory firmware from the Blackfin boot flash.** Done 2026-11-16: all dumps copied to `C:\repo\verisure_firmware_dumps\` (with a SHA-256 list and a README), the copy at 0x10000 read back from the chip and identical to the dump, then erased (0x10000–0x17FFF, checked blank). The camera boots as before, e2e 12/12. The door sensor's factory firmware was never dumped.
-- [x] **Find the 1.19 mA idle floor.** Done 2026-11-16: idle floor 1.163 -> **0.299 mA**, mean 1.213 -> **0.37 mA** (~3x battery life; with 3x CR123A roughly 1.5 years instead of ~5 months). e2e 12/12.
+- [x] **Find the 1.19 mA idle floor.** Done 2026-11-16: idle floor 1.163 mA -> **3 µA**, mean 1.213 -> **0.052 mA** (Otii, 3.0 V; with 3x CR123A ~10 years on idle alone, so battery self-discharge and pictures now set the life). e2e 12/12.
   - Cause: P0_6 and P0_7 go to the PIR board, which pulls both up to VBAT (5.8 and 3.7 kOhm, measured), and the firmware held them low while idle, sinking ~0.9 mA. They are now driven high while the Blackfin is off (`bf_power_off`; `bf_power_on` drives P0_7 low first, so the start-up sequence is unchanged). Driven high and tri-state gave the same floor; LD1 stays off and the PIR still triggers.
   - Also P1_2 (link enable) low while off: ~30 µA. P0_4/P0_5 tri-state and P1_3..P1_5 low made no difference; the IR flash board draws nothing in idle.
   - Method: test builds (`-DSLEEP_PIN_TEST=1`, removed again) changed the pin state in PM2 every ~18 s while the Otii recorded; the PIR header was mapped with a DMM (`MD_CAM/docs/Measurements_PIR_header.md`).
-  - The remaining ~0.30 mA is not explained yet (CC1110 PM2 itself is ~1 µA). Possible next round: the other pins that are driven low while off (P0_0, P0_1, P0_2, P0_3, P1_0, P1_1, P2_0) against pull-ups, the same way.
+  - The last ~0.30 mA was P2_0: also pulled up (the pinout table said "not connected"), held low it sank 0.30 mA; now driven high while the Blackfin is off as well (floor 0.30 mA -> 3 µA). P0_1, P0_3, P1_0 and P1_1 tri-state made no difference; P0_0 and P0_2 (Blackfin rail enables) were not tried.
+  - What is left: the 0.455 s wake-ups (~22 µA) and the polls every 27 s (~27 µA). Slower wake-ups would only matter now that they are half of the idle current.
 - [x] **Resend missing picture chunks.** Done 2026-11-16: the gateway asks for missing chunks (downlink 0xF0–0xFF, up to 16 chunks) with the answer to the poll after the picture; the camera sends them as 0x83 from the Blackfin's buffer (snap_link 0xE1). Tested with the gateway's `drop <n>`: every 7th dropped -> complete after 10 rounds / 3.2 s (640x480: 23 rounds / 7.6 s, also with the JPEG header lost), every 3rd -> 13 rounds / 4.1 s. The benefit on site shows in the range test (B5).
 
 ## B. Needs you

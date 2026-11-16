@@ -36,8 +36,8 @@ In the dark it takes grayscale pictures lit by its infrared flash.
   (56-byte radio packets with 40 bytes of JPEG each). Chunks the gateway missed are resent on
   request while the Blackfin still holds the picture.
 * **Power:** the Blackfin (~0.17–0.19 A at 3.0 V) is powered only for pictures and 15 s after
-  (one picture ~3.6 As); the CC1110 sleeps in PM2 otherwise: idle ~0.37 mA at 3.0 V (Otii, floor
-  0.30 mA). A watchdog restarts the CC1110 if it ever hangs.
+  (one picture ~3.6 As); the CC1110 sleeps in PM2 otherwise: idle ~0.05 mA at 3.0 V (Otii, floor
+  3 µA; the rest is the 0.5 s wake-ups and the polls). A watchdog restarts the CC1110 if it ever hangs.
 
 The protocol between the parts and over the air is described in
 [docs/Camera_protocol.md](docs/Camera_protocol.md).
