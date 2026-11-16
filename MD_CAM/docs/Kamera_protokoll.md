@@ -87,7 +87,8 @@ till). Hel 320-bild med COM-id blir bas för deltor; svartvita bilder utan id h�
 
 Svar på varje poll inom ~0,1 s, 24 byte: ID + AES-block med klartext
 `'D' 'L' seq(2) chal(2) armed cmd id[0..3] 0 0 'V' 'S'`. Kameran godtar bara ett svar vars
-seq och utmaning matchar dess senaste poll. `cmd` 0 = inget, 0xD1–0xD6 = ta bild.
+seq och utmaning matchar dess senaste poll. `cmd` 0 = inget, 0xD1–0xD6 = ta bild, 0xE8 = HOLD (service: Blackfin på i 10 min
+utan bild, för JTAG-flashning; MQTT `HOLD`).
 
 ## 5. MQTT (basämne `verisure`)
 

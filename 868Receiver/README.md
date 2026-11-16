@@ -55,7 +55,7 @@ Settings can also be changed later in the web portal (stored in NVS).
 | :--- | :--- | :--- |
 | `verisure/<id>/state` | out | device telemetry (JSON) |
 | `verisure/<id>/image` | out | latest camera picture (JPEG) |
-| `verisure/<id>/picture/set` | in | `D1`..`D6` picture command for a camera |
+| `verisure/<id>/picture/set` | in | `D1`..`D6` picture command for a camera; `HOLD` keeps its Blackfin on 10 min (service) |
 | `verisure/alarm/set` | in | `ON` / `OFF` (or alarm_control_panel states) |
 | `verisure/status` | out | `online` / `offline` (LWT) |
 
