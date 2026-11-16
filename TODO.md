@@ -11,6 +11,8 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 - [x] **Mjukvaruskärpning.** Klart 2026-11-16: skärpning q4 (y + q/32·(4y − grannar)) bara när ett MCU kodas, referensen hålls oskärpt så deltorna påverkas inte. Detalj (Laplace-sd) 16,9 -> 22,6, fil +7 %, brus på jämn yta oförändrat; q8 gav 27,6 men mer brus. Gäller 320-färgbilder (hel och delta). Trimbart via JTAG 0xFF800030. L1-kod utökad till 32 KB (provat via JTAG).
 - [x] **Delta-brus från färgen.** Utrett 2026-11-16: med U/V-vikt 4/2/0 (bara Y) låg brusgolvet ändå på 4–6; det är ljusheten (troligen lampflimmer mellan bildrutor), inte färgen. Ingen ändring, `DELTA_T` 12 behålls.
 - [x] **Städning i CC1110-firmware.** 2026-11-16: inaktuella kommentarer rättade (paketformat 0x82, 640-bild ~12 s). Testverktygen bakom avstängda brytare (pinnvandring, SPI-test, prober, U3-dump, rå-tiles) är kvar; om de ska bort är ett beslut för dig, se B7.
+- [x] **Optimeringsflaggor för snap_link.** Klart 2026-11-16: -O2, fångst+kodning 3–4x snabbare (320: 0,86 -> 0,29 s, 640: 2,61 -> 0,60 s).
+- [ ] **Korta Blackfins uppstartsväntan.** CC1110 väntar `BF_BOOT_WAIT_MS` (~3 s i verkligheten) efter /RESET innan första kommandot; mät när snap_link faktiskt svarar (0xB0) och korta väntan. Varje sekund är 0,14 A mindre per larmhändelse.
 - [ ] **Omsändning av saknade bildpaket** (gatewayen begär saknade paketnummer vid nästa poll; Blackfin har bilden i 120 s). Görs om räckviddstestet (B5) visar förluster.
 
 ## B. Behöver dig
@@ -18,7 +20,7 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 - [ ] **1. Viloström med Otii.** Firmware sover nu i PM2 när Blackfin är av; nätaggregatet visar bara "under 1 mA".
   - Mät i serie vid 3,0 V minst 2 min i vila (larm av): snitt, golv, toppar för pollen (var ~28 s, sändning + ~110 ms lyssning) och uppvakningen var 0,5 s.
   - Samma med larmet på, och en hel bild (D1 via MQTT `verisure/2NCEKS3T/picture/set`): Blackfin ~0,14 A i ~5–8 s plus 120 s påslagen efteråt (`BF_KEEP_ON_S`).
-  - Utifrån resultatet: beslut om `BF_POLL_S` (30 s) och `BF_KEEP_ON_S` (120 s) ska ändras.
+  - Utifrån resultatet: beslut om `BF_POLL_S` (30 s) och `BF_KEEP_ON_S` (120 s) ska ändras. Obs: 120 s påslagen efter varje bild kostar ~17 As (0,14 A), mer än själva bilden; nu när en hel bild bara tar ~5 s kan en kortare tid vara värd att deltor ibland blir hela bilder.
 - [ ] **2. PIR väcker ur viloläget** (ej provat med den här byggen).
   - Larmet av: rör dig framför kameran, gatewayloggen ska visa B9 inom någon sekund.
   - Larmet på (`verisure/alarm/set` ON): rörelse ska ge en larmbild (0xD5) inom ~10 s.
