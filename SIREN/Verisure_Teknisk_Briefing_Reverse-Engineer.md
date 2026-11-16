@@ -34,7 +34,7 @@ Verisure-ekosystemet använder en standardiserad Sub-1GHz RF-arkitektur centrera
 Protokollet bygger på symmetrisk **AES-128-ECB** med en tvåstegs nyckelhärledning (Key Derivation Function):
 
 1. **Master Key (Gateway / Hemmanätverk):**
-   - 16 bytes (128-bitars hex, t.ex. `BF4F135AF70682C8EB61006E32E7C300`).
+   - 16 bytes (128-bitars hex, t.ex. `00112233445566778899AABBCCDDEEFF`).
    - Delas av hela systemet och konfigureras i gatewayens NVS/`secrets.h`.
 2. **Device ID:**
    - Varje enhet har ett unikt 8-teckens ASCII-ID tryckt på etikett/streckkod (t.ex. `2JHL2MVN`).
