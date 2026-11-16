@@ -1,6 +1,6 @@
 # PIR board header – measurement plan
 
-Goal: find where the camera's idle floor (~1.16 mA in PM2, see `TODO.md`) goes, and whether
+Goal: find where the camera's idle floor (~1.16 mA in PM2; solved 2026-11-16, see Results) goes, and whether
 the PIR board has a supply line the CC1110 could switch off.
 
 The PIR board is soldered to the main board through a 10-pin header (the row of pins just below
