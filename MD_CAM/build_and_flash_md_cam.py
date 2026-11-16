@@ -73,6 +73,7 @@ def compile_firmware() -> None:
     cmd_c = [
         "sdcc", "-mmcs51", "--model-large",
         "--code-size", "0x8000", "--xram-loc", "0xF000", "--xram-size", "0x0E00",
+        *[a for a in sys.argv[1:] if a.startswith("-D")],   # e.g. -DSLEEP_PIN_TEST=1 (bench builds)
         "-c", "main.c", "-o", "build/"
     ]
     res = subprocess.run(cmd_c, cwd=FW_DIR, capture_output=True, text=True)

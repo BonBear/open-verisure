@@ -223,7 +223,7 @@ void setup_gpio(void) {
     P1DIR |= 0x07;  // P1_0 (3.3V), P1_1 (bus switch), P1_2 (SS) = outputs
     P1_0 = 0;       // 3.3V Switched rail OFF
     P1_1 = 0;       // bus switch OFF (isolated while idle)
-    P1_2 = 1;       // SS idle HIGH
+    P1_2 = 0;       // link enable off: high costs ~30 uA in PM2 with the Blackfin off (Otii 2026-11-16)
 
     // Keep switch SW3 (P1_6) and the PIR (P1_7) as inputs with pull-UP:
     P1DIR &= ~0xC0;
@@ -921,7 +921,7 @@ static void bf_power_off(void) {
     P0_2 = 0;
     P1_0 = 0;
     P1_1 = 0;
-    P1_2 = 1;
+    P1_2 = 0;        // link enable off (~30 uA less in PM2 than high; bf_power_on sets it again)
     P1DIR &= ~0x38;
     P1INP |= 0x38;
     P0 &= ~0x4A;
