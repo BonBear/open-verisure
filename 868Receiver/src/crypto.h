@@ -118,5 +118,5 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
 bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16]);
 
 /** True if the last packet given to cryptoProcessPacket() was a camera image packet (type
- * 0x80/0x81), which is handled there and returns false without being a rejection. */
+ * 0x80/0x82), which is handled there and returns false without being a rejection. */
 bool cryptoLastPacketWasImage(void);
