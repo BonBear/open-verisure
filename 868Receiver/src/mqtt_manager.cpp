@@ -83,19 +83,21 @@ static void publishAlarmDiscovery(const char* baseTopic) {
     s_mqttClient.publish("homeassistant/switch/verisure_gateway_alarm/config", p.c_str(), true);
 }
 
-/** Button on a camera device: take a 640x480 picture (sent with the camera's next poll). */
-static void publishPictureButtonDiscovery(const char* deviceId, const char* baseTopic) {
+/** Button on a camera device that takes a picture (sent with the camera's next poll):
+ *  suffix "" = 640x480 (D2), "_flash" = 320x240 grayscale lit by the flash (D4). */
+static void publishPictureButtonDiscovery(const char* deviceId, const char* baseTopic, const char* suffix,
+                                          const char* name, const char* icon, const char* payload) {
     String id(deviceId), b(baseTopic);
     String p = "{";
-    p += "\"name\":\"Take 640x480 picture\",";
-    p += "\"unique_id\":\"verisure_" + id + "_picture\",";
-    p += "\"icon\":\"mdi:camera\",";
+    p += "\"name\":\"" + String(name) + "\",";
+    p += "\"unique_id\":\"verisure_" + id + "_picture" + suffix + "\",";
+    p += "\"icon\":\"" + String(icon) + "\",";
     p += "\"command_topic\":\"" + b + "/" + id + "/picture/set\",";
-    p += "\"payload_press\":\"D2\",";
+    p += "\"payload_press\":\"" + String(payload) + "\",";
     p += "\"availability_topic\":\"" + b + "/status\",";
     p += "\"device\":{\"identifiers\":[\"verisure_" + id + "\"]}";
     p += "}";
-    String topic = "homeassistant/button/verisure_" + id + "_picture/config";
+    String topic = "homeassistant/button/verisure_" + id + "_picture" + suffix + "/config";
     s_mqttClient.publish(topic.c_str(), p.c_str(), true);
 }
 
@@ -139,6 +141,9 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
         uint8_t cmd = 0xD2;
         if (v == "D1") cmd = 0xD1;
         else if (v == "D3") cmd = 0xD3;
+        else if (v == "D4") cmd = 0xD4;
+        else if (v == "D5") cmd = 0xD5;     // as D3 with light, flash picture in the dark
+        else if (v == "D6") cmd = 0xD6;     // as D2 with light, flash picture in the dark
         bool ok = downlinkRequestPicture(dev.c_str(), cmd);
         Serial.printf("[Downlink] Picture 0x%02X for %s %s\n", cmd, dev.c_str(), ok ? "queued" : "NOT queued");
     }
@@ -168,7 +173,8 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
         String camTopic = haDiscoveryBuildCameraTopic(deviceId);
         String camPayload = haDiscoveryBuildCameraPayload(deviceId, baseTopic);
         s_mqttClient.publish(camTopic.c_str(), camPayload.c_str(), true); // Retained message
-        publishPictureButtonDiscovery(deviceId, baseTopic);
+        publishPictureButtonDiscovery(deviceId, baseTopic, "", "Take 640x480 picture", "mdi:camera", "D2");
+        publishPictureButtonDiscovery(deviceId, baseTopic, "_flash", "Take flash picture", "mdi:camera-flash", "D4");
 
         markDeviceDiscovered(deviceId);
         Serial.printf("[MQTT] Published Home Assistant Discovery for Motion Camera \"%s\" (%d sensor entities + 1 camera retained)\n", deviceId, count);

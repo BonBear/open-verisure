@@ -57,7 +57,7 @@ static PendingCommand* findPending(const char* deviceId) {
 }
 
 bool downlinkRequestPicture(const char* deviceId, uint8_t cmd) {
-    if (!deviceId || cmd < 0xD1 || cmd > 0xD3) return false;
+    if (!deviceId || cmd < 0xD1 || cmd > 0xD6) return false;
     expirePending();
     PendingCommand* p = findPending(deviceId);
     if (!p) {

@@ -21,6 +21,7 @@
  * kept apart for /api/camera_large.jpg. */
 #define JPEG_CHUNK 8
 #define JPEG_MAX_CHUNKS (MAX_IMAGE_SIZE / JPEG_CHUNK)
+#define JPEG_QUIET_MS 5000   // the camera sends chunks back to back: a pause this long ends a blob
 
 static uint8_t* s_imgBuf = nullptr;          // picture being received
 static uint8_t* s_jpg = nullptr;             // last finished picture
@@ -80,22 +81,30 @@ static void requestNewBase(void) {
 // Finish the blob in s_imgBuf (len bytes; missing chunks stay zero): a full JPEG (kept as
 // the base for deltas if it is 320 wide, or as the large picture) or a delta blob that is
 // spliced into the base (jpeg_splice.cpp). The resulting picture is published on MQTT.
-static void jpegFinish(size_t len) {
+// endSeen false: the last chunk never came (the blob ended by a pause or the next blob), so
+// the missing count cannot include the lost end; a JPEG gets its EOI back so it decodes.
+static void jpegFinish(size_t len, bool endSeen = true) {
     if (len < 4 || !s_jpg || !s_tmp) {
         jpegReset();
         return;
     }
     uint16_t chunks = (len + JPEG_CHUNK - 1) / JPEG_CHUNK;
     uint16_t missing = chunks > s_haveCount ? chunks - s_haveCount : 0;
+    const char* endNote = endSeen ? "" : " (end lost)";
+    if (!endSeen && !jpegIsDelta(s_imgBuf, len) && len + 2 <= MAX_IMAGE_SIZE &&
+        !(s_imgBuf[len - 2] == 0xFF && s_imgBuf[len - 1] == 0xD9)) {
+        s_imgBuf[len++] = 0xFF;
+        s_imgBuf[len++] = 0xD9;
+    }
     if (jpegIsDelta(s_imgBuf, len)) {
         int id = jpegDeltaId(s_imgBuf, len);
         unsigned int updated = 0;
         size_t n = 0;
         if (s_jpgLen && id == s_baseId)
             n = jpegApplyDelta(s_jpg, s_jpgLen, s_imgBuf, len, s_tmp, MAX_IMAGE_SIZE, &updated);
-        Serial.printf("[ImageReceiver] Delta from %s: %u bytes for picture %d, %u blocks%s, %u/%u chunks missing\n",
+        Serial.printf("[ImageReceiver] Delta from %s: %u bytes for picture %d, %u blocks%s, %u/%u chunks missing%s\n",
                       s_activeDeviceId, (unsigned int)len, id, updated,
-                      n ? "" : (id == s_baseId ? " (could not apply)" : " (other base, ignored)"), missing, chunks);
+                      n ? "" : (id == s_baseId ? " (could not apply)" : " (other base, ignored)"), missing, chunks, endNote);
         if (!n)
             requestNewBase();
         if (n) {
@@ -118,6 +127,9 @@ static void jpegFinish(size_t len) {
             s_jpgLargeLen = len;
             s_jpgLargeMissing = missing;
         }
+    } else if (s_baseId >= 0 && jpegCommentId(s_imgBuf, len) < 0) {
+        // no COM id (grayscale, e.g. a flash picture 0xD4): published below, but the colour
+        // picture stays the base for the camera's next delta
     } else {
         memcpy(s_jpg, s_imgBuf, len);
         s_jpgLen = len;
@@ -125,8 +137,8 @@ static void jpegFinish(size_t len) {
         s_baseId = jpegCommentId(s_jpg, len);
         s_deltaCount = 0;
     }
-    Serial.printf("[ImageReceiver] JPEG from %s: %u bytes, width %u, id %d, %u/%u chunks missing%s\n", s_activeDeviceId,
-                  (unsigned int)len, w, jpegCommentId(s_imgBuf, len), missing, chunks, soi ? "" : " (no SOI)");
+    Serial.printf("[ImageReceiver] JPEG from %s: %u bytes, width %u, id %d, %u/%u chunks missing%s%s\n", s_activeDeviceId,
+                  (unsigned int)len, w, jpegCommentId(s_imgBuf, len), missing, chunks, soi ? "" : " (no SOI)", endNote);
     if (!mqttPublishCameraImage(s_activeDeviceId, s_imgBuf, len))
         Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
     jpegReset();
@@ -157,7 +169,7 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
     if (otherDevice || stale) {
         jpegReset();
     } else if ((isFirst || wrapped) && s_lastIdx >= 0) {
-        jpegFinish(s_imgEnd);           // previous picture lost its last chunk
+        jpegFinish(s_imgEnd, false);    // previous picture lost its last chunk
     }
     if (otherDevice) {
         strncpy(s_activeDeviceId, deviceId, 9);
@@ -252,8 +264,11 @@ void imageReceiverProcessTile(const char* deviceId, uint16_t tile, const uint8_t
 }
 
 void imageReceiverLoop(void) {
-    if (!s_rawBmp || s_rawNewSincePublish == 0) return;
     unsigned long now = millis();
+    // a JPEG/delta whose last chunk was lost: finish it after a pause instead of dropping it
+    // when the next picture comes more than 15 s later (stale)
+    if (s_lastIdx >= 0 && now - s_lastChunkTime > JPEG_QUIET_MS) jpegFinish(s_imgEnd, false);
+    if (!s_rawBmp || s_rawNewSincePublish == 0) return;
     bool complete = s_rawHaveCount == RAW_TILES;
     bool quiet = now - s_rawLastTile > 5000;                 // sender paused or finished
     bool periodic = now - s_rawLastPublish > 120000;         // progress while streaming

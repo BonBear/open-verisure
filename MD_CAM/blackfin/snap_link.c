@@ -14,6 +14,9 @@
  *   0xD2      640x480 colour (needs the SDRAM; length 0 if the SDRAM test failed)
  *   0xD3      320x240 colour as a delta: only the 16x16 blocks that changed since the last
  *             picture (see grab_color_delta), or a full picture when needed
+ *   0xD4      320x240 grayscale as 0xD0, lit by the flash (PF10 + PF12 for FLASH_PIC_T x 0.1 ms)
+ *   0xD5      alarm picture: as 0xD3 with light, as 0xD4 in the dark (scene mean below DARK_Y)
+ *   0xD6      alarm picture: as 0xD2 with light, as 0xD4 in the dark
  *   0xC0 | q  grab raw quarter q (0..3) now, then answer 0x5A
  *   0xB0      answer 0x5A if a picture is ready, else 0x00
  *   0xA0      reset the read pointer (next answer is byte 0)
@@ -553,6 +556,16 @@ static void extract(volatile unsigned short *buf, unsigned long g0, unsigned lon
  * when used up. Off at every exit of ppi_dma. */
 #define FLASH_MAX_T  200           /* 20 ms */
 #define CCLK_PER_T   24000UL        /* 0.1 ms at CCLK 240 MHz (pll_init) */
+/* flash picture (0xD4): both LED groups for 5 ms from the start of the frame. In a dark
+ * room the exposure spans the whole frame, so one pulse lights every row. Room at 1-4 m,
+ * fully dark (Y 5 without flash): PF12 1 ms Y 22, 2 ms 40, 5 ms 76, 10 ms 137; both groups
+ * 5 ms Y 141, 10 ms 180 (the top rows get less: their exposure ends early in the pulse).
+ * Objects a few cm away saturate from 0.5 ms. With room light the exposure is shorter than
+ * a frame and the flash adds nothing measurable. */
+#define FLASH_PIC_T     50
+#define FLASH_PIC_MASK  0x1400      /* PF10 + PF12 */
+#define DARK_Y          40          /* alarm pictures (0xD5/0xD6) use the flash below this scene mean */
+static unsigned int flash_pic;      /* the next whole-frame grab fires the flash for this x 0.1 ms */
 static unsigned long cycles(void)
 {
     unsigned long c;
@@ -562,7 +575,8 @@ static unsigned long cycles(void)
 
 /* PPI stream into dst by DMA0 (16 bit, 2D: bands x BAND_SAMP samples, continuous) from the
  * end of the next VSYNC; with ymod = -(2 * BAND_SAMP - 2) every band overwrites the last
- * (only the last band is kept). flash: apply the flash test word (whole-frame grabs only).
+ * (only the last band is kept). flash: fire the flash test word or flash_pic (whole-frame
+ * grabs only).
  * Returns DMA0_STAT (bit 0 DMA_DONE, bit 1 DMA_ERR). */
 static unsigned int ppi_dma(unsigned long dst, unsigned int bands, short ymod, int flash)
 {
@@ -580,6 +594,10 @@ static unsigned int ppi_dma(unsigned long dst, unsigned int bands, short ymod, i
         on *= CCLK_PER_T;
         w -= 0x00010000UL;
         st[30] = (w & 0x00FF0000UL) ? w : 0;
+    } else if (flash && flash_pic) {
+        mask = FLASH_PIC_MASK;
+        on = flash_pic * CCLK_PER_T;
+        flash_pic = 0;
     }
 
     R16(PPI_CONTROL) = 0;
@@ -759,10 +777,13 @@ static void mcu_encode_and_keep(unsigned int m)
  * one level per grab, so comparing neighbouring grabs is not enough (stopped after 4).
  * Grab the middle strip (luma only, ~0.2 s each) until its mean is within 1 of the mean
  * AEC_SPAN grabs earlier, at most AEC_MAX grabs (the CC1110 waits ~33 s for a picture).
- * 0xFF800068: grabs used << 16 | first mean << 8 | last mean. */
+ * 0xFF800068: grabs used << 16 | first mean << 8 | last mean. max = 1: one grab only, to
+ * measure the scene with the AEC already settled. Returns the last mean. aec_ok: a full
+ * settle has run since power-up (the sensor's AEC keeps tracking after that). */
 #define AEC_SPAN     10
 #define AEC_MAX      75
-static void aec_settle(void)
+static int aec_ok;
+static unsigned long aec_settle(unsigned int max)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
     const volatile unsigned char *y = (const volatile unsigned char *)CUR_Y;
@@ -770,7 +791,7 @@ static void aec_settle(void)
     unsigned int n, i;
     unsigned long mean = 0, first = 0, old, sum;
 
-    for (n = 0; n < AEC_MAX; n++) {
+    for (n = 0; n < max; n++) {
         frame_new = 1;              /* a new sensor frame for every grab */
         capture((unsigned char *)CUR_Y, 0, 0, (IMG_H - STRIP_H) / 2, STRIP_H, 0);
         sum = 0;
@@ -789,6 +810,9 @@ static void aec_settle(void)
         hist[n % AEC_SPAN] = (unsigned char)mean;
     }
     st[26] = ((unsigned long)n << 16) | ((first & 0xFF) << 8) | (mean & 0xFF);
+    if (max > 1)
+        aec_ok = 1;
+    return mean;
 }
 
 static unsigned int have_ref, full_id, since_full;
@@ -812,7 +836,8 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
          * measured yet: grab once only to measure, so the first picture is balanced too
          * (the CC1110 powers the Blackfin per motion event) */
         if (!awb_valid) {
-            aec_settle();
+            if (!aec_ok)
+                aec_settle(AEC_MAX);
             for (row = 0; row < IMG_H; row += STRIP_H)
                 capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
                         (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
@@ -909,7 +934,8 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
 /* whole picture as JPEG into the send buffer: 2 length bytes (little endian), then the JPEG.
  * mode 0 = 320x240 grayscale, 1 = 320x240 colour (full, one restart interval per MCU),
  * 2 = 640x480 colour, 3 = 320x240 colour as a delta against the last picture when
- * possible (see grab_color_delta); modes 1..3 need the SDRAM.
+ * possible (see grab_color_delta), 4 = as 0 lit by the flash, 5/6 = as 3/2 with light and as
+ * 4 in the dark; modes 1..6 need the SDRAM.
  * Returns the number of bytes to send (2 with length 0 on failure) */
 static unsigned int grab_jpeg(unsigned int mode)
 {
@@ -919,7 +945,8 @@ static unsigned int grab_jpeg(unsigned int mode)
     unsigned char *sv = (unsigned char *)STRIP_V;
     unsigned long max, len, w = st[13];
     unsigned char *send = send_buf(&max);
-    unsigned int row, hires = mode == 2, ow = hires ? 2 * OUT_W : OUT_W, oh = hires ? 2 * IMG_H : IMG_H;
+    unsigned int row, hires, ow, oh;
+    int settled = 0;
 
     /* test: 0xFF800034 = 0x80000000 | reg << 8 | value writes one sensor register before
      * the next picture (set over JTAG) */
@@ -931,6 +958,34 @@ static unsigned int grab_jpeg(unsigned int mode)
         send[0] = send[1] = 0;
         return 2;
     }
+    if (mode == 5 || mode == 6) {
+        /* alarm picture: with light as 3 (delta) / 2 (640x480), in the dark as 4 (flash).
+         * Right after power-up the AEC has to settle first (the first picture of a motion
+         * event); after that one grab of the middle strip tells, and a dark scene gets the
+         * full settle below anyway (the light may just have gone off and the exposure is
+         * still short). Fully dark room: Y 4-5, room light: ~100.
+         * 0xFF80007C: dark << 16 | scene mean. */
+        int fresh = !aec_ok;
+        unsigned long m = aec_settle(fresh ? AEC_MAX : 1);
+        int dark = m < DARK_Y;
+        st[31] = ((unsigned long)dark << 16) | m;
+        mode = dark ? 4 : mode == 5 ? 3 : 2;
+        settled = fresh;
+    }
+    if (mode == 4) {
+        /* flash picture, grayscale: colour in the dark is mostly noise and the white balance
+         * of the dark pictures before it gave strong blue/red casts; grayscale is also
+         * smaller over RF. Let the AEC settle first (in the dark: the longest exposure, so
+         * the pulse lights every row), then only the picture's own frame is lit. Not a
+         * delta reference. */
+        if (!settled)
+            aec_settle(AEC_MAX);
+        flash_pic = FLASH_PIC_T;
+        mode = 0;
+    }
+    hires = mode == 2;
+    ow = hires ? 2 * OUT_W : OUT_W;
+    oh = hires ? 2 * IMG_H : IMG_H;
     if (mode == 1 || mode == 3) {
         len = grab_color_delta(send, max, mode == 3);
         st[10] = len;
@@ -941,7 +996,8 @@ static unsigned int grab_jpeg(unsigned int mode)
     if (hires && !awb_valid && !have_ref) {
         /* 640x480 as the first picture after power-up: measure the colour first (no
          * delta reference exists yet, so changing the offset is safe) */
-        aec_settle();
+        if (!aec_ok)
+            aec_settle(AEC_MAX);
         for (row = 0; row < IMG_H; row += STRIP_H)
             capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
                     (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
@@ -959,6 +1015,7 @@ static unsigned int grab_jpeg(unsigned int mode)
             jpeg_rows(strip + 8 * ow, ow);
         }
     }
+    flash_pic = 0;                  /* unused without a whole-frame grab */
     if (mode != 0)
         awb_update();
     len = jpeg_end();
@@ -1029,10 +1086,11 @@ int main(void)
         if (rx & 0x100)
             continue;               /* aborted transfer: keep the same answer */
         st[3] = rx;
-        if (hold && (rx >= 0xD0 && rx <= 0xD3 || (rx & 0xF0) == 0xC0)) {
+        if (hold && (rx >= 0xD0 && rx <= 0xD6 || (rx & 0xF0) == 0xC0)) {
             tx = 0x5A;
-        } else if (rx >= 0xD0 && rx <= 0xD3) {
-            /* 0xD0 grayscale, 0xD1 colour, 0xD2 640x480 colour, 0xD3 colour delta;
+        } else if (rx >= 0xD0 && rx <= 0xD6) {
+            /* 0xD0 grayscale, 0xD1 colour, 0xD2 640x480 colour, 0xD3 colour delta, 0xD4
+             * grayscale with flash, 0xD5/0xD6 alarm pictures (flash in the dark);
              * 0xFF800048 (JTAG test) overrides the mode of 0xD0 */
             size = grab_jpeg(rx == 0xD0 ? st[18] : rx - 0xD0);
             ready = 1;

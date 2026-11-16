@@ -1858,6 +1858,9 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
                                  // busy-waiting. Off: tried 2026-11-16, the camera never woke from the sleep
                                  // timer (no poll after the first) and the flasher's INIT read 0000 until a
                                  // power cycle. Not needed for now: awake idle is already ~3 mA with LD1 off.
+#define BF_AUTO_FLASH 1          // pictures while armed (motion and the idle one): snap_link takes a
+                                 // grayscale flash picture instead when the room is dark (0xD5 for 0xD3,
+                                 // 0xD6 for 0xD2). The flash board is infrared, so nobody sees it
 #define BF_KEEP_ON_S 120        // Blackfin stays powered this long after a picture (~0.14 A), so its
                                  // SDRAM keeps the delta reference and a 0xD3 request within that
                                  // time is sent as a delta; 0 = power off right after each picture
@@ -1893,7 +1896,7 @@ static uint8_t bf_link_xfer(uint8_t tx) {
 
 static uint8_t s_img_blk[BF_IMG_BLOCK];
 
-// One picture from the Blackfin (snap_link.c): cmd 0xD0..0xD3 grabs and encodes it (a few
+// One picture from the Blackfin (snap_link.c): cmd 0xD0..0xD6 grabs and encodes it (a few
 // seconds; the Blackfin does not answer meanwhile), so poll 0xB0/0xA0 until the answer is
 // 0x5A. Then read the length (2 bytes, little endian) and the data, 8 bytes per RF packet
 // (type 0x80, chunk number, length, first/last flags); the gateway places the chunks by
@@ -2339,7 +2342,7 @@ static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
     s_cmd_ack = false;
     if (s_dl_plain[6] <= 1)
         s_armed = s_dl_plain[6] != 0;
-    if (s_dl_plain[7] >= 0xD1 && s_dl_plain[7] <= 0xD3) {
+    if (s_dl_plain[7] >= 0xD1 && s_dl_plain[7] <= 0xD6) {   // 0xD4 flash, 0xD5/0xD6 flash in the dark
         s_dl_cmd = s_dl_plain[7];
         s_cmd_ack = true;
     }
@@ -2452,10 +2455,20 @@ static void cam_alarm_loop(uint16_t *p_seq) {
             if (ev_pic == 1)
                 cmd = 0xD2;
 #endif
+#if BF_AUTO_FLASH
+            if (cmd == 0xD3)
+                cmd = 0xD5;
+            else if (cmd == 0xD2)
+                cmd = 0xD6;
+#endif
             if (ev_pic < 2)
                 ev_pic++;
         } else if (s_armed && BF_ARMED_IDLE_S && idle >= (uint32_t)BF_ARMED_IDLE_S * BF_TICKS_PER_S) {
             cmd = BF_IMG_CMD;
+#if BF_AUTO_FLASH
+            if (cmd == 0xD3)
+                cmd = 0xD5;
+#endif
         }
 
         if (cmd) {
