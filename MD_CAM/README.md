@@ -1,0 +1,100 @@
+# Verisure motion camera (GW MD CAM2)
+
+Open-source firmware for the Verisure **GW MD CAM2** PIR motion camera. When the alarm is armed
+and the PIR sees motion, the camera takes pictures and sends them over 868 MHz to the
+[gateway](../868Receiver/README.md), which publishes them to Home Assistant as a camera entity.
+In the dark it takes grayscale pictures lit by its infrared flash.
+
+## Hardware
+
+| Part | Role |
+| :--- | :--- |
+| **TI CC1110F32** | Radio (868.950 MHz), PIR input, power switching, alarm logic. Programmed through its debug header like the door sensor. |
+| **ADI Blackfin BF512** | Image processing: captures from the sensor, JPEG encoding, deltas, IR flash. Boots from an EN25F20 SPI flash; programmed over JTAG (J5). |
+| **OmniVision OV7955** | VGA camera sensor (TWI address 0x40), parallel data into the Blackfin PPI. |
+| **IS42S16800F** | 16 MB SDRAM on the Blackfin: whole frames, delta reference, send buffer. |
+| **IR flash board** (J2/J3) | Infrared LEDs on Blackfin PF10 + PF12; invisible to the eye. |
+| **PIR** | Motion detector on CC1110 P1_7. |
+
+## What it does
+
+* **Alarm pictures:** armed + motion → a 320x240 picture every ~5 s while motion lasts (the 2nd one
+  640x480), plus one every 30 min while armed. In the dark (scene mean below 40) each picture is a
+  grayscale IR flash picture instead.
+* **Deltas:** while the Blackfin is on, a picture is sent as only the 16x16 blocks that changed;
+  the gateway splices them into its copy of the last full picture.
+* **Pictures on request** from Home Assistant or MQTT: `verisure/<id>/picture/set` with
+  `D1` (full colour), `D2` (640x480), `D3` (delta), `D4` (IR flash, grayscale),
+  `D5`/`D6` (as D3/D2 with light, flash picture in the dark).
+* **Alarm state** from Home Assistant (`verisure/alarm/set` ON/OFF) reaches the camera with the
+  answer to its next poll (every ~30 s and right after each picture).
+* **Picture quality:** whole-frame capture (no motion smear), 2x2 averaging, lens shading
+  correction, saturation, sharpening, JPEG Q65.
+* **Speed:** a 320x240 picture (~8 KB) arrives 5–8 s after the command, 640x480 (~18 KB) in ~12 s
+  (56-byte radio packets with 40 bytes of JPEG each).
+* **Power:** the Blackfin (~0.14 A) is powered only for pictures and 15 s after; the CC1110 sleeps
+  in PM2 otherwise (idle below 1 mA on the bench supply; exact figure pending). A watchdog
+  restarts the CC1110 if it ever hangs.
+
+The protocol between the parts and over the air is described in
+[docs/Kamera_protokoll.md](docs/Kamera_protokoll.md).
+
+## Build and flash
+
+### CC1110 firmware (`firmware/`)
+
+Needs SDCC, Python 3 and the ESP_CC_Flasher (by USB serial or over Wi-Fi, `CC_HOST`). Set the
+camera's device ID in `build_and_flash_md_cam.py` (`DEVICE_ID`); the device key is derived from
+the master key in `868Receiver/src/secrets.h` and written to `firmware/config.h` (git-ignored).
+
+```bash
+python MD_CAM/build_and_flash_md_cam.py --serial COM12
+```
+
+The script prints the master key's check value (KCV) so it can be compared with the gateway's
+`status` output without showing the key.
+
+### Blackfin program (`blackfin/`)
+
+Needs the ADI Blackfin GCC toolchain (`bfin-elf-gcc`), an FT232H on the JTAG header J5,
+`bfin-gdbproxy` in WSL and `usbipd` to attach the FT232H to WSL.
+
+```bash
+cd MD_CAM/blackfin
+python build_ldr.py snap_link.c jpeg_enc.c      # -> build/snap_link.ldr (built with -O2)
+MSYS_NO_PATHCONV=1 bash jtag/bf_flash.sh         # writes it to the boot flash at 0x8000
+```
+
+The Blackfin must be powered while flashing: request a picture first (the CC1110 keeps it on for
+15 s after it, and a flash takes ~90 s, so request one right before). `jtag/jtag_common.sh`
+describes the one-time WSL/usbipd setup. `jtag/bf_read.sh` reads the status words and
+`jtag/bf_set.sh` writes tuning words (sharpening, lens shading, saturation, JPEG quality, delta
+threshold, flash test).
+
+The boot flash holds a small boot selector in sector 0 (`boot_select.S`, written once with
+`flash_sector0.c`): it starts our program at 0x8000 when the CC1110 holds P1_2 high at power-on,
+otherwise the factory firmware kept at 0x10000.
+
+## Test
+
+With the camera powered and the gateway on USB:
+
+```bash
+python MD_CAM/test_camera_e2e.py            # 12 checks: polls, pictures, deltas, flash, alarm
+python MD_CAM/test_camera_e2e.py --gateway-restart
+```
+
+## Files
+
+| Path | Content |
+| :--- | :--- |
+| `firmware/main.c` | CC1110 firmware (alarm loop, radio, downlink, Blackfin power and link, PM2 sleep) |
+| `blackfin/snap_link.c`, `jpeg_enc.c` | Blackfin program: capture, image processing, JPEG, deltas, flash |
+| `blackfin/boot_select.S`, `flash_*.c`, `build_ldr.py`, `bf512_l1.ld` | Boot selector, flash tools, LDR build, linker layout |
+| `blackfin/jtag/` | JTAG helper scripts (flash, read status, write tuning words) |
+| `build_and_flash_md_cam.py` | Build and flash the CC1110 firmware |
+| `dump_cc1110.py` | Read out (back up) the CC1110 flash without erasing it |
+| `test_camera_e2e.py` | End-to-end test through the gateway and MQTT |
+| `docs/` | Protocol, measurements and reverse-engineering notes (mostly Swedish) and images |
+
+Open work, including what needs someone at the bench, is listed in [TODO.md](../TODO.md).

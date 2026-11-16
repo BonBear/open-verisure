@@ -1,4 +1,4 @@
-# Verisure Sub-1GHz Sensor & Home Assistant Gateway
+# Verisure Sub-1GHz Sensors & Home Assistant Gateway
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32--S2-orange.svg)](https://platformio.org/)
@@ -6,295 +6,128 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20Discovery-41BDF5.svg)](https://www.home-assistant.io/)
 [![Sub-1GHz](https://img.shields.io/badge/RF-868.950%20MHz-green.svg)](https://www.ti.com/product/CC1101)
 
-Repurpose and liberate your **Verisure Sub-1GHz (868.950 MHz) Door & Window Sensors** (and Motion Cameras) with custom, high-performance open-source firmware and bridge them directly into **Home Assistant** via an **ESP32-S2 + CC1101 Gateway** with zero cloud dependencies and zero subscriptions.
+Repurpose **Verisure Sub-1GHz (868.950 MHz) alarm hardware** with open-source firmware and bridge
+it into **Home Assistant** through an **ESP32-S2 + CC1101 gateway**: local, no cloud, no subscription.
 
 > [!NOTE]
-> **Minska elavfall (Reducing E-Waste):** Detta projekt startades i grunden för att minska elavfall (e-waste) och ge nytt liv åt överbliven larmhårdvara som annars bara låg hemma och skräpade i en byrålåda. Istället för att slängas förvandlas sensorerna till pålitliga, lokala och abonnemangsfria komponenter i det smarta hemmet.
+> **Minska elavfall (reducing e-waste):** the project started as a way to give leftover alarm
+> hardware a second life instead of throwing it away. The devices become reliable, local and
+> subscription-free parts of the smart home.
 
 ---
 
-## 🌟 Key Features
+## Components
 
-* **100% Local & Cloud-Free:** Complete privacy and independence from proprietary alarm vendor clouds and monthly subscriptions.
-* **Instantaneous Response (< 2 ms):** Near zero-latency interrupt response on Door Open/Close, Shock/Vibration, and Tamper.
-* **Home Assistant MQTT Auto-Discovery:** Automatic discovery for all entities upon power-on. No manual YAML configuration required!
-* **Robust Hardware AES-128 Encryption:** Hardware-accelerated AES-128-ECB encryption on the CC1110 SoC with per-device Key Derivation (KDF), anti-spoofing header verification, and 16-bit rolling sequence replay protection.
-* **Multi-Sensor Telemetry:**
-  * 🚪 **Door / Window Contact** (`binary_sensor`, `device_class: door`)
-  * 💥 **Vibration / Shock Sensor** (`binary_sensor`, `device_class: vibration`)
-  * 🛡️ **Tamper / Sabotage Switch** (`binary_sensor`, `device_class: tamper`, diagnostic)
-  * 🔋 **Battery Level** (`sensor`, `device_class: battery`, `%`)
-  * ⚡ **Battery Voltage** (`sensor`, `device_class: voltage`, `mV`)
-  * 📶 **Signal Strength** (`sensor`, `device_class: signal_strength`, `dBm`)
-* **Interference-Free Wi-Fi & SPI Coexistence:** Custom ADC1-domain pin mapping on the ESP32-S2 that eliminates SPI switching noise leakage into the Wi-Fi receiver, guaranteeing 100% reliable 2.4 GHz connectivity.
-* **Embedded Web Management Portal:** Built-in web dashboard on Port 80 with Captive Portal DNS for easy Wi-Fi, MQTT, and AES key configuration.
-* **Smart Tooling:** Python automation scripts with auto-discovery and interactive selection of USB COM ports.
+| Component | Folder | Hardware | Status |
+| :--- | :--- | :--- | :--- |
+| **Gateway** | [`868Receiver/`](868Receiver/README.md) | LOLIN S2 Mini (ESP32-S2) + CC1101 868 MHz | ✅ Working: decrypts sensors, MQTT auto-discovery, camera downlink, picture reassembly |
+| **Door / window sensor** | [`VerisureDoorSensor/`](VerisureDoorSensor/README.md) | Verisure `GW-MC-SHOCK`, TI CC1110F32 | ✅ Working: contact, shock, tamper, battery |
+| **Motion camera** | [`MD_CAM/`](MD_CAM/README.md) | Verisure `GW MD CAM2`: CC1110F32 + Blackfin BF512 + OV7955 + IR flash + PIR | ✅ Working: alarm pictures, deltas, IR flash in the dark, PM2 sleep; bench tests pending |
+| Siren | [`SIREN/`](SIREN/README.md) | Verisure siren | 🔍 Research photos only |
 
 ---
 
-## 🏗️ System Architecture
+## System architecture
 
 ```mermaid
 flowchart LR
-    subgraph SENSOR["Verisure Sensor (TI CC1110)"]
-        Reed["Reed Switch\n(P1_7)"]
-        Shock["Shock Sensor\n(P1_2)"]
-        Tamper["Tamper Switch\n(P0_1)"]
-        ADC["Battery ADC\n(VDD/3)"]
-        
-        Reed & Shock & Tamper & ADC --> Payload["Telemetry Assembler\n(24 Bytes)"]
-        Payload --> Crypto["AES-128 Coprocessor\n(Device Key via KDF)"]
-        Crypto --> DMA["DMA Trigger 19\n(RFD FIFO)"]
-        DMA --> CC1110_RF["CC1100 Core\n868.950 MHz (27 MHz X1)"]
+    subgraph DOOR["Door sensor (CC1110)"]
+        D["Reed / shock / tamper\nbattery ADC"] --> DA["AES-128\n(device key)"]
     end
-
-    subgraph GW["ESP32-S2 Gateway"]
-        CC1101_RF["CC1101 Module\n(868.950 MHz SPI)"] --> ESP_CORE["ESP32-S2 Mini\n(ADC1 Domain)"]
-        ESP_CORE --> Decrypt["mbedTLS AES-128\n& Replay Filter"]
-        Decrypt --> Discovery["HA Auto-Discovery\n& Telemetry Builder"]
-        Discovery --> WebPortal["Web Portal (Port 80)\n& Serial CLI"]
-        Discovery --> MQTTClient["MQTT Client (PubSubClient)"]
+    subgraph CAM["Motion camera"]
+        PIR["PIR"] --> CC["CC1110\n(radio, power, alarm logic)"]
+        BF["Blackfin BF512\nOV7955 sensor, JPEG,\ndeltas, IR flash"] <-->|"software SPI"| CC
     end
-
-    subgraph HA["Smart Home Ecosystem"]
-        Broker["Mosquitto MQTT Broker\n(Port 1883)"] --> HACore["Home Assistant Core"]
-        HACore --> Dashboard["Lovelace UI\n(Door, Shock, Tamper, Batt)"]
+    subgraph GW["Gateway (ESP32-S2 + CC1101)"]
+        RX["58-byte RX frames\nsoftware CRC"] --> DEC["AES-128, replay filter"]
+        DEC --> IMG["Picture reassembly\n(deltas spliced)"]
+        DEC --> MQ["MQTT + HA discovery"]
+        IMG --> MQ
+        MQ --> DL["Downlink:\nalarm state, picture commands"]
     end
-
-    CC1110_RF -.->|Sub-1GHz RF 2-FSK| CC1101_RF
-    MQTTClient -->|TCP / MQTTS| Broker
+    DA -.->|"24-byte packets"| RX
+    CC -.->|"24-byte telemetry/poll\n56-byte picture packets"| RX
+    DL -.->|"24-byte answer to each poll"| CC
+    MQ <-->|"MQTT"| HA["Home Assistant"]
 ```
+
+All devices send on **868.950 MHz, 38.4 kBaud 2-FSK**. Every packet starts with the device ID in
+plain text, followed by AES-128 with a per-device key derived from one master key.
 
 ---
 
-## 📁 Repository Structure
+## Repository structure
 
 ```text
-├── VerisureDoorSensor/          # MCS-51 8051 firmware for the CC1110 sensor
-│   ├── main.c                   # Main sensor application, RF engine & AES
-│   ├── config.h.example         # Template for Device ID & derived AES key
-│   └── build/                   # SDCC build output directory (git-ignored)
-├── 868Receiver/                 # PlatformIO project for the ESP32-S2 Gateway
-│   ├── platformio.ini           # Build environment for WEMOS LOLIN S2 Mini
-│   └── src/
-│       ├── main.cpp             # Gateway core, CC1101 driver & main loop
-│       ├── hardware_pins.h      # Isolated ADC1 SPI pin definitions
-│       ├── crypto.h / .cpp      # AES-128 decryption, KDF & replay protection
-│       ├── ha_discovery.h/.cpp  # Home Assistant MQTT discovery payloads
-│       ├── mqtt_manager.h/.cpp  # MQTT client, LWT & state publisher
-│       ├── sensor_registry.h/.cpp # RAM sensor cache & packet statistics
-│       ├── config_manager.h/.cpp# NVS persistent configuration storage
-│       ├── serial_cli.h/.cpp    # USB Serial interactive CLI diagnostics
-│       ├── web_portal.h/.cpp    # Web management portal & Captive DNS
-│       └── secrets.h.example    # Template for local Wi-Fi & MQTT secrets
-├── documentation/               # Comprehensive technical guides & schematics
-│   ├── images/                  # Illustrated wiring diagrams
-│   ├── hardware_gateway_esp32s2.md # Gateway hardware & ADC1 analysis
-│   ├── hardware_cc_flasher.md   # CC Flasher wiring & J2 debug pinout
-│   ├── verisure_sensor_hardware.md # Reverse-engineered sensor schematic
-│   ├── cryptography_and_protocol.md # RF packet framing, registers & KDF
-│   ├── homeassistant_mqtt.md    # Home Assistant integration & MQTT topics
-│   └── README.md                # Documentation index
-├── build_and_flash.py           # All-in-one compile, HTTP flash & verify script
-├── derive_key.py                # AES-128 Key Derivation Tool (KDF)
-├── monitor.py                   # Real-time USB Serial monitor for gateway
-├── port_selector.py             # Smart COM-port discovery & interactive menu
-├── LICENSE                      # MIT Open-Source License
-├── CONTRIBUTING.md              # Contribution guidelines
-└── SECURITY.md                  # Security policy and credential protection
+├── 868Receiver/          Gateway firmware (PlatformIO, ESP32-S2)          → 868Receiver/README.md
+├── VerisureDoorSensor/   Door/window sensor firmware (SDCC, CC1110) + docs → VerisureDoorSensor/README.md
+├── MD_CAM/               Motion camera: CC1110 firmware, Blackfin program,
+│                         JTAG tools, e2e test, docs                       → MD_CAM/README.md
+├── SIREN/                Siren research photos                            → SIREN/README.md
+├── documentation/        Shared docs: protocol & crypto, CC flasher, gateway hardware, HA/MQTT
+├── build_and_flash.py    Build + flash + verify the door sensor (via ESP_CC_Flasher)
+├── derive_key.py         Master key generation and per-device key derivation (KDF)
+├── monitor.py            Gateway serial monitor
+├── port_selector.py      COM-port discovery used by the scripts
+├── TODO.md               Open work: what can be done unattended and what needs someone at the bench
+└── AGENTS.md             Roles and quality gates for the AI agents working on the project
 ```
 
 ---
 
-## 🎯 Supported Sensors & Devices
+## Quick start
 
-| Model | Type | SoC / MCU | Frequency | Built-in Features | Support Status |
-| :--- | :--- | :---: | :---: | :--- | :---: |
-| **`GW-MC-SHOCK`** | Door & Window Sensor | TI CC1110F32 (8051) | 868.950 MHz | Magnetic Reed, Piezo Shock, Tamper Switch, Battery (mV & %) | ✅ **Fully Supported** |
-
----
-
-## 🛠️ Hardware Requirements & Bill of Materials
-
-| Component | Description | Approximate Cost |
-| :--- | :--- | :--- |
-| **Verisure Sensor** | **GW-MC-SHOCK** (Door/Window & Shock Sensor with CC1110F32). | Repurposed / Existing |
-| **ESP32-S2 Board** | **WEMOS LOLIN S2 Mini** (ESP32-S2FN4R2, 4MB Flash, Type-C). | ~$3 - $5 |
-| **Sub-1GHz Module**| **CC1101 868 MHz SPI Transceiver** (Red or green PCB with SMA antenna). | ~$3 - $5 |
-| **CC Programmer**   | **ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)** (or TI CC-Debugger) connected to sensor J2 header. | ~$4 |
-| **Jumper Wires**   | Female-to-Female & Jumper probe pins for sensor flashing header J2. | ~$1 |
-
----
-
-## 🔌 Hardware Wiring & Pinouts
-
-### 1. Gateway Wiring: LOLIN S2 Mini $\rightarrow$ CC1101 SPI
-
-> [!IMPORTANT]
-> The CC1101 SPI bus **must** be connected to **ADC1 pins** (GPIO 3, 5, 7, 9). Do **not** use default FSPI pins on GPIO 11/12 as high-speed SPI noise will disrupt the ESP32-S2 Wi-Fi receiver.
-
-| ESP32-S2 Pin | Domain | CC1101 Pin | Wire Color | Description |
-| :---: | :---: | :---: | :---: | :--- |
-| **3V3** | Power | **VCC** | 🔴 Red | 3.3V Power Supply |
-| **GND** | Power | **GND** | ⚫ Black | Ground Reference |
-| **GPIO 3** | ADC1_CH2 | **CSN / SS** | 🟠 Orange | SPI Chip Select (Active LOW) |
-| **GPIO 5** | ADC1_CH4 | **MOSI** | 🔵 Blue | SPI Master Out Slave In |
-| **GPIO 7** | ADC1_CH6 | **SCK** | 🟡 Yellow | SPI Clock (up to 10 MHz) |
-| **GPIO 9** | ADC1_CH8 | **MISO** | 🟢 Green | SPI Master In Slave Out / GDO1 |
-
-![Gateway Wiring Diagram](documentation/images/wiring_gateway_s2mini_cc1101.jpg)
-
----
-
-### 2. Sensor Flashing: ESP_CC_Flasher $\rightarrow$ Verisure J2 Header
-
-The Verisure sensor features a 7-pad unpopulated programming header labeled **`J2`**. Pin 1 has a square pad.
-
-| ESP32 Flasher Pin | Verisure J2 Pad | Signal Name | Wire / Function |
-| :---: | :---: | :---: | :---: |
-| **3V3** | **Pad 3** | VCC (Target Power) | 🔴 Red (3.3V) |
-| **GPIO 19** | **Pad 4** | DC (Debug Clock) | 🟡 Yellow (CC_DC) |
-| **GPIO 23** | **Pad 5** | DD (Debug Data) | 🔵 Blue (CC_DD) |
-| **GPIO 33** | **Pad 6** | RESET_N | 🟢 Green (CC_RST) |
-| **GND** | **Pad 7** | Ground | ⚫ Black (GND) |
-
-![CC Flasher Wiring Diagram](documentation/images/wiring_cc_flasher_j2.jpg)
-
----
-
-## 🚀 Quick Start Guide
-
-### Step 1: Clone the Repository & Install Toolchains
-
-```bash
-git clone https://github.com/BonBear/open-verisure.git
-cd open-verisure
-```
-
-**Prerequisites:**
-* [Python 3.8+](https://www.python.org/) with dependencies:
-  ```bash
-  pip install pyserial requests cryptography
-  ```
-* [Small Device C Compiler (SDCC)](https://sdcc.sourceforge.net/) for CC1110 8051 compilation:
-  * Windows: Download installer from SourceForge or install via Chocolatey (`choco install sdcc`).
-  * Linux: `sudo apt install sdcc`
-* [PlatformIO](https://platformio.org/) for ESP32-S2 gateway compilation (or install PlatformIO IDE extension in VSCode).
-* **ESP32 CC-Flasher Programmer:** An ESP32 board running [atc1441/ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher) connected to your local Wi-Fi (reachable at `http://cc.local`). Used to flash the CC1110 sensor via HTTP.
-  ```bash
-  pip install platformio
-  ```
-
----
-
-### Step 2: Generate Master Key & Configure Secrets
-
-Security in the ecosystem begins with your **Master AES-128 Key**. All individual sensor encryption keys are derived from this Master Key, so it **must be generated and configured first** before creating any sensor firmware.
-
-1. **Generate a Random 128-Bit Master AES Key:**
+1. **Toolchains:** Python 3.8+ (`pip install pyserial requests cryptography paho-mqtt`),
+   [SDCC](https://sdcc.sourceforge.net/) for the CC1110 devices, [PlatformIO](https://platformio.org/)
+   for the gateway, and an ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)
+   to program the CC1110 boards.
+2. **Master key and secrets:**
    ```bash
    python derive_key.py --generate-master
-   ```
-   This generates a secure 32-character hexadecimal key, for example:
-   ```text
-   [+] Generated Random 128-Bit Master Key (Hex):
-       53D6D35E692885FAF186522FF5971BD9
-   ```
-
-2. **Configure Gateway Secrets (`secrets.h`):**
-   Copy the example template:
-   ```bash
    cp 868Receiver/src/secrets.h.example 868Receiver/src/secrets.h
    ```
-   Edit `868Receiver/src/secrets.h` with your editor:
-   * Set `MASTER_KEY_HEX` to your newly generated 32-character Master Key.
-   * Set `DEFAULT_WIFI_SSID` and `DEFAULT_WIFI_PASS` to your 2.4 GHz Wi-Fi credentials.
-   * Set `DEFAULT_MQTT_HOST`, port, and credentials for your Home Assistant MQTT broker.
-   *(Note: `secrets.h` is git-ignored and will never be committed).*
-
-3. **Derive Your Sensor Device Key:**
-   Find the 8-character ID printed on your physical sensor casing or sticker (e.g. `2JHL 2MVN`):
-   ```bash
-   python derive_key.py --id "2JHL 2MVN" --write-config
-   ```
-   `derive_key.py` automatically reads your configured `MASTER_KEY_HEX` from `868Receiver/src/secrets.h`, derives the unique 16-byte device encryption key, and writes `VerisureDoorSensor/config.h` (also git-ignored).
+   Put the master key, Wi-Fi and MQTT settings in `868Receiver/src/secrets.h` (git-ignored).
+   Every device key is derived from the master key, so generate it before building any device.
+3. **Gateway:** `pio run -d 868Receiver -t upload`, then open `http://<gateway-ip>`.
+   Details: [868Receiver/README.md](868Receiver/README.md).
+4. **Devices:** follow [VerisureDoorSensor/README.md](VerisureDoorSensor/README.md) and
+   [MD_CAM/README.md](MD_CAM/README.md).
+5. **Home Assistant:** devices appear under *Settings → Devices & services → MQTT* on their first
+   packet (MQTT auto-discovery, no YAML).
 
 ---
 
-### Step 3: Build & Flash the Gateway
+## Security
 
-Flash the ESP32-S2 gateway first so that it is online and listening for RF packets when you flash your sensor:
-
-Connect the LOLIN S2 Mini via USB (e.g. `COM9`) and flash:
-```bash
-pio run -d 868Receiver -t upload
-```
-* The gateway boots, connects to Wi-Fi, registers with MQTT, and publishes Home Assistant discovery topics.
-* Open the Web Management Portal at `http://<gateway-ip>` (e.g. `http://192.168.0.142`) to verify the status.
-
----
-
-### Step 4: Build, Flash & Verify the Sensor
-
-With the ESP32 CC-Flasher connected to your network (`http://cc.local`), run:
-
-```bash
-python build_and_flash.py
-```
-
-The automation script will:
-1. Compile `VerisureDoorSensor/main.c` with SDCC using the newly generated `config.h`.
-2. Upload the binary to the CC-Flasher via HTTP and program the CC1110 flash memory.
-3. Release the CC1110 reset line to begin execution.
-4. Open the gateway serial port and monitor RF reception in real-time to confirm instant cryptographic authentication!
+* **AES-128** on every packet, hardware AES on the CC1110 and mbedTLS on the gateway.
+* **Per-device keys:** `DeviceKey = AES(MasterKey, Pad16(DeviceID))`; one compromised device does
+  not expose the others.
+* **Authentication:** decrypted packets must contain the magic bytes `VS` and echo the device ID;
+  camera picture packets are chained (CBC) so blocks cannot be swapped between packets.
+* **Replay protection:** 16-bit rolling sequence per device; camera downlink answers carry the
+  poll's sequence and a random challenge.
+* **No secrets in git:** `secrets.h` and `config.h` are git-ignored. See [SECURITY.md](SECURITY.md).
 
 ---
 
-### Step 5: Home Assistant Integration
+## Documentation
 
-Once the gateway is powered on and a sensor transmits:
-1. Open **Home Assistant** $\rightarrow$ **Settings** $\rightarrow$ **Devices & Services** $\rightarrow$ **MQTT**.
-2. You will see the **`Verisure 868 Gateway`** device.
-3. The sensor automatically appears as a dedicated device (e.g. **`Verisure Sensor 2JHL2MVN`**) with all 6 entities configured and ready for dashboards and automations!
-
----
-
-## 🔒 Security Architecture
-
-The communication link employs a defense-in-depth security model:
-* **AES-128 Encryption:** Payload is encrypted using hardware-accelerated AES-128.
-* **Key Derivation (KDF):** Every physical sensor node uses a unique derived key ($DeviceKey = AES(MasterKey, Pad16(DeviceID))$). Compromising one sensor node does not expose any other sensors.
-* **Anti-Spoofing Verification:** Decrypted payloads require magic bytes (`VS`) and must echo the plaintext Device ID.
-* **Replay Protection:** A 16-bit rolling sequence counter rejecting duplicate or older frames protects against RF capture and replay attacks.
-* **Zero Leaked Secrets:** All encryption keys, Wi-Fi credentials, and passwords are separated into `.gitignore` files (`secrets.h`, `config.h`).
+* [Protocol, RF & cryptography](documentation/cryptography_and_protocol.md)
+* [Gateway hardware & wiring](documentation/hardware_gateway_esp32s2.md)
+* [CC-Flasher wiring (J2 header)](documentation/hardware_cc_flasher.md)
+* [Home Assistant & MQTT](documentation/homeassistant_mqtt.md)
+* [Door sensor hardware](documentation/verisure_sensor_hardware.md)
+* [Camera protocol as implemented](MD_CAM/docs/Kamera_protokoll.md) (Swedish)
 
 ---
 
-## 📖 Deep-Dive Documentation
+## Contributing
 
-For advanced hardware schematics, register details, and RF analysis:
-* 📄 [Gateway Hardware & ADC1 Interference Guide](documentation/hardware_gateway_esp32s2.md)
-* 📄 [CC-Flasher Wiring & Pinout Guide](documentation/hardware_cc_flasher.md)
-* 📄 [Verisure Sensor Reverse-Engineering & Schematics](documentation/verisure_sensor_hardware.md)
-* 📄 [RF Protocol, CC1101 Register Map & Cryptography](documentation/cryptography_and_protocol.md)
-* 📄 [Home Assistant & MQTT Integration Guide](documentation/homeassistant_mqtt.md)
+Contributions are welcome, especially support for more Verisure Sub-1GHz devices (smoke
+detectors, keypads, sirens, water leak sensors). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
----
+## License & disclaimer
 
-## 🤝 Contributing
-
-Contributions are warmly welcomed! We are actively looking to reverse-engineer and support more Verisure Sub-1GHz hardware variants, including:
-* Smoke & Heat Detectors
-* PIR Motion Detectors (with/without camera)
-* Alarm Keypads & Sirens
-* Water Leak Detectors
-
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on submitting pull requests and hardware dumps.
-
----
-
-## ⚖️ License & Disclaimer
-
-This project is open-source software licensed under the **[MIT License](LICENSE)**.
-
-**Disclaimer:** This is an independent open-source research and reverse-engineering project. It is not affiliated with, authorized, maintained, sponsored, or endorsed by Verisure, Securitas Direct, or any of their affiliates. All product names, trademarks, and registered trademarks are property of their respective owners.
+[MIT License](LICENSE). Independent research and reverse-engineering project, not affiliated with,
+authorised or endorsed by Verisure, Securitas Direct or their affiliates. Product names and
+trademarks belong to their owners.

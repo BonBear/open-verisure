@@ -1,6 +1,6 @@
 # Projektöversikt: Verisure CC1110 till ESP32-C3 (CC1101) RF-länk
 
-Detta dokument är huvudindex för projektet. För att spara kontextfönster är den tekniska dokumentationen i `docs/` uppdelad i modulära filer. Läs endast in de underfiler eller bilder som behövs för den aktuella uppgiften.
+Detta dokument är huvudindex för projektet. För att spara kontextfönster är den tekniska dokumentationen i `VerisureDoorSensor/docs/` uppdelad i modulära filer. Läs endast in de underfiler eller bilder som behövs för den aktuella uppgiften.
 
 ---
 
@@ -29,14 +29,14 @@ Detta dokument är huvudindex för projektet. För att spara kontextfönster är
 
 ---
 
-## 3. Modulärt Filindex i `docs/` (Lazy-Loading Guide)
+## 3. Modulärt Filindex i `VerisureDoorSensor/docs/` (Lazy-Loading Guide)
 
 * **`verisure_door_sensor_guide.md`** $\rightarrow$ **Komplett huvuddokumentation:** Detaljerad genomgång av hårdvaran, pinouts, knapp (`SW1`), magnetkontakt, skaksensor, J2-kontakten för flashning, 27 MHz-kristallberäkningar, `FSCAL0` vs `PA_TABLE0`-fällan, DMA Trigger 19 och telemetriprotokollet (med inbäddade bilder).
 * **`hardware_mapping.md`** $\rightarrow$ *Öppna när du arbetar med GPIO, sensorer (`P1_7` reed, `P1_2` shock, knapp via `RESET_N`), lysdioder (`P0_2`/`P0_4`), SPI-koppling på ESP32-C3 eller RF-hårdvaran (`U2` SAW-filter).*
 * **`registers.md`** $\rightarrow$ *Öppna när du konfigurerar eller verifierar radioregistren (`FREQ`, `MDMCFG`, `DEVIATN`, `PKTCTRL`, `PA_TABLE0`).*
 * **`cc1110_quirks_and_dma.md`** $\rightarrow$ *Öppna när du skriver sändningslogik i C för CC1110, sätter upp DMA Kanal 0 (Trigger 19), hanterar SDCC-kompilatorflaggor eller automatiserar flashning mot `http://cc.local`.*
 
-### Bildfiler i `docs/` (Öppna vid behov av visuell hårdvaruverifiering)
+### Bildfiler i `VerisureDoorSensor/docs/` (Öppna vid behov av visuell hårdvaruverifiering)
 * `pcb_bottom_mapped.png`: Översikt över baksidan med mappning av J2-kontakten, U1, batterianslutningar och sensorer.
 * `fig_j2_connector_detail.jpg`: Detaljerad närbild på J2-flashningskontakten (Pin 1 kvadratisk padd).
 * `fig_top_sensors_sw1.jpg`: Detaljerad närbild på ovansidan: batteriklämma, knapp `SW1` och reed-kontakt.

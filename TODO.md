@@ -13,6 +13,7 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 - [x] **Städning i CC1110-firmware.** 2026-11-16: inaktuella kommentarer rättade (paketformat 0x82, 640-bild ~12 s). Testverktygen bakom avstängda brytare (pinnvandring, SPI-test, prober, U3-dump, rå-tiles) är kvar; om de ska bort är ett beslut för dig, se B7.
 - [x] **Optimeringsflaggor för snap_link.** Klart 2026-11-16: -O2, fångst+kodning 3–4x snabbare (320: 0,86 -> 0,29 s, 640: 2,61 -> 0,60 s).
 - [x] **Korta Blackfins uppstartsväntan.** Klart 2026-11-16: fast väntan (~3 s) ersatt med ping (0xE5 -> 0xA5) efter ~140 ms; snap_link svarar efter ~1,2 s (37 pingar). Kall bild 8 s -> 6–7 s från kommando, ~2 s mindre Blackfin-tid per larmhändelse. e2e 11/11.
+- [ ] **Dörrsensorn sover inte.** `VerisureDoorSensor/main.c` läser reed/sabotage/skak varje ms i en aktiv loop (ingen PM2, inga avbrott), vilket begränsar batteritiden. Inför PM2 med port-avbrott (P1_7, P1_2, P0_1) och sömntimer för hjärtslaget, med watchdog som i kameran. Kräver en dörrsensor på flashern för test.
 - [ ] **Exponeringen efter kallstart.** Första deltan efter en kall bild har 130–150 ändrade block av 300 (nästan gränsen för hel bild): sensorns AEC rör sig fortfarande när `aec_settle` har slutat. Undersök ett striktare stoppvillkor eller att låsa exponeringen mellan bilderna i en händelse.
 - [ ] **Omsändning av saknade bildpaket** (gatewayen begär saknade paketnummer vid nästa poll; Blackfin har bilden i 120 s). Görs om räckviddstestet (B5) visar förluster.
 
