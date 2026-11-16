@@ -556,9 +556,11 @@ static void transmit_big_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk_l
 #define BF_AUTO_FLASH 1          // pictures while armed (motion and the idle one): snap_link takes a
                                  // grayscale flash picture instead when the room is dark (0xD5 for 0xD3,
                                  // 0xD6 for 0xD2). The flash board is infrared, so nobody sees it
-#define BF_KEEP_ON_S 120        // Blackfin stays powered this long after a picture (~0.14 A), so its
+#define BF_KEEP_ON_S 15         // Blackfin stays powered this long after a picture (~0.14 A), so its
                                  // SDRAM keeps the delta reference and a 0xD3 request within that
                                  // time is sent as a delta; 0 = power off right after each picture
+                                 // (120 s until 2026-11-16: it cost ~17 As per picture, ~20x a cold picture
+                                 // of ~6 s now; to be decided again after measuring with the Otii)
 
 // Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
 // P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
