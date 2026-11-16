@@ -18,7 +18,7 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 
 ## B. Behöver dig
 
-- [ ] **0. Huvudnyckeln har läckt (brådskande).** Den riktiga huvudnyckeln stod som "exempel" i två dokument som legat på publika `origin/main` sedan 2026-10-22 (nu ersatt med platshållare i commit 75062aa, inte pushad, finns kvar i historiken). Beslut: (a) byta huvudnyckel: ny nyckel i gatewayens `secrets.h`, nya `config.h` och omflashning av alla sensorer och kameran; (b) skriva om git-historiken och force-pusha, eller låta den vara när nyckeln ändå byts.
+- [ ] **0. Byt huvudnyckel före driftsättning.** Den nuvarande nyckeln har legat i två dokument på publika `origin/main` sedan 2026-10-22 (ersatt med platshållare i commit 75062aa, finns kvar i git-historiken). Inte allvarligt så länge systemet inte används på riktigt, men innan det tas i drift: ny nyckel (`python derive_key.py --generate-master`) i gatewayens `secrets.h`, nya `config.h` och omflashning av gatewayen, alla sensorer och kameran.
 
 - [ ] **1. Viloström med Otii.** Firmware sover nu i PM2 när Blackfin är av; nätaggregatet visar bara "under 1 mA".
   - Mät i serie vid 3,0 V minst 2 min i vila (larm av): snitt, golv, toppar för pollen (var ~28 s, sändning + ~110 ms lyssning) och uppvakningen var 0,5 s.
