@@ -36,6 +36,13 @@ static uint16_t s_jpgMissing = 0;
 static uint8_t* s_jpgLarge = nullptr;        // last finished picture wider than 320
 static size_t s_jpgLargeLen = 0;
 static uint16_t s_jpgLargeMissing = 0;
+// grayscale picture without COM id (a flash picture in the dark): kept apart from the colour
+// base so the next delta still applies, and served by /api/camera.jpg while it is the newest
+#define GRAY_MAX 16384
+static uint8_t* s_jpgGray = nullptr;
+static size_t s_jpgGrayLen = 0;
+static uint16_t s_jpgGrayMissing = 0;
+static bool s_grayNewest = false;
 static uint8_t* s_tmp = nullptr;             // splice output, swapped with s_jpg
 static int s_baseId = -1;                    // COM id of the full picture deltas apply to
 static uint16_t s_deltaCount = 0;            // deltas applied since the last full picture
@@ -115,6 +122,7 @@ static void jpegFinish(size_t len, bool endSeen = true) {
             s_tmp = t;
             s_jpgLen = n;
             s_deltaCount++;
+            if (updated) s_grayNewest = false;
             if (updated && !mqttPublishCameraImage(s_activeDeviceId, s_jpg, n))
                 Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
         }
@@ -132,7 +140,15 @@ static void jpegFinish(size_t len, bool endSeen = true) {
     } else if (s_baseId >= 0 && jpegCommentId(s_imgBuf, len) < 0) {
         // no COM id (grayscale, e.g. a flash picture 0xD4): published below, but the colour
         // picture stays the base for the camera's next delta
+        if (!s_jpgGray) s_jpgGray = allocBig(GRAY_MAX);
+        if (s_jpgGray && len <= GRAY_MAX) {
+            memcpy(s_jpgGray, s_imgBuf, len);
+            s_jpgGrayLen = len;
+            s_jpgGrayMissing = missing;
+            s_grayNewest = true;
+        }
     } else {
+        s_grayNewest = false;
         memcpy(s_jpg, s_imgBuf, len);
         s_jpgLen = len;
         s_jpgMissing = missing;
@@ -197,6 +213,11 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
 }
 
 const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing) {
+    if (s_grayNewest && s_jpgGrayLen) {
+        if (len) *len = s_jpgGrayLen;
+        if (missing) *missing = s_jpgGrayMissing;
+        return s_jpgGray;
+    }
     if (len) *len = s_jpgLen;
     if (missing) *missing = s_jpgMissing;
     return s_jpgLen ? s_jpg : nullptr;

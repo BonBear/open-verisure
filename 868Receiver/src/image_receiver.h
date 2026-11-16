@@ -27,7 +27,8 @@ void imageReceiverInit(void);
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
                                bool isFirst, bool isLast, const uint8_t* data, uint8_t chunkSize);
 
-/** Last finished JPEG (nullptr if none yet); missing = chunks that never arrived (zeros). */
+/** Newest 320x240 picture: the colour picture (with deltas spliced in) or, if it came later, a
+ *  grayscale flash picture (nullptr if none yet); missing = chunks that never arrived (zeros). */
 const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing);
 
 /** Last finished JPEG wider than 320 pixels (640x480), nullptr if none yet. */

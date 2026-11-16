@@ -5,7 +5,7 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 
 ## A. Claude kan göra autonomt
 
-- [ ] **Visa blixtbilder på gatewayens webbsida.** `/api/camera.jpg` visar fortfarande senaste färgbilden; svartvita blixtbilder (0xD4/0xD5 i mörker) går bara till MQTT.
+- [x] **Visa blixtbilder på gatewayens webbsida.** Klart 2026-11-16: `/api/camera.jpg` visar den nyaste av färgbilden och blixtbilden (verifierat D1 -> färg, D4 -> svartvit, D1 -> färg). `/api/camera.jpg` visar fortfarande senaste färgbilden; svartvita blixtbilder (0xD4/0xD5 i mörker) går bara till MQTT.
 - [ ] **Utöka e2e-testet** (`MD_CAM/test_camera_e2e.py`) med D4 (svartvit blixtbild), D5/D6 och kontroll av att bildpaketen är 56-byte (typ 0x82).
 - [ ] **Uppdatera protokolldokumentationen** (`MD_CAM/docs/Blackfin_CC1110_Interprocessor_Protocol_Analysis.md` m.fl.) med kommandona 0xD4–0xD6, bildpaket 0x82 (56 byte, CBC) och gatewayens 58-byte-mottagning med mjukvaru-CRC.
 - [ ] **Mjukvaruskärpning** i snap_link (lätt unsharp mask på Y) mot linsens oskärpa; mät brus och filstorlek före/efter.
