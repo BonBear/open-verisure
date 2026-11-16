@@ -1893,13 +1893,13 @@ static void bf_spi_boot_test(uint8_t variant, uint16_t *p_seq) {
 #define BF_SPI1_TEST 0          // test: bit-banged SPI master to Blackfin SPI1 (slave, set up over JTAG)
 #define BF_SPI1_MS 2000          // ~5.5 s real time between frames
 #define BF_IMG_LINK 1           // pull the camera picture from the Blackfin (snap_link.c) and send it over RF
-#define BF_IMG_BLOCK 8           // pixels per RF tile (packet type 0x81) / JPEG bytes per chunk (0x80)
-#define BF_IMG_JPEG 1            // 1: JPEG from the Blackfin (packet type 0x80); 0: raw quarters (0x81)
+#define BF_IMG_BLOCK 8           // pixels per RF tile (packet type 0x81, raw test mode); JPEG uses BF_IMG_CHUNK
+#define BF_IMG_JPEG 1            // 1: JPEG from the Blackfin (56-byte packets, type 0x82); 0: raw quarters (0x81)
 #define BF_IMG_CMD 0xD3          // 0xD3 colour 320x240 as delta (only changed blocks), 0xD1 full colour, 0xD0 grayscale
 #define BF_IMG_PIR 1             // pictures driven by the PIR (P1_7): fast while there is motion, rare otherwise
-#define BF_IMG_HIRES_ON_MOTION 1 // the 2nd picture of a motion event is 640x480 colour (0xD2, ~20 KB, ~2.5 min)
+#define BF_IMG_HIRES_ON_MOTION 1 // the 2nd picture of a motion event is 640x480 colour (0xD2/0xD6, ~18 KB, ~12 s)
 #define BF_IMG_IDLE_S 300        // without motion: one picture (delta) this often
-#define BF_IMG_FULL_IDLE_EVERY 12 // every Nth idle picture is a full one (0xD1, ~8 KB): the gateway gets a base again
+#define BF_IMG_FULL_IDLE_EVERY 12 // every Nth idle picture is a full one (0xD1, ~8 KB, ~5 s): the gateway gets a base again
                                  // after its own restart within ~1 h (deltas need the gateway's copy of the full picture)
 #define BF_PIR_HOLD_S 30         // a motion event lasts this long after the last PIR activity
 #define BF_TICKS_PER_S 36        // delay_ms(10) takes ~27.5 ms here (delay_ms runs ~2.75x slow)

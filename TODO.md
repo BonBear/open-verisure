@@ -10,7 +10,7 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 - [x] **Uppdatera protokolldokumentationen.** Klart 2026-11-16: nytt dokument `MD_CAM/docs/Kamera_protokoll.md` (SPI-kommandon 0xD0–0xD6, delta-format, radiopaket 24/56 byte, gatewayens 58-byte-mottagning, nedlänk, MQTT, kamerans tillstånd); hänvisning från den gamla analysen.
 - [x] **Mjukvaruskärpning.** Klart 2026-11-16: skärpning q4 (y + q/32·(4y − grannar)) bara när ett MCU kodas, referensen hålls oskärpt så deltorna påverkas inte. Detalj (Laplace-sd) 16,9 -> 22,6, fil +7 %, brus på jämn yta oförändrat; q8 gav 27,6 men mer brus. Gäller 320-färgbilder (hel och delta). Trimbart via JTAG 0xFF800030. L1-kod utökad till 32 KB (provat via JTAG).
 - [x] **Delta-brus från färgen.** Utrett 2026-11-16: med U/V-vikt 4/2/0 (bara Y) låg brusgolvet ändå på 4–6; det är ljusheten (troligen lampflimmer mellan bildrutor), inte färgen. Ingen ändring, `DELTA_T` 12 behålls.
-- [ ] **Städning i CC1110-firmware:** gamla testvägar (rå-tiles 0x81, 8-byte-bildpaket 0x80, `BF_IMG_TIMING`) som inte längre används av kamerans normala flöde.
+- [x] **Städning i CC1110-firmware.** 2026-11-16: inaktuella kommentarer rättade (paketformat 0x82, 640-bild ~12 s). Testverktygen bakom avstängda brytare (pinnvandring, SPI-test, prober, U3-dump, rå-tiles) är kvar; om de ska bort är ett beslut för dig, se B7.
 - [ ] **Omsändning av saknade bildpaket** (gatewayen begär saknade paketnummer vid nästa poll; Blackfin har bilden i 120 s). Görs om räckviddstestet (B5) visar förluster.
 
 ## B. Behöver dig
@@ -26,3 +26,4 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 - [ ] **4. Nattbilder utan blixt (idé).** Originalet förlänger bildrutan (VTS, 0x380E/0x380F) i mörker. Kräver mörkt rum; Claude kan köra testet via JTAG (`MD_CAM/blackfin/jtag/bf_set.sh 0xFF800034 ...`) när rummet är mörkt.
 - [ ] **5. Räckvidd i verklig placering.** Sätt kameran på sin tänkta plats; några D1/D2 visar saknade paket per bild ("x/y chunks missing") och RSSI i gatewayloggen.
 - [ ] **6. Granska och slå ihop grenen.** `md-cam/u3-flash-dump` har mycket nytt (blixt, hastighet, bildkvalitet, viloläge). Säg till om Claude ska öppna en PR mot `main`.
+- [ ] **7. Testverktyg i CC1110-firmware:** ska undersökningsverktygen bakom avstängda brytare (`BF_PIN_WALK`, `BF_SPI_WALK`, `BF_SPI1_TEST`, `BF_PROBE_AT_BOOT`, `BF_P0_0_TOGGLE`, U3-dumpen, rå-tiles 0x81) tas bort eller sparas? De kostar inget när de är avstängda men gör `main.c` (~2900 rader) svårare att läsa.
