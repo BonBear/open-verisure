@@ -101,6 +101,13 @@ bool downlinkRequestResend(const char* deviceId, uint16_t idx, uint8_t count) {
     return true;
 }
 
+bool downlinkResendPending(const char* deviceId) {
+    if (!deviceId) return false;
+    expirePending();
+    PendingCommand* p = findPending(deviceId);
+    return p && p->resendCount;
+}
+
 uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16_t* arg) {
     if (arg) *arg = 0;
     expirePending();

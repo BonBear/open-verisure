@@ -42,6 +42,9 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd);
  *  (sent once, a picture command goes first). */
 bool downlinkRequestResend(const char* deviceId, uint16_t idx, uint8_t count);
 
+/** True while a resend request for this camera waits for its next poll answer. */
+bool downlinkResendPending(const char* deviceId);
+
 /** Command to put in the answer to this poll (0 = none) and its argument (chunk number of a
  *  resend). A pending picture command stays queued until the camera reports
  *  DOWNLINK_STATE_ACK in a later poll; a resend request goes out once. */

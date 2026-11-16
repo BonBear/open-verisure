@@ -558,7 +558,11 @@ static void transmit_big_chunk(uint8_t type, uint16_t seq, uint16_t chunk_idx, u
                                  // 0xD6 for 0xD2). The flash board is infrared, so nobody sees it
 #define BF_CMD_HOLD 0xE8         // downlink command: power the Blackfin and keep it on BF_HOLD_S
 #define BF_HOLD_S 600            // (no picture); for JTAG work on the Blackfin
-#define BF_KEEP_ON_S 15         // Blackfin stays powered this long after a picture (~0.14 A), so its
+#define BF_ACK_MAX_S 30          // after a picture: wait at most this long for the gateway's acknowledgement
+                                 // (a poll answer without a resend request) before the next alarm
+                                 // picture or switching the Blackfin off; meanwhile poll every
+#define BF_ACK_POLL_TICKS (2 * BF_TICKS_PER_S)   // ~2 s, so a lost poll or answer costs 2 s, not the picture
+#define BF_KEEP_ON_S 15        // Blackfin stays powered this long after a picture (~0.14 A), so its
                                  // SDRAM keeps the delta reference and a 0xD3 request within that
                                  // time is sent as a delta; 0 = power off right after each picture
                                  // (120 s until 2026-11-16: it cost ~17 As per picture, ~20x a cold picture
@@ -955,10 +959,16 @@ static uint16_t cam_sleep(void) {
 
 static void cam_alarm_loop(uint16_t *p_seq) {
     uint16_t poll = BF_POLL_S * BF_TICKS_PER_S;   // first poll right away
-    uint16_t hold = 0, t, keep = 0;
+    uint16_t hold = 0, keep = 0, gap = 0, ack_left = 0;
     uint32_t idle = 0;
     uint8_t ev_pic = 0, cmd;
     bool active = false, bf_on = false, was_armed = s_armed;
+    // A picture stays "open" until a poll answer without a resend request (the gateway has it
+    // complete, or has given up), at most BF_ACK_MAX_S: until then the camera polls every
+    // BF_ACK_POLL_TICKS, takes no new alarm picture and keeps the Blackfin (the picture's only
+    // copy) powered. In an alarm sequence the next picture used to start right after the first
+    // resend round and replaced the picture the gateway was still completing (2026-11-16).
+    bool pic_open = false;
 
     bf_power_off();
     s_boot_noise = radio_noise_nonce();
@@ -979,9 +989,10 @@ static void cam_alarm_loop(uint16_t *p_seq) {
             }
             hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
         }
-        if (poll >= BF_POLL_S * BF_TICKS_PER_S) {
+        if (poll >= (pic_open ? BF_ACK_POLL_TICKS : BF_POLL_S * BF_TICKS_PER_S)) {
             poll = 0;
-            cam_poll(p_seq, active, bf_on);
+            if (cam_poll(p_seq, active, bf_on) && !s_rs_count)
+                pic_open = false;   // answered without a resend request: the picture is done
         }
         if (s_rs_count) {
             if (bf_on) {
@@ -999,7 +1010,7 @@ static void cam_alarm_loop(uint16_t *p_seq) {
         if (s_dl_cmd) {
             cmd = s_dl_cmd;
             s_dl_cmd = 0;
-        } else if (s_armed && active) {
+        } else if (s_armed && active && !pic_open && !gap) {
             cmd = BF_IMG_CMD;
 #if BF_IMG_HIRES_ON_MOTION
             if (ev_pic == 1)
@@ -1038,23 +1049,19 @@ static void cam_alarm_loop(uint16_t *p_seq) {
                 bf_on = true;
             }
             // keep it powered only after a good picture: a hung Blackfin gets power-cycled
-            keep = bf_send_picture(cmd, p_seq) ? BF_KEEP_ON_S * BF_TICKS_PER_S : 0;
+            if (bf_send_picture(cmd, p_seq)) {
+                keep = BF_KEEP_ON_S * BF_TICKS_PER_S;
+                pic_open = true;
+                ack_left = BF_ACK_MAX_S * BF_TICKS_PER_S;
+            } else {
+                keep = 0;
+            }
             idle = 0;
-            // a picture takes 20..80 s over RF but counts as BF_IMG_PIC_TICKS, so during
-            // motion the poll came only every ~3rd picture (seen: 172 s without one, so a
-            // disarm waited that long): poll after every picture instead
+            // poll right after every picture: it carries the resend request or the
+            // acknowledgement (a picture takes seconds over RF, so a disarm waits less too)
             poll = BF_POLL_S * BF_TICKS_PER_S;
             hold = hold > BF_IMG_PIC_TICKS ? hold - BF_IMG_PIC_TICKS : 0;
-            if (active) {
-                for (t = 0; t < BF_IMG_PAUSE_TICKS; t++) {
-                    delay_ms(10);
-                    poll++;
-                    if (P1_7 == 0)
-                        hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
-                    else if (hold)
-                        hold--;
-                }
-            }
+            gap = BF_IMG_PAUSE_TICKS;   // at least ~5 s to the next alarm picture
         } else {
             uint16_t n = 1;
 #if BF_SLEEP_IDLE
@@ -1066,6 +1073,12 @@ static void cam_alarm_loop(uint16_t *p_seq) {
             poll += n;
             idle += n;
             keep = keep > n ? keep - n : 0;
+            gap = gap > n ? gap - n : 0;
+            if (pic_open) {
+                ack_left = ack_left > n ? ack_left - n : 0;
+                if (!ack_left)
+                    pic_open = false;   // no acknowledgement within BF_ACK_MAX_S: go on
+            }
             if (P1_7 != 0)
                 hold = hold > n ? hold - n : 0;
         }
@@ -1074,7 +1087,7 @@ static void cam_alarm_loop(uint16_t *p_seq) {
             active = false;
             transmit((*p_seq)++, false, false, false, 0xB9, 0, 0, 0);
         }
-        if (bf_on && !s_dl_cmd && !keep && (!active || !s_armed)) {
+        if (bf_on && !s_dl_cmd && !keep && !pic_open && (!active || !s_armed)) {
             bf_power_off();
             bf_on = false;
         }

@@ -275,6 +275,11 @@ void imageReceiverPollSeen(const char* deviceId) {
     // the camera polls right after a picture: a picture still open lost its last chunk; finish
     // it now so a resend request can go out with this poll's answer (the Blackfin is still on)
     if (deviceId && s_lastIdx >= 0 && strcmp(deviceId, s_activeDeviceId) == 0) jpegFinish(s_imgEnd, false);
+    // a resend round whose last chunk was lost never asks for the next one (that happens when
+    // the last requested chunk arrives): ask again for what is still missing with this poll's
+    // answer. The camera polls every ~2 s until an answer without a resend request.
+    if (deviceId && s_rsActive && strcmp(deviceId, s_rsDevice) == 0 && !downlinkResendPending(deviceId))
+        rsRequestNext();
 }
 
 void imageReceiverInit(void) {
