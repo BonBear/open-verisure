@@ -18,9 +18,11 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 
 ## B. Behöver dig
 
+- [ ] **0. Huvudnyckeln har läckt (brådskande).** Den riktiga huvudnyckeln stod som "exempel" i två dokument som legat på publika `origin/main` sedan 2026-10-22 (nu ersatt med platshållare i commit 75062aa, inte pushad, finns kvar i historiken). Beslut: (a) byta huvudnyckel: ny nyckel i gatewayens `secrets.h`, nya `config.h` och omflashning av alla sensorer och kameran; (b) skriva om git-historiken och force-pusha, eller låta den vara när nyckeln ändå byts.
+
 - [ ] **1. Viloström med Otii.** Firmware sover nu i PM2 när Blackfin är av; nätaggregatet visar bara "under 1 mA".
   - Mät i serie vid 3,0 V minst 2 min i vila (larm av): snitt, golv, toppar för pollen (var ~28 s, sändning + ~110 ms lyssning) och uppvakningen var 0,5 s.
-  - Samma med larmet på, och en hel bild (D1 via MQTT `verisure/2NCEKS3T/picture/set`): Blackfin ~0,14 A i ~5–8 s plus 120 s påslagen efteråt (`BF_KEEP_ON_S`).
+  - Samma med larmet på, och en hel bild (D1 via MQTT `verisure/2NCEKS3T/picture/set`): Blackfin ~0,14 A i ~5–8 s plus 15 s påslagen efteråt (`BF_KEEP_ON_S`).
   - Utifrån resultatet: beslut om `BF_POLL_S` (30 s) och `BF_KEEP_ON_S` (sänkt från 120 till 15 s 2026-11-16 i väntan på mätningen) ska ändras. Obs: 120 s påslagen efter varje bild kostar ~17 As (0,14 A), mer än själva bilden; nu när en hel bild bara tar ~5 s kan en kortare tid vara värd att deltor ibland blir hela bilder.
 - [ ] **2. PIR väcker ur viloläget** (ej provat med den här byggen).
   - Larmet av: rör dig framför kameran, gatewayloggen ska visa B9 inom någon sekund.
