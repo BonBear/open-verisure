@@ -46,6 +46,7 @@
 #define PORTGIO_SET  0xFFC01508
 #define PORTGIO_DIR  0xFFC01530
 #define PORTFIO_CLEAR 0xFFC00704
+#define PORTFIO_SET  0xFFC00708
 #define PORTFIO_DIR  0xFFC00730
 #define PORTHIO      0xFFC01700
 #define PORTHIO_DIR  0xFFC01730
@@ -291,11 +292,12 @@ static unsigned int sensor_init(void)
     unsigned int errors = 0;
     unsigned long t;
 
-    /* board setup as the factory firmware (0xFFA012CE, 0xFFA01492): PF10, PF11, PF13 outputs
-     * low, PG4 output low (sensor PWDN?), PG8 output high (sensor RESETB?), then a hardware
-     * reset pulse on PG8 before the register setup */
-    R16(PORTFIO_CLEAR) = 0x2C00;
-    R16(PORTFIO_DIR) |= 0x2C00;
+    /* board setup as the factory firmware (0xFFA012CE, 0xFFA01492, 0xFFA016CC): PF10..PF13
+     * outputs low (PF10/PF12 = flash LED groups, off), PG4 output low (sensor PWDN?), PG8
+     * output high (sensor RESETB?), then a hardware reset pulse on PG8 before the register
+     * setup */
+    R16(PORTFIO_CLEAR) = 0x3C00;
+    R16(PORTFIO_DIR) |= 0x3C00;
     R16(PORTGIO_SET) = 0x0100;
     R16(PORTGIO_CLEAR) = 0x0010;
     R16(PORTGIO_DIR) |= 0x0110;
@@ -508,18 +510,142 @@ static unsigned char awb_px(int v, int d)
     return (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
 }
 
-/* grab output rows row0 .. row0 + n - 1 into yout; if uout/vout are given, also the U/V
- * rows (half width) of the even output rows into uout/vout (row R/2 - row0/2).
- * hires 0: 320 wide, row R = sensor line 2R, pixel x = sensor pixel 2x;
- * hires 1: 640 wide, row R = sensor line R, pixel x = sensor pixel x. */
-static void capture(volatile unsigned char *yout, volatile unsigned char *uout, volatile unsigned char *vout,
+/* rows of one stream segment: samples g0 .. g1 - 1 (counted from the end of VSYNC) are in
+ * buf[0 .. g1 - g0 - 1]; pick the output rows row0 .. row0 + n - 1 that fall into it */
+static void extract(volatile unsigned short *buf, unsigned long g0, unsigned long g1,
+                    volatile unsigned char *yout, volatile unsigned char *uout, volatile unsigned char *vout,
                     unsigned int row0, unsigned int n, unsigned int hires)
 {
     unsigned long rstride = hires ? LINE_SAMP : 2UL * LINE_SAMP;
     unsigned int ow = hires ? 2 * OUT_W : OUT_W, ystep = hires ? 2 : 4;
-    volatile unsigned short *buf = (volatile unsigned short *)0xFF900000;
+    unsigned int x, r;
+
+    for (r = 0; r < n; r++) {
+        unsigned long g = (unsigned long)(row0 + r) * rstride;
+        if (g + ACTIVE_SAMP <= g0 || g >= g1)
+            continue;
+        for (x = 0; x < ow; x++) {
+            unsigned long gx = g + (unsigned long)ystep * x;
+            if (gx >= g0 && gx < g1)
+                yout[r * ow + x] = (unsigned char)SMP(gx - g0);
+        }
+        if (uout && !((row0 + r) & 1)) {
+            unsigned int cr = r >> 1;
+            for (x = 0; x < ow / 2; x++) {
+                unsigned long gx = g + 2UL * ystep * x;     /* pixel pair of output pixel 2x */
+                if (gx + 3 >= g0 && gx + 3 < g1 && gx + 1 >= g0) {
+                    int u = SMP(gx + 1 - g0), v = SMP(gx + 3 - g0);
+                    awb_su += (unsigned long)u;
+                    awb_sv += (unsigned long)v;
+                    awb_n++;
+                    uout[cr * (ow / 2) + x] = awb_px(u, awb_du);
+                    vout[cr * (ow / 2) + x] = awb_px(v, awb_dv);
+                }
+            }
+        }
+    }
+}
+
+/* Flash test (JTAG): 0xFF800078 = 0xF1000000 | frames << 16 | mask << 8 | t lights the LED
+ * groups in mask (bit 0 = PF10, bit 1 = PF12, as the factory firmware's flash level 1/2)
+ * for t x 0.1 ms (at most FLASH_MAX_T = 20 ms, timed with the cycle counter) from the start
+ * of the next 'frames' whole-frame grabs; the count goes down per grab and the word is 0
+ * when used up. Off at every exit of ppi_dma. */
+#define FLASH_MAX_T  200           /* 20 ms */
+#define CCLK_PER_T   24000UL        /* 0.1 ms at CCLK 240 MHz (pll_init) */
+static unsigned long cycles(void)
+{
+    unsigned long c;
+    __asm__ volatile("%0 = CYCLES;" : "=d"(c));
+    return c;
+}
+
+/* PPI stream into dst by DMA0 (16 bit, 2D: bands x BAND_SAMP samples, continuous) from the
+ * end of the next VSYNC; with ymod = -(2 * BAND_SAMP - 2) every band overwrites the last
+ * (only the last band is kept). flash: apply the flash test word (whole-frame grabs only).
+ * Returns DMA0_STAT (bit 0 DMA_DONE, bit 1 DMA_ERR). */
+static unsigned int ppi_dma(unsigned long dst, unsigned int bands, short ymod, int flash)
+{
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
-    unsigned int k, x, r, kmin, kmax;
+    unsigned long t, c0 = 0, on = 0;
+    unsigned int s, mask = 0;
+
+    if (flash && (st[30] & 0xFF000000UL) == 0xF1000000UL && (st[30] & 0x00FF0000UL)) {
+        unsigned long w = st[30];
+        mask = ((w >> 8) & 0x03) << 10;
+        mask = (mask & 0x0400) | ((mask & 0x0800) << 1);   /* bit 0 -> PF10, bit 1 -> PF12 */
+        on = w & 0xFF;
+        if (on > FLASH_MAX_T)
+            on = FLASH_MAX_T;
+        on *= CCLK_PER_T;
+        w -= 0x00010000UL;
+        st[30] = (w & 0x00FF0000UL) ? w : 0;
+    }
+
+    R16(PPI_CONTROL) = 0;
+    R16(DMA0_CONFIG) = 0;
+    R16(DMA0_STAT) = 0x0003;
+    R16(PPI_STATUS) = 0xFFFF;
+    SSYNC();
+    R32(DMA0_START) = dst;
+    R16(DMA0_XCOUNT) = BAND_SAMP;
+    R16(DMA0_XMOD) = 2;
+    R16(DMA0_YCOUNT) = bands;
+    R16(DMA0_YMOD) = (unsigned short)ymod;
+    R16(PPI_COUNT) = 1279;
+    R16(PPI_DELAY) = 0;
+    R16(PPI_FRAME) = 480;
+    R16(DMA0_CONFIG) = 0x0097;      /* DMAEN | WNR | WDSIZE_16 | DMA2D | DI_EN */
+    SSYNC();
+    for (t = 0; t < 4000000UL && !(R16(PORTGIO) & 0x0080); t++)
+        ;
+    for (t = 0; t < 4000000UL && (R16(PORTGIO) & 0x0080); t++)
+        ;
+    R16(PPI_CONTROL) = 0x383D;      /* no frame syncs, continuous from the end of VSYNC */
+    SSYNC();
+    if (mask) {
+        R16(PORTFIO_SET) = mask;
+        c0 = cycles();
+    }
+    for (t = 0; t < 80000000UL; t++) {
+        if (mask && cycles() - c0 >= on) {
+            R16(PORTFIO_CLEAR) = mask;
+            mask = 0;
+        }
+        if (R16(DMA0_STAT) & 0x0001)
+            break;
+    }
+    R16(PORTFIO_CLEAR) = 0x1400;    /* flash off in any case */
+    R16(PPI_CONTROL) = 0;
+    SSYNC();
+    s = R16(DMA0_STAT);
+    return s;
+}
+
+/* Whole frame in SDRAM: one DMA of FRAME_BANDS bands from one sensor frame, so a picture is
+ * one instant instead of ~49 frames (one per L1 band) spread over seconds, which smeared
+ * anything that moved. 49 x 15360 = 752640 samples >= the last row (479 x 1560 + 1280).
+ * 1.5 MB at 0x00300000, clear of the send buffer and CUR/REF. Falls back to L1 bands if the
+ * DMA does not finish or reports an error. 0xFF800070: PPI_STATUS << 16 | DMA0_STAT of the
+ * last frame grab; 0xFF800074: frame grabs that failed. */
+#define FRAME_SDRAM  0x00300000UL
+#define FRAME_BANDS  49
+static int frame_sdram;             /* 1: SDRAM usable for whole frames (set in main) */
+static int frame_valid;             /* the last frame grab succeeded */
+static int frame_new = 1;           /* the next capture() grabs a new frame */
+
+/* grab output rows row0 .. row0 + n - 1 into yout; if uout/vout are given, also the U/V
+ * rows (half width) of the even output rows into uout/vout (row R/2 - row0/2).
+ * hires 0: 320 wide, row R = sensor line 2R, pixel x = sensor pixel 2x;
+ * hires 1: 640 wide, row R = sensor line R, pixel x = sensor pixel x.
+ * With SDRAM a new frame is grabbed for row0 == 0 (a new picture) or after frame_new = 1;
+ * the other strips of the picture come from the same frame. */
+static void capture(volatile unsigned char *yout, volatile unsigned char *uout, volatile unsigned char *vout,
+                    unsigned int row0, unsigned int n, unsigned int hires)
+{
+    unsigned long rstride = hires ? LINE_SAMP : 2UL * LINE_SAMP;
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    unsigned int k, kmin, kmax;
 
     R16(PORTF_MUX) = 0x0055;        /* PF0..PF9 PPI data */
     R16(PORTF_FER) = 0x03FF;
@@ -528,68 +654,30 @@ static void capture(volatile unsigned char *yout, volatile unsigned char *uout, 
     R16(PORTG_FER) = 0x0460;        /* PG5, PG6, PG10 peripheral; PG7 GPIO */
     SSYNC();
 
+    if (frame_sdram) {
+        if (frame_new || row0 == 0) {
+            unsigned int s = ppi_dma(FRAME_SDRAM, FRAME_BANDS, 2, 1);
+            st[28] = ((unsigned long)R16(PPI_STATUS) << 16) | s;
+            frame_valid = (s & 0x0003) == 0x0001;
+            if (!frame_valid)
+                st[29]++;
+            frame_new = 0;
+        }
+        if (frame_valid) {
+            extract((volatile unsigned short *)FRAME_SDRAM, 0, (unsigned long)FRAME_BANDS * BAND_SAMP,
+                    yout, uout, vout, row0, n, hires);
+            return;
+        }
+    }
+
     kmin = (unsigned int)(((unsigned long)row0 * rstride) / BAND_SAMP);
     kmax = (unsigned int)((((unsigned long)(row0 + n - 1)) * rstride + ACTIVE_SAMP + LINE_SAMP) / BAND_SAMP);
     for (k = kmin; k <= kmax; k++) {
-        unsigned long t, g0, g1;
-
-        R16(PPI_CONTROL) = 0;
-        R16(DMA0_CONFIG) = 0;
-        R16(DMA0_STAT) = 0x0003;
-        R16(PPI_STATUS) = 0xFFFF;
-        SSYNC();
-        R32(DMA0_START) = 0xFF900000;
-        R16(DMA0_XCOUNT) = BAND_SAMP;
-        R16(DMA0_XMOD) = 2;
-        R16(DMA0_YCOUNT) = k + 1;
-        R16(DMA0_YMOD) = (unsigned short)(-(BAND_SAMP * 2 - 2));
-        R16(PPI_COUNT) = 1279;
-        R16(PPI_DELAY) = 0;
-        R16(PPI_FRAME) = 480;
-        R16(DMA0_CONFIG) = 0x0097;  /* DMAEN | WNR | WDSIZE_16 | DMA2D | DI_EN */
-        SSYNC();
-        for (t = 0; t < 4000000UL && !(R16(PORTGIO) & 0x0080); t++)
-            ;
-        for (t = 0; t < 4000000UL && (R16(PORTGIO) & 0x0080); t++)
-            ;
-        R16(PPI_CONTROL) = 0x383D;  /* no frame syncs, continuous from the end of VSYNC */
-        SSYNC();
-        for (t = 0; t < 80000000UL; t++)
-            if (R16(DMA0_STAT) & 0x0001)
-                break;
-        R16(PPI_CONTROL) = 0;
-        SSYNC();
-        if (!(R16(DMA0_STAT) & 0x0001))
+        unsigned long g0 = (unsigned long)k * BAND_SAMP;
+        if (!(ppi_dma(0xFF900000UL, k + 1, (short)(-(BAND_SAMP * 2 - 2)), 0) & 0x0001))
             return;
-
-        g0 = (unsigned long)k * BAND_SAMP;
-        g1 = g0 + BAND_SAMP;
         st[5] = k;                  /* 0xFF800014: last band */
-
-        for (r = 0; r < n; r++) {
-            unsigned long g = (unsigned long)(row0 + r) * rstride;
-            if (g + ACTIVE_SAMP <= g0 || g >= g1)
-                continue;
-            for (x = 0; x < ow; x++) {
-                unsigned long gx = g + (unsigned long)ystep * x;
-                if (gx >= g0 && gx < g1)
-                    yout[r * ow + x] = (unsigned char)SMP(gx - g0);
-            }
-            if (uout && !((row0 + r) & 1)) {
-                unsigned int cr = r >> 1;
-                for (x = 0; x < ow / 2; x++) {
-                    unsigned long gx = g + 2UL * ystep * x;     /* pixel pair of output pixel 2x */
-                    if (gx + 3 >= g0 && gx + 3 < g1 && gx + 1 >= g0) {
-                        int u = SMP(gx + 1 - g0), v = SMP(gx + 3 - g0);
-                        awb_su += (unsigned long)u;
-                        awb_sv += (unsigned long)v;
-                        awb_n++;
-                        uout[cr * (ow / 2) + x] = awb_px(u, awb_du);
-                        vout[cr * (ow / 2) + x] = awb_px(v, awb_dv);
-                    }
-                }
-            }
-        }
+        extract((volatile unsigned short *)0xFF900000, g0, g0 + BAND_SAMP, yout, uout, vout, row0, n, hires);
     }
 }
 
@@ -683,6 +771,7 @@ static void aec_settle(void)
     unsigned long mean = 0, first = 0, old, sum;
 
     for (n = 0; n < AEC_MAX; n++) {
+        frame_new = 1;              /* a new sensor frame for every grab */
         capture((unsigned char *)CUR_Y, 0, 0, (IMG_H - STRIP_H) / 2, STRIP_H, 0);
         sum = 0;
         for (i = 0; i < STRIP_H * OUT_W; i += 4)
@@ -900,6 +989,13 @@ int main(void)
     st[23] = 0;                     /* 0xFF80005C AWB control (0 = auto) */
     st[17] = pll_init();           /* 0xFF800044: PLL_CTL << 16 | PLL_DIV afterwards */
     sdram_bad = sdram_init();
+    frame_sdram = sdram_bad == 0;
+    frame_valid = 0;
+    frame_new = 1;
+    st[28] = 0;
+    st[29] = 0;
+    st[30] = 0;                     /* 0xFF800078 flash test word */
+    __asm__ volatile("R0 = SYSCFG; BITSET (R0, 1); SYSCFG = R0; CSYNC;" ::: "R0");  /* CCEN: CYCLES runs */
     have_ref = 0;                   /* .bss is not zeroed by a JTAG load */
     awb_valid = 0;
     awb_su = awb_sv = awb_n = 0;
