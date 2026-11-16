@@ -718,6 +718,7 @@ static unsigned int ppi_dma(unsigned long dst, unsigned int bands, short ymod, i
 static int frame_sdram;             /* 1: SDRAM usable for whole frames (set in main) */
 static int frame_valid;             /* the last frame grab succeeded */
 static int frame_new = 1;           /* the next capture() grabs a new frame */
+static int frame_hold;              /* capture() reuses the frame in SDRAM even for row0 == 0 */
 
 /* grab output rows row0 .. row0 + n - 1 into yout; if uout/vout are given, also the U/V
  * rows (half width) of the even output rows into uout/vout (row R/2 - row0/2).
@@ -740,7 +741,7 @@ static void capture(volatile unsigned char *yout, volatile unsigned char *uout, 
     SSYNC();
 
     if (frame_sdram) {
-        if (frame_new || row0 == 0) {
+        if (!frame_hold && (frame_new || row0 == 0)) {
             unsigned int s = ppi_dma(FRAME_SDRAM, FRAME_BANDS, 2, 1);
             st[28] = ((unsigned long)R16(PPI_STATUS) << 16) | s;
             frame_valid = (s & 0x0003) == 0x0001;
@@ -790,6 +791,73 @@ static unsigned long sad8(const volatile unsigned char *a, const volatile unsign
             sum += (unsigned long)(d < 0 ? -d : d);
         }
     return sum;
+}
+
+/* sum of (a - b) over an 8x8 block */
+static long sum8(const volatile unsigned char *a, const volatile unsigned char *b, unsigned int stride)
+{
+    long sum = 0;
+    unsigned int x, y;
+    for (y = 0; y < 8; y++)
+        for (x = 0; x < 8; x++)
+            sum += (int)a[y * stride + x] - (int)b[y * stride + x];
+    return sum;
+}
+
+/* a / b rounded, for a signed a (no divide in this build) */
+static long sdiv_round(long a, unsigned long b)
+{
+    unsigned long q = awb_udiv((unsigned long)(a < 0 ? -a : a) + b / 2, b);
+    return a < 0 ? -(long)q : (long)q;
+}
+
+/* Colour drift before a delta: right after a cold start the sensor's colour keeps moving for a
+ * few seconds (Cb +4..5 between the first picture and the next, luma unchanged), so the
+ * first delta flagged ~120-150 of 300 MCUs. Measure the mean U/V shift against the reference
+ * over the MCUs whose luma did not change (mean |dY| <= 4, so a coloured object coming into
+ * view does not count), move the software white balance offset by it and extract the frame
+ * again (still in SDRAM). Only real changes are then left for the delta check.
+ * 0xFF80001C: MCUs used << 16 | U offset change << 8 | V offset change (signed bytes). */
+static void chroma_track(void)
+{
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    unsigned int m, row, total = MCU_X * MCU_Y, nb = 0;
+    long su = 0, sv = 0, du, dv;
+
+    for (m = 0; m < total; m++) {
+        unsigned int mx = m % MCU_X, my = m / MCU_X;
+        unsigned long yo = (unsigned long)my * 16 * OUT_W + mx * 16, co = (unsigned long)my * 8 * (OUT_W / 2) + mx * 8;
+        const volatile unsigned char *cy = (const volatile unsigned char *)CUR_Y + yo;
+        const volatile unsigned char *ry = (const volatile unsigned char *)REF_Y + yo;
+        if (sad8(cy, ry, OUT_W) > 64UL * 4 || sad8(cy + 8, ry + 8, OUT_W) > 64UL * 4 ||
+            sad8(cy + 8 * OUT_W, ry + 8 * OUT_W, OUT_W) > 64UL * 4 ||
+            sad8(cy + 8 * OUT_W + 8, ry + 8 * OUT_W + 8, OUT_W) > 64UL * 4)
+            continue;
+        su += sum8((const volatile unsigned char *)CUR_U + co, (const volatile unsigned char *)REF_U + co, OUT_W / 2);
+        sv += sum8((const volatile unsigned char *)CUR_V + co, (const volatile unsigned char *)REF_V + co, OUT_W / 2);
+        nb++;
+    }
+    du = dv = 0;
+    if (nb >= total / 4 && sat_q) {
+        /* mean output shift per pixel = s / (64 nb); output = (raw + offset) * sat_q / 4 */
+        du = -sdiv_round(su * 4, 64UL * nb * sat_q);
+        dv = -sdiv_round(sv * 4, 64UL * nb * sat_q);
+        if (du > 16) du = 16;
+        if (du < -16) du = -16;
+        if (dv > 16) dv = 16;
+        if (dv < -16) dv = -16;
+    }
+    st[7] = ((unsigned long)nb << 16) | ((unsigned long)(du & 0xFF) << 8) | (unsigned long)(dv & 0xFF);
+    if (!du && !dv)
+        return;
+    awb_du += (int)du;
+    awb_dv += (int)dv;
+    frame_hold = 1;
+    for (row = 0; row < IMG_H; row += STRIP_H)
+        capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
+                (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+    frame_hold = 0;
+    awb_su = awb_sv = awb_n = 0;    /* the second extraction is not a new white balance sample */
 }
 
 /* Largest sum of |difference| over the six 8x8 blocks (16x16 Y + 8x8 Cb/Cr) of MCU m
@@ -946,6 +1014,8 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
                 (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
     awb_update();
     full = !allow_delta || !have_ref || since_full >= FULL_EVERY;
+    if (!full && frame_sdram && frame_valid)
+        chroma_track();
     if (!full) {
         /* 0xFF800080..0xFF8000FC: histogram of the MCUs' largest block mean |difference|
          * (bucket = mean, 31 = 31 and more), to calibrate DELTA_T against sensor noise */
@@ -1150,6 +1220,7 @@ int main(void)
     st[28] = 0;
     st[29] = 0;
     st[30] = 0;                     /* 0xFF800078 flash test word */
+    st[7] = 0;                      /* 0xFF80001C colour drift correction (see chroma_track) */
     st[15] = 0;                     /* 0xFF80003C shading/saturation tuning (see tune_load) */
     st[16] = 0;                     /* 0xFF800040 JPEG quality tuning (see tune_load) */
     st[12] = 0;                     /* 0xFF800030 sharpening tuning (see sharpen_mcu) */

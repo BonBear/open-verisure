@@ -556,6 +556,8 @@ static void transmit_big_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk_l
 #define BF_AUTO_FLASH 1          // pictures while armed (motion and the idle one): snap_link takes a
                                  // grayscale flash picture instead when the room is dark (0xD5 for 0xD3,
                                  // 0xD6 for 0xD2). The flash board is infrared, so nobody sees it
+#define BF_CMD_HOLD 0xE8         // downlink command: power the Blackfin and keep it on BF_HOLD_S
+#define BF_HOLD_S 600            // (no picture); for JTAG work on the Blackfin
 #define BF_KEEP_ON_S 15         // Blackfin stays powered this long after a picture (~0.14 A), so its
                                  // SDRAM keeps the delta reference and a 0xD3 request within that
                                  // time is sent as a delta; 0 = power off right after each picture
@@ -828,7 +830,8 @@ static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
     s_cmd_ack = false;
     if (s_dl_plain[6] <= 1)
         s_armed = s_dl_plain[6] != 0;
-    if (s_dl_plain[7] >= 0xD1 && s_dl_plain[7] <= 0xD6) {   // 0xD4 flash, 0xD5/0xD6 flash in the dark
+    if ((s_dl_plain[7] >= 0xD1 && s_dl_plain[7] <= 0xD6) ||   // 0xD4 flash, 0xD5/0xD6 flash in the dark
+        s_dl_plain[7] == BF_CMD_HOLD) {
         s_dl_cmd = s_dl_plain[7];
         s_cmd_ack = true;
     }
@@ -970,7 +973,15 @@ static void cam_alarm_loop(uint16_t *p_seq) {
 #endif
         }
 
-        if (cmd) {
+        if (cmd == BF_CMD_HOLD) {
+            // service (MQTT "HOLD"): Blackfin on without a picture, e.g. for flashing it over
+            // JTAG (~90 s), which BF_KEEP_ON_S alone does not cover
+            if (!bf_on) {
+                bf_power_on();
+                bf_on = true;
+            }
+            keep = BF_HOLD_S * BF_TICKS_PER_S;
+        } else if (cmd) {
             if (!bf_on) {
                 bf_power_on();
 #if BF_IMG_TIMING

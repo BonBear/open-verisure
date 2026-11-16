@@ -144,6 +144,7 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
         else if (v == "D4") cmd = 0xD4;
         else if (v == "D5") cmd = 0xD5;     // as D3 with light, flash picture in the dark
         else if (v == "D6") cmd = 0xD6;     // as D2 with light, flash picture in the dark
+        else if (v == "HOLD") cmd = 0xE8;   // service: Blackfin on for 10 min, no picture (JTAG)
         bool ok = downlinkRequestPicture(dev.c_str(), cmd);
         Serial.printf("[Downlink] Picture 0x%02X for %s %s\n", cmd, dev.c_str(), ok ? "queued" : "NOT queued");
     }

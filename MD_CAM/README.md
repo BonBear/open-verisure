@@ -29,7 +29,9 @@ In the dark it takes grayscale pictures lit by its infrared flash.
 * **Alarm state** from Home Assistant (`verisure/alarm/set` ON/OFF) reaches the camera with the
   answer to its next poll (every ~30 s and right after each picture).
 * **Picture quality:** whole-frame capture (no motion smear), 2x2 averaging, lens shading
-  correction, saturation, sharpening, JPEG Q65.
+  correction, saturation, sharpening, JPEG Q65. Colour drift of the sensor (strong right after a
+  cold start) is measured against the reference before each delta and compensated, so only real
+  changes are sent.
 * **Speed:** a 320x240 picture (~8 KB) arrives 5–8 s after the command, 640x480 (~18 KB) in ~12 s
   (56-byte radio packets with 40 bytes of JPEG each).
 * **Power:** the Blackfin (~0.14 A) is powered only for pictures and 15 s after; the CC1110 sleeps
@@ -65,8 +67,9 @@ python build_ldr.py snap_link.c jpeg_enc.c      # -> build/snap_link.ldr (built 
 MSYS_NO_PATHCONV=1 bash jtag/bf_flash.sh         # writes it to the boot flash at 0x8000
 ```
 
-The Blackfin must be powered while flashing: request a picture first (the CC1110 keeps it on for
-15 s after it, and a flash takes ~90 s, so request one right before). `jtag/jtag_common.sh`
+The Blackfin must be powered while flashing (~90 s): publish `HOLD` to
+`verisure/<id>/picture/set` first; the CC1110 then powers it and keeps it on for 10 min
+without taking a picture. `jtag/jtag_common.sh`
 describes the one-time WSL/usbipd setup. `jtag/bf_read.sh` reads the status words and
 `jtag/bf_set.sh` writes tuning words (sharpening, lens shading, saturation, JPEG quality, delta
 threshold, flash test).
