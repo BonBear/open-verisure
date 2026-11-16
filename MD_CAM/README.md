@@ -76,8 +76,10 @@ describes the one-time WSL/usbipd setup. `jtag/bf_read.sh` reads the status word
 threshold, flash test).
 
 The boot flash holds a small boot selector in sector 0 (`boot_select.S`, written once with
-`flash_sector0.c`): it starts our program at 0x8000 when the CC1110 holds P1_2 high at power-on,
-otherwise the factory firmware kept at 0x10000.
+`flash_sector0.c`): it starts our program at 0x8000 when the CC1110 holds P1_2 high at power-on
+(it always does). The factory firmware that used to be at 0x10000 was erased on 2026-11-16 after
+it had been backed up and checked against the chip (`jtag/bf_read_flash.sh` reads the boot
+flash).
 
 ## Test
 

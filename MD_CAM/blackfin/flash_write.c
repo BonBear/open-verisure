@@ -9,6 +9,9 @@
  *    (ERASE_MIN / ERASE_MAX): never sector 0 (selector) or 0x10000.. (factory firmware copy);
  *  - the target range must read back all 0xFF before anything is written;
  *  - the range is read back and compared afterwards.
+ *  - one exception (2026-11-16, the factory copy is backed up and no longer needed): with
+ *    0xFF80001C = 0xE7A5F0C7, address 0x10000 and length 0x8000, the factory firmware copy
+ *    0x10000..0x17FFF is erased and checked blank, nothing is written.
  *
  * Bit-banged SPI as in flash_read.c: PG15 CS, PG12 SCK, PG14 MOSI, PG13 MISO.
  * Parameters (set in L1 over JTAG before running):
@@ -42,6 +45,9 @@
 #define ERASE_MIN 0x8000UL
 #define ERASE_MAX 0x10000UL
 #define ERASE_OK  0xE7A5E000UL
+#define FACTORY_ADDR 0x10000UL
+#define FACTORY_LEN  0x8000UL
+#define FACTORY_ERASE_OK 0xE7A5F0C7UL
 
 __asm__(
     ".text\n"
@@ -116,11 +122,11 @@ static unsigned long compare(unsigned long a, const volatile unsigned char *expe
 }
 
 /* 4 KB sector erase of every sector touched by [a, a+len); callers check the area */
-static int erase_range(unsigned long a, unsigned long len)
+static int erase_range(unsigned long a, unsigned long len, unsigned long lo, unsigned long hi)
 {
     unsigned long sec, t;
     for (sec = a & ~0xFFFUL; sec < a + len; sec += 0x1000) {
-        if (sec < ERASE_MIN || sec >= ERASE_MAX)
+        if (sec < lo || sec >= hi)
             return 0;
         cs(1);
         xfer(0x06);                 /* WREN */
@@ -153,11 +159,21 @@ int main(void)
     SSYNC();
 
     st[2] = rdsr();
-    if (a < FLASH_MIN || len == 0 || len > 0x4000 || a + len > FLASH_MAX) {
+    if (st[7] == FACTORY_ERASE_OK) {
+        /* erase the factory firmware copy only, then check it blank */
+        if (a != FACTORY_ADDR || len != FACTORY_LEN)
+            result = 5;
+        else if (!erase_range(a, len, FACTORY_ADDR, FACTORY_ADDR + FACTORY_LEN))
+            result = 4;
+        else if ((r = compare(a, 0, len)) != len) {
+            result = 2;
+            st[6] = r;
+        }
+    } else if (a < FLASH_MIN || len == 0 || len > 0x4000 || a + len > FLASH_MAX) {
         result = 1;
     } else if (st[7] == ERASE_OK && (a < ERASE_MIN || a + len > ERASE_MAX)) {
         result = 5;
-    } else if (st[7] == ERASE_OK && !erase_range(a, len)) {
+    } else if (st[7] == ERASE_OK && !erase_range(a, len, ERASE_MIN, ERASE_MAX)) {
         result = 4;
     } else if ((r = compare(a, 0, len)) != len) {
         result = 2;

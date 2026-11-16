@@ -4,7 +4,8 @@
  * Flash layout (Kort #1, 2026-11-14):
  *   0x00000  this selector (boot stream started by the boot ROM at reset)
  *   0x08000  our program (snap_link.ldr)
- *   0x10000  factory firmware, copied unchanged from 0x00000 (0x7FD4 bytes)
+ *   0x10000  factory firmware, copied unchanged from 0x00000 (0x7FD4 bytes); erased on
+ *            2026-11-16 (backed up outside the repo), so PH0 high now boots nothing
  *
  * Choice: PH0 low = boot our program. PH0 sits behind the bus switch that the CC1110
  * enables with P1_2: P1_2 = 1 gives PH0 = 0, P1_2 = 0 leaves PH0 pulled high. Our CC1110
