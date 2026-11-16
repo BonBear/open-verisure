@@ -105,7 +105,7 @@
  * (most 5..8), so 6 flagged 167 of 300 MCUs; 12 leaves a margin over that noise */
 #define DELTA_T      12
 #define FULL_EVERY   120         /* a full picture at least every this many delta pictures */
-#define JPEG_QUALITY 50
+#define JPEG_QUALITY 65       /* 2026-11-16: Q50 -> Q65 +17 % bytes, clearly less blocking (patch noise 0.80 -> 0.52); Q80 +56 % for little more */
 
 #include "jpeg_enc.h"
 
@@ -442,6 +442,7 @@ static unsigned int sensor_init(void)
 }
 
 #define SMP(i) ((int)((buf[i] >> 2) & 0xFF))
+#define SMP10(i) ((int)(buf[i] & 0x3FF))
 
 /* White balance in software (grey world): the sensor output leans blue, so a constant
  * offset is added to Cb and Cr. Every colour capture sums the raw Cb/Cr samples; awb_update()
@@ -507,14 +508,54 @@ static void awb_apply(void)
     st[24] = (unsigned long)(((awb_dv & 0xFF) << 8) | (awb_du & 0xFF));
 }
 
-static unsigned char awb_px(int v, int d)
+/* Lens shading and colour saturation, in software (the OV7955 has no public register map).
+ * The wide lens leaves the corners ~30 % darker: Y is multiplied by 1 + k r^2 with r^2 in
+ * half pixels of the 640x480 grid (corner 639^2 + 479^2), gain = 1024 + (r2 * shade_k >> 18),
+ * so shade_k 127 gives ~1.30 in the corners. The colour was very weak (Cb/Cr spread 2-5):
+ * U/V are scaled by sat_q / 4 around 128 after the white balance offset. Both are the same
+ * for every picture, so deltas are not affected. Tuning over JTAG: 0xFF80003C =
+ * 0x51A70000 | shade_k << 8 | sat_q before a picture; any other value = the defaults. */
+#define SHADE_K  127
+#define SAT_Q    7
+static unsigned int shade_k = SHADE_K, sat_q = SAT_Q;
+/* JPEG quality: JPEG_QUALITY, or 0xFF800040 = 0x0A170000 | quality over JTAG (tuning). A
+ * delta must use the quality of its full picture (the gateway splices its MCUs into it with
+ * that picture's tables), so the full picture keeps it in ref_q. */
+static unsigned int jpeg_q = JPEG_QUALITY, ref_q = JPEG_QUALITY;
+
+static void tune_load(void)
 {
-    v += d;
+    volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
+    unsigned long w = st[15];
+    if ((w >> 16) == 0x51A7) {
+        shade_k = (w >> 8) & 0xFF;
+        sat_q = w & 0xFF;
+    } else {
+        shade_k = SHADE_K;
+        sat_q = SAT_Q;
+    }
+    w = st[16];
+    jpeg_q = (w >> 16) == 0x0A17 && (w & 0xFF) >= 10 && (w & 0xFF) <= 95 ? (w & 0xFF) : JPEG_QUALITY;
+}
+
+static unsigned char shade_px(int y, unsigned long gain)
+{
+    unsigned long v = ((unsigned long)y * gain) >> 10;
+    return (unsigned char)(v > 255 ? 255 : v);
+}
+
+static unsigned char sat_px(int v, int d)
+{
+    v = ((v + d - 128) * (int)sat_q) / 4 + 128;
     return (unsigned char)(v < 0 ? 0 : v > 255 ? 255 : v);
 }
 
 /* rows of one stream segment: samples g0 .. g1 - 1 (counted from the end of VSYNC) are in
- * buf[0 .. g1 - g0 - 1]; pick the output rows row0 .. row0 + n - 1 that fall into it */
+ * buf[0 .. g1 - g0 - 1]; pick the output rows row0 .. row0 + n - 1 that fall into it.
+ * 320 wide: every output pixel is the mean of its 2x2 sensor pixels (and U/V of the 2x2
+ * pixel pairs), from the 10-bit samples. Picking one pixel of four only (as before) left
+ * the sensor noise at full strength and aliased edges; the mean halves the noise. If the
+ * 2x2 block is not all in this segment (L1 band fallback), the top-left pixel is used. */
 static void extract(volatile unsigned short *buf, unsigned long g0, unsigned long g1,
                     volatile unsigned char *yout, volatile unsigned char *uout, volatile unsigned char *vout,
                     unsigned int row0, unsigned int n, unsigned int hires)
@@ -525,24 +566,45 @@ static void extract(volatile unsigned short *buf, unsigned long g0, unsigned lon
 
     for (r = 0; r < n; r++) {
         unsigned long g = (unsigned long)(row0 + r) * rstride;
+        long dy = hires ? 2L * (row0 + r) - 479 : 4L * (row0 + r) + 1 - 479;   /* shading */
+        unsigned long dy2 = (unsigned long)(dy * dy);
         if (g + ACTIVE_SAMP <= g0 || g >= g1)
             continue;
+        int all = !hires && g >= g0 && g + LINE_SAMP + ACTIVE_SAMP <= g1;
         for (x = 0; x < ow; x++) {
             unsigned long gx = g + (unsigned long)ystep * x;
-            if (gx >= g0 && gx < g1)
-                yout[r * ow + x] = (unsigned char)SMP(gx - g0);
+            long dx = hires ? 2L * x - 639 : 4L * x + 1 - 639;
+            unsigned long gain = 1024 + (((unsigned long)(dx * dx) + dy2) * shade_k >> 18);
+            if (all) {
+                unsigned long i = gx - g0;
+                /* no rounding: 4 x 1023 >> 4 = 255, with +8 a saturated block wrapped to 0
+                 * (a lit lamp came out black) */
+                yout[r * ow + x] = shade_px((SMP10(i) + SMP10(i + 2) + SMP10(i + LINE_SAMP) +
+                                             SMP10(i + LINE_SAMP + 2)) >> 4, gain);
+            } else if (gx >= g0 && gx < g1)
+                yout[r * ow + x] = shade_px(SMP(gx - g0), gain);
         }
         if (uout && !((row0 + r) & 1)) {
             unsigned int cr = r >> 1;
             for (x = 0; x < ow / 2; x++) {
                 unsigned long gx = g + 2UL * ystep * x;     /* pixel pair of output pixel 2x */
-                if (gx + 3 >= g0 && gx + 3 < g1 && gx + 1 >= g0) {
+                if (all) {
+                    /* U/V of the two pixel pairs in both lines of output pixels 2x, 2x + 1 */
+                    unsigned long i = gx - g0;
+                    int u = (SMP10(i + 1) + SMP10(i + 5) + SMP10(i + LINE_SAMP + 1) + SMP10(i + LINE_SAMP + 5)) >> 4;
+                    int v = (SMP10(i + 3) + SMP10(i + 7) + SMP10(i + LINE_SAMP + 3) + SMP10(i + LINE_SAMP + 7)) >> 4;
+                    awb_su += (unsigned long)u;
+                    awb_sv += (unsigned long)v;
+                    awb_n++;
+                    uout[cr * (ow / 2) + x] = sat_px(u, awb_du);
+                    vout[cr * (ow / 2) + x] = sat_px(v, awb_dv);
+                } else if (gx + 3 >= g0 && gx + 3 < g1 && gx + 1 >= g0) {
                     int u = SMP(gx + 1 - g0), v = SMP(gx + 3 - g0);
                     awb_su += (unsigned long)u;
                     awb_sv += (unsigned long)v;
                     awb_n++;
-                    uout[cr * (ow / 2) + x] = awb_px(u, awb_du);
-                    vout[cr * (ow / 2) + x] = awb_px(v, awb_dv);
+                    uout[cr * (ow / 2) + x] = sat_px(u, awb_du);
+                    vout[cr * (ow / 2) + x] = sat_px(v, awb_dv);
                 }
             }
         }
@@ -885,7 +947,8 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
     st[21] = changed;               /* 0xFF800054: changed MCUs (delta check) */
     if (full) {
         full_id = (full_id + 1) & 0xFF;
-        jpeg_begin(blob, max - 2, OUT_W, IMG_H, JPEG_QUALITY, 1, 1, (int)full_id);
+        ref_q = jpeg_q;
+        jpeg_begin(blob, max - 2, OUT_W, IMG_H, ref_q, 1, 1, (int)full_id);
         for (m = 0; m < total; m++) {
             if (m)
                 jpeg_rst(m - 1);
@@ -897,7 +960,7 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
         st[22] = 1;                 /* 0xFF800058: 1 full, 2 delta */
         return len;
     }
-    jpeg_tables(blob, max - 2, OUT_W, JPEG_QUALITY, 1);
+    jpeg_tables(blob, max - 2, OUT_W, ref_q, 1);
     jpeg_put('D');
     jpeg_put('1');
     jpeg_put(full_id);
@@ -948,6 +1011,7 @@ static unsigned int grab_jpeg(unsigned int mode)
     unsigned int row, hires, ow, oh;
     int settled = 0;
 
+    tune_load();
     /* test: 0xFF800034 = 0x80000000 | reg << 8 | value writes one sensor register before
      * the next picture (set over JTAG) */
     if (w & 0x80000000UL) {
@@ -1004,7 +1068,7 @@ static unsigned int grab_jpeg(unsigned int mode)
         awb_update();
         awb_apply();
     }
-    jpeg_begin(send + 2, max - 2, ow, oh, JPEG_QUALITY, mode != 0, 0, -1);
+    jpeg_begin(send + 2, max - 2, ow, oh, jpeg_q, mode != 0, 0, -1);
     for (row = 0; row < oh; row += STRIP_H) {
         if (mode != 0) {
             capture(strip, su, sv, row, STRIP_H, hires);
@@ -1052,6 +1116,8 @@ int main(void)
     st[28] = 0;
     st[29] = 0;
     st[30] = 0;                     /* 0xFF800078 flash test word */
+    st[15] = 0;                     /* 0xFF80003C shading/saturation tuning (see tune_load) */
+    st[16] = 0;                     /* 0xFF800040 JPEG quality tuning (see tune_load) */
     __asm__ volatile("R0 = SYSCFG; BITSET (R0, 1); SYSCFG = R0; CSYNC;" ::: "R0");  /* CCEN: CYCLES runs */
     have_ref = 0;                   /* .bss is not zeroed by a JTAG load */
     awb_valid = 0;

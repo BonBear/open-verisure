@@ -30,6 +30,7 @@
 
 /** @brief Fixed packet length: 8B Header + 16B AES Ciphertext. */
 #define PACKET_LEN        24
+#define BIG_PACKET_LEN    56   // picture packet (type 0x82): 8 B ID + 3 AES blocks, 40 B of JPEG
 
 /** @brief Sleep Timer tick: WOR_RES=2 (1024 x 32 kHz periods = 31.25 ms) x 16 = 0.5 s. */
 #define ST_WOR_RES        0x02
@@ -51,7 +52,8 @@ typedef struct {
 
 /* Global variables in XRAM (__xdata) - zero dynamic allocation */
 static __xdata dma_desc_t dma_desc;
-static __xdata uint8_t tx_buf[PACKET_LEN];
+static __xdata uint8_t tx_buf[BIG_PACKET_LEN];
+static uint8_t s_tx_len = PACKET_LEN;   // bytes radio_send_dma sends (PKTLEN must match)
 
 volatile __xdata uint8_t g_tx_count = 0;
 volatile __xdata uint8_t g_tx_fail = 0;
@@ -124,13 +126,22 @@ void aes_load_key(const uint8_t __code *key) {
     while (!(ENCCS & 0x08) && --timeout);
 }
 
+// After an encrypt/decrypt ENCCS.RDY did not come up before ENCDO is read, so waiting for
+// it with a 50000 timeout cost 44 ms per block (measured with Timer 1): a picture chunk
+// took 52 ms instead of ~8 ms. Wait at most 120 short loop passes (~0.1 ms) instead, far
+// more than one AES block needs; the key load still waits for RDY (it does come up there).
+static void aes_wait(void) {
+    uint8_t d;
+    for (d = 0; d < 120 && !(ENCCS & 0x08); d++)
+        ;
+}
+
 void aes_encrypt_block(const uint8_t *in, uint8_t *out) {
-    uint16_t timeout = 50000;
     ENCCS = 0x40 | 0x01; // MODE = ECB, CMD = Encrypt, ST = 1
     for (uint8_t i = 0; i < 16; i++) {
         ENCDI = in[i];
     }
-    while (!(ENCCS & 0x08) && --timeout);
+    aes_wait();
     for (uint8_t i = 0; i < 16; i++) {
         out[i] = ENCDO;
     }
@@ -523,7 +534,7 @@ bool radio_send_dma(void) {
     dma_desc.dst_h = 0xDF;
     dma_desc.dst_l = 0xD9;       // X_RFD
     dma_desc.len_h = 0x00;
-    dma_desc.len_l = PACKET_LEN;
+    dma_desc.len_l = s_tx_len;
     dma_desc.cfg0  = 19;         // DMA_TRIG_RADIO
     dma_desc.cfg1  = 0x4A;
 
@@ -988,6 +999,46 @@ static void transmit_image_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk
     aes_encrypt_block(s_img_plain, &tx_buf[8]);
 
     radio_send_dma();
+}
+
+// Picture packet of 56 bytes (gateway packet type 0x82, cryptoProcessBigPacket): device ID,
+// then 3 AES blocks chained as CBC with a zero IV (C0 = E(P0), C1 = E(P1 ^ C0), C2 = E(P2 ^ C1)),
+// so a block cannot be swapped in from another packet without breaking 'VS'. Plain: seq,
+// 0x82, chunk number, flags (0x80 first, 0x40 last, bits 0..5 length), 40 data bytes, 'V' 'S'.
+// The gateway receives 58-byte frames and tells this from the 24-byte packets by the CRC.
+static __xdata uint8_t s_big_plain[48];
+
+static void transmit_big_chunk(uint16_t seq, uint16_t chunk_idx, uint8_t chunk_len,
+                               bool is_first, bool is_last, const uint8_t *data) {
+    uint8_t i, b, flags = chunk_len & 0x3F;
+
+    aes_load_key(DEVICE_AES_KEY);
+    for (i = 0; i < 8; i++)
+        tx_buf[i] = (uint8_t)DEVICE_ID[i];
+    if (is_first) flags |= 0x80;
+    if (is_last)  flags |= 0x40;
+    s_big_plain[0] = (uint8_t)(seq >> 8);
+    s_big_plain[1] = (uint8_t)(seq & 0xFF);
+    s_big_plain[2] = 0x82;
+    s_big_plain[3] = (uint8_t)(chunk_idx >> 8);
+    s_big_plain[4] = (uint8_t)(chunk_idx & 0xFF);
+    s_big_plain[5] = flags;
+    for (i = 0; i < 40; i++)
+        s_big_plain[6 + i] = (i < chunk_len) ? data[i] : 0x00;
+    s_big_plain[46] = 'V';
+    s_big_plain[47] = 'S';
+    for (b = 0; b < 3; b++) {
+        if (b) {
+            for (i = 0; i < 16; i++)
+                s_big_plain[16 * b + i] ^= tx_buf[8 + 16 * (b - 1) + i];
+        }
+        aes_encrypt_block(&s_big_plain[16 * b], &tx_buf[8 + 16 * b]);
+    }
+    PKTLEN = BIG_PACKET_LEN;
+    s_tx_len = BIG_PACKET_LEN;
+    radio_send_dma();
+    PKTLEN = PACKET_LEN;
+    s_tx_len = PACKET_LEN;
 }
 
 // Raw grayscale camera tile (gateway packet type 0x81): tile number in plain[3..4] and
@@ -1894,13 +1945,25 @@ static uint8_t bf_link_xfer(uint8_t tx) {
     return rx;
 }
 
-static uint8_t s_img_blk[BF_IMG_BLOCK];
+#define BF_IMG_CHUNK 40          // JPEG bytes per RF picture packet (type 0x82, 56 bytes)
+static uint8_t s_img_blk[BF_IMG_CHUNK];
+
+#define BF_IMG_TIMING 0          // test: after a picture, RF B7 with the mean time per chunk of the
+                                 // SPI read, the RF send and the whole loop (units of 0.25 ms, Timer 1).
+                                 // 2026-11-16 after the AES fix: 0.75 / 8 / 9 ms (before: 0.5 / 52 / 53)
+#if BF_IMG_TIMING
+static uint16_t t1_now(void) {
+    uint8_t l = T1CNTL;          // reading T1CNTL latches T1CNTH
+    return ((uint16_t)T1CNTH << 8) | l;
+}
+#endif
 
 // One picture from the Blackfin (snap_link.c): cmd 0xD0..0xD6 grabs and encodes it (a few
 // seconds; the Blackfin does not answer meanwhile), so poll 0xB0/0xA0 until the answer is
-// 0x5A. Then read the length (2 bytes, little endian) and the data, 8 bytes per RF packet
-// (type 0x80, chunk number, length, first/last flags); the gateway places the chunks by
-// number. RF on a failure: B8, tries, status. Returns true if the picture was sent.
+// 0x5A. Then read the length (2 bytes, little endian) and the data, 40 bytes per 56-byte RF
+// packet (type 0x82, chunk number, length, first/last flags; transmit_big_chunk); the gateway
+// places the chunks by number. RF on a failure: B8, tries, status. Returns true if the
+// picture was sent. (Before 2026-11-16: 8 bytes per 24-byte packet, ~9 ms each.)
 static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
     uint8_t st = 0, tries, i, n;
     uint16_t len, off, idx;
@@ -1924,12 +1987,39 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
         transmit((*p_seq)++, false, false, false, 0xB8, 0xFF, (uint8_t)len, (uint8_t)(len >> 8));
         return false;
     }
+#if BF_IMG_TIMING
+    {
+    uint32_t t_spi = 0, t_tx = 0, t_all = 0;
+    uint16_t a, b, c, z = 0;
+    T1CTL = 0x0D;                // free running, tick 128/27 MHz = 4.74 us
+    c = t1_now();
+#endif
     for (off = 0, idx = 0; off < len; off += n, idx++) {
-        n = (len - off) > BF_IMG_BLOCK ? BF_IMG_BLOCK : (uint8_t)(len - off);
+        n = (len - off) > BF_IMG_CHUNK ? BF_IMG_CHUNK : (uint8_t)(len - off);
+#if BF_IMG_TIMING
+        a = t1_now();
+#endif
         for (i = 0; i < n; i++)
             s_img_blk[i] = bf_link_xfer(0x00);
-        transmit_image_chunk((*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
+#if BF_IMG_TIMING
+        b = t1_now();
+        t_spi += (uint16_t)(b - a);
+#endif
+        transmit_big_chunk((*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
+#if BF_IMG_TIMING
+        a = t1_now();
+        t_tx += (uint16_t)(a - b);
+        t_all += (uint16_t)(a - c);
+        c = a;
+        z++;
+#endif
     }
+#if BF_IMG_TIMING
+    // 0.25 ms = 52.7 ticks
+    transmit((*p_seq)++, false, false, false, 0xB7, (uint8_t)(t_spi / z / 53), (uint8_t)(t_tx / z / 53),
+             (uint8_t)(t_all / z / 53));
+    }
+#endif
     return true;
 }
 #endif
@@ -2229,12 +2319,11 @@ static uint16_t next_challenge(void) {
 }
 
 static void aes_decrypt_block(const uint8_t *in, uint8_t *out) {
-    uint16_t timeout = 50000;
     uint8_t i;
     ENCCS = 0x40 | 0x02 | 0x01;      // MODE = ECB, CMD = Decrypt, ST = 1
     for (i = 0; i < 16; i++)
         ENCDI = in[i];
-    while (!(ENCCS & 0x08) && --timeout);
+    aes_wait();
     for (i = 0; i < 16; i++)
         out[i] = ENCDO;
 }

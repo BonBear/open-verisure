@@ -47,8 +47,36 @@
 /** @brief Length of sensor telemetry payload: 8B Header + 16B AES Ciphertext. */
 #define VERISURE_PACKET_LEN 24
 
-/** @brief Total bytes read from RX FIFO including CC1101 RSSI and LQI/CRC status bytes. */
-#define TOTAL_RX_LEN        (VERISURE_PACKET_LEN + 2)
+/** @brief MD CAM image packet (type 0x82): 8B header + 3 AES blocks (40 bytes of picture). */
+#define BIG_PACKET_LEN      56
+
+/**
+ * @brief Receive frame. The radio always takes BIG_PACKET_LEN + 2 bytes (fixed length, hardware
+ * CRC off) plus the RSSI/LQI status bytes; the CRC is checked in software: after 56 bytes a
+ * camera image packet, after 24 bytes a sensor packet (followed by ~7 ms of noise, during which
+ * another packet would be missed). So the sensors keep their 24-byte packets, and the camera
+ * sends 5x the picture data per packet.
+ */
+#define RX_PKT_LEN          (BIG_PACKET_LEN + 2)
+#define RX_FRAME_LEN        (RX_PKT_LEN + 2)
+
+/** @brief CRC-16 as the CC1101 computes it (poly 0x8005, init 0xFFFF, no whitening). */
+static uint16_t ccCrc16(const uint8_t* d, size_t n) {
+    uint16_t crc = 0xFFFF;
+    while (n--) {
+        uint8_t b = *d++;
+        for (int i = 0; i < 8; i++) {
+            if (((crc & 0x8000) >> 8) ^ (b & 0x80)) crc = (crc << 1) ^ 0x8005;
+            else crc <<= 1;
+            b <<= 1;
+        }
+    }
+    return crc;
+}
+
+static bool crcAt(const uint8_t* f, size_t n) {
+    return ccCrc16(f, n) == (((uint16_t)f[n] << 8) | f[n + 1]);
+}
 
 unsigned long lastEventTime = 0;
 unsigned long lastHeartbeat = 0;
@@ -98,6 +126,9 @@ static bool s_radioOnline = false;
  */
 static void radioTransmit(const uint8_t* pkt) {
     ELECHOUSE_cc1101.SpiStrobe(CC1101_SIDLE);
+    // the camera receives 24 bytes with hardware CRC (RX here uses 58 bytes, CRC off)
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTLEN, VERISURE_PACKET_LEN);
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL0, 0x04);
     ELECHOUSE_cc1101.SpiStrobe(CC1101_SFTX);
     ELECHOUSE_cc1101.SpiWriteBurstReg(CC1101_TXFIFO, (byte*)pkt, VERISURE_PACKET_LEN);
     ELECHOUSE_cc1101.SpiStrobe(CC1101_STX);
@@ -105,6 +136,9 @@ static void radioTransmit(const uint8_t* pkt) {
     while ((readStatusSafe(CC1101_MARCSTATE) & 0x1F) != 0x01 && millis() - t0 < 30) {
         delayMicroseconds(200);
     }
+    ELECHOUSE_cc1101.SpiStrobe(CC1101_SIDLE);
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTLEN, RX_PKT_LEN);
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL0, 0x00);
     enterRxMode();
 }
 
@@ -176,10 +210,11 @@ void initRadioRegisters() {
     byte pa = 0xC0;
     ELECHOUSE_cc1101.SpiWriteBurstReg(CC1101_PATABLE, &pa, 1);
 
-    // Packet Configuration: Fixed length 24 bytes + status bytes
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTLEN,   VERISURE_PACKET_LEN);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL1, 0x04); // Append RSSI and LQI/CRC
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL0, 0x04); // Fixed length mode, CRC enabled
+    // Packet Configuration: fixed length RX_PKT_LEN (58) + status bytes, CRC checked in
+    // software (see RX_FRAME_LEN); radioTransmit switches to 24 bytes with CRC for the downlink
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTLEN,   RX_PKT_LEN);
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL1, 0x04); // Append RSSI and LQI
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL0, 0x00); // Fixed length mode, CRC off
 
     // State machine: Autocalibrate IDLE -> RX, Stay in RX after packet
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_MCSM2,    0x07);
@@ -295,32 +330,42 @@ void loop() {
     }
 
     byte rxBytesStatus = readStatusSafe(CC1101_RXBYTES);
+    static byte frame[RX_FRAME_LEN];
+    static byte frameLen = 0;
     static unsigned long partialStart = 0;
 
     // Check for RX FIFO overflow (Bit 7 = 1)
     if (rxBytesStatus & 0x80) {
         enterRxMode();
+        frameLen = 0;
         partialStart = 0;
     } else {
         byte bytesInFifo = rxBytesStatus & 0x7F;
+        byte need = RX_FRAME_LEN - frameLen;
+        // A frame (60 bytes) nearly fills the 64-byte FIFO, so it is read in pieces while it
+        // comes in; the last byte is left in the FIFO until the frame is complete (errata).
+        byte take = bytesInFifo >= need ? need : (bytesInFifo > 1 ? bytesInFifo - 1 : 0);
+        if (take) {
+            ELECHOUSE_cc1101.SpiReadBurstReg(CC1101_RXFIFO, frame + frameLen, take);
+            frameLen += take;
+            partialStart = now;
+        }
 
-        // Complete packet available in FIFO (24 bytes payload + 2 bytes status)
-        if (bytesInFifo >= TOTAL_RX_LEN) {
+        if (frameLen == RX_FRAME_LEN) {
+            frameLen = 0;
             partialStart = 0;
-            byte rxBuffer[TOTAL_RX_LEN] = {0};
-            ELECHOUSE_cc1101.SpiReadBurstReg(CC1101_RXFIFO, rxBuffer, TOTAL_RX_LEN);
-
-            byte rawRssi = rxBuffer[VERISURE_PACKET_LEN];
-            byte rawLqi  = rxBuffer[VERISURE_PACKET_LEN + 1];
+            byte rawRssi = frame[RX_PKT_LEN];
+            byte rawLqi  = frame[RX_PKT_LEN + 1];
 
             // Convert raw RSSI byte to dBm (CC1101 datasheet section 17.3)
             int packetRssi = (rawRssi >= 128) ? ((rawRssi - 256) / 2) - 74 : (rawRssi / 2) - 74;
-            bool crcOk = (rawLqi & 0x80) != 0;
+            const uint8_t* activeMasterKey = ConfigManager::get().masterKey;
 
-            if (crcOk) {
+            if (crcAt(frame, BIG_PACKET_LEN) && cryptoProcessBigPacket(frame, activeMasterKey)) {
+                // camera image packet (type 0x82), handled by the image receiver
+            } else if (crcAt(frame, VERISURE_PACKET_LEN)) {
                 VerisureTelemetry telem;
-                const uint8_t* activeMasterKey = ConfigManager::get().masterKey;
-                if (cryptoProcessPacket(rxBuffer, packetRssi, rawLqi & 0x7F, activeMasterKey, &telem)) {
+                if (cryptoProcessPacket(frame, packetRssi, rawLqi & 0x7F, activeMasterKey, &telem)) {
                     if (telem.rawP0 == DOWNLINK_POLL_MARKER && haIsMotionCameraSensor(telem.deviceId)) {
                         answerCameraPoll(telem);
                     }
@@ -343,21 +388,20 @@ void loop() {
                 }
             } else {
                 printTimestamp(now);
-                Serial.println("[Radio] Packet received with invalid hardware CRC (dropped).");
+                Serial.println("[Radio] Packet received with invalid CRC (dropped).");
             }
-            enterRxMode();
-        } else if (bytesInFifo > 0) {
-            // Partial packet timeout handling
+            // RXOFF_MODE = RX (MCSM1 0x3C): the radio is already receiving the next packet.
+            // A flush here cut it off; with picture chunks back to back that lost a third of
+            // them. Restart RX only if the radio left it (e.g. after the poll answer's TX).
+            if ((readStatusSafe(CC1101_MARCSTATE) & 0x1F) != 0x0D) enterRxMode();
+        } else if (frameLen > 0 || bytesInFifo > 0) {
+            // a frame that stops coming in: drop it and restart RX
             if (partialStart == 0) partialStart = now;
             if (now - partialStart > 50) {
-                byte pBuf[32] = {0};
-                byte toRead = (bytesInFifo > 32) ? 32 : bytesInFifo;
-                ELECHOUSE_cc1101.SpiReadBurstReg(CC1101_RXFIFO, pBuf, toRead);
                 printTimestamp(now);
-                Serial.printf("[Partial %d B] ", toRead);
-                for (byte b = 0; b < toRead; b++) Serial.printf("%02X ", pBuf[b]);
-                Serial.println();
+                Serial.printf("[Partial %d B] dropped\n", frameLen + bytesInFifo);
                 enterRxMode();
+                frameLen = 0;
                 partialStart = 0;
             }
         } else {

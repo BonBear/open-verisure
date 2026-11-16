@@ -113,6 +113,35 @@ static DeviceSession* getOrCreateSession(const char* deviceId) {
     return nullptr; // Session table full
 }
 
+bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16]) {
+    if (!rxBuf56 || !masterKey) return false;
+    char devId[9] = {0};
+    for (int i = 0; i < 8; i++) {
+        devId[i] = (char)rxBuf56[i];
+        if (!isalnum((unsigned char)devId[i])) return false;
+    }
+    uint8_t devKey[16], plain[48];
+    if (!cryptoDeriveDeviceKey(masterKey, devId, devKey)) return false;
+    for (int b = 0; b < 3; b++) {
+        if (!cryptoDecryptPayload(devKey, &rxBuf56[8 + 16 * b], &plain[16 * b])) {
+            memset(devKey, 0, sizeof(devKey));
+            return false;
+        }
+        if (b > 0) {
+            for (int i = 0; i < 16; i++) plain[16 * b + i] ^= rxBuf56[8 + 16 * (b - 1) + i];
+        }
+    }
+    memset(devKey, 0, sizeof(devKey));
+    uint8_t len = plain[5] & 0x3F;
+    if (plain[2] != 0x82 || plain[46] != 'V' || plain[47] != 'S' || len == 0 || len > 40) return false;
+    // camera data never moves the replay window (as the 0x80 chunks)
+    DeviceSession* sess = getOrCreateSession(devId);
+    if (sess) sess->lastSeen = millis();
+    imageReceiverProcessChunk(devId, ((uint16_t)plain[3] << 8) | plain[4], len, (plain[5] & 0x80) != 0,
+                              (plain[5] & 0x40) != 0, &plain[6], 40);
+    return true;
+}
+
 bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const uint8_t masterKey[16], VerisureTelemetry* outTelem) {
     s_lastWasImage = false;
     if (!rxBuf24 || !outTelem || !masterKey) return false;
@@ -165,7 +194,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
         DeviceSession* sess = getOrCreateSession(devId);
         if (sess) sess->lastSeen = millis();
 
-        imageReceiverProcessChunk(devId, chunkIdx, chunkLen, isFirst, isLast, &plain[6]);
+        imageReceiverProcessChunk(devId, chunkIdx, chunkLen, isFirst, isLast, &plain[6], 8);
         s_lastWasImage = true;
         return false; // Handled directly as image stream, not a telemetry packet
     }
