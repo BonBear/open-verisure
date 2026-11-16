@@ -5,8 +5,8 @@ beslut. Bocka av med `[x]` och skriv resultatet kort efter punkten.
 
 ## A. Claude kan göra autonomt
 
-- [x] **Visa blixtbilder på gatewayens webbsida.** Klart 2026-11-16: `/api/camera.jpg` visar den nyaste av färgbilden och blixtbilden (verifierat D1 -> färg, D4 -> svartvit, D1 -> färg). `/api/camera.jpg` visar fortfarande senaste färgbilden; svartvita blixtbilder (0xD4/0xD5 i mörker) går bara till MQTT.
-- [ ] **Utöka e2e-testet** (`MD_CAM/test_camera_e2e.py`) med D4 (svartvit blixtbild), D5/D6 och kontroll av att bildpaketen är 56-byte (typ 0x82).
+- [x] **Visa blixtbilder på gatewayens webbsida.** Klart 2026-11-16: `/api/camera.jpg` visar den nyaste av färgbilden och blixtbilden (verifierat D1 -> färg, D4 -> svartvit, D1 -> färg).
+- [x] **Utöka e2e-testet** (`MD_CAM/test_camera_e2e.py`). Klart 2026-11-16: kollar nu 56-byte-paket (antal paket = byte/40), D4 svartvit på MQTT, D3 efter D4 som delta, D5/D6 (färg i ljus, blixtbild i mörker). 11/11 godkända.
 - [ ] **Uppdatera protokolldokumentationen** (`MD_CAM/docs/Blackfin_CC1110_Interprocessor_Protocol_Analysis.md` m.fl.) med kommandona 0xD4–0xD6, bildpaket 0x82 (56 byte, CBC) och gatewayens 58-byte-mottagning med mjukvaru-CRC.
 - [ ] **Mjukvaruskärpning** i snap_link (lätt unsharp mask på Y) mot linsens oskärpa; mät brus och filstorlek före/efter.
 - [ ] **Delta-brus från färgen:** brusgolvet i delta-histogrammet ligger på 6–7 (max ~10, tröskel 12). Undersök om U/V (förstärkta x7/4) dominerar och om de bör vägas ned, så att tröskeln kan sänkas och små rörelser fångas.

@@ -16,7 +16,12 @@ Checks:
   3. picture/set D3 right after -> a delta (the Blackfin is kept powered between pictures)
   4. a poll follows right after a picture (the camera polls after every picture)
   5. alarm/set ON reaches the camera (armed 1), alarm/set OFF too (armed 0)
-  6. (--gateway-restart) after "reboot" a delta without base makes the gateway ask for 0xD1,
+  6. the full picture came in 56-byte packets (type 0x82: 40 bytes each, so ~len/40 chunks)
+  7. picture/set D4 -> a grayscale flash picture on MQTT, and a D3 after it is still a delta
+     against the colour picture (the gateway keeps it as the base)
+  8. picture/set D5 / D6 -> a picture (colour delta / 640x480 with light, grayscale flash
+     picture in the dark; both are accepted, the log says which)
+  9. (--gateway-restart) after "reboot" a delta without base makes the gateway ask for 0xD1,
      and a full picture arrives
 Exit code 0 when every check passed.
 """
@@ -33,6 +38,19 @@ import paho.mqtt.client as mqtt
 HERE = os.path.dirname(os.path.abspath(__file__))
 SECRETS = os.path.join(HERE, "..", "868Receiver", "src", "secrets.h")
 HEX32 = re.compile(r"\b[0-9A-Fa-f]{32}\b")
+
+
+def jpeg_components(j: bytes) -> int:
+    """Number of colour components in the SOF0 frame header (1 = grayscale), 0 if not found."""
+    i = 2
+    while i + 9 < len(j):
+        if j[i] != 0xFF:
+            return 0
+        marker, seglen = j[i + 1], (j[i + 2] << 8) | j[i + 3]
+        if marker == 0xC0:
+            return j[i + 9]
+        i += 2 + seglen
+    return 0
 
 
 def secret(name: str, default: str = "") -> str:
@@ -111,7 +129,15 @@ def main() -> int:
     client = mqtt.Client(client_id="md-cam-e2e")
     if secret("DEFAULT_MQTT_USER"):
         client.username_pw_set(secret("DEFAULT_MQTT_USER"), secret("DEFAULT_MQTT_PASS"))
+    images = []                      # (time, payload) of pictures published by the gateway
+
+    def on_message(cl, userdata, msg):
+        if not msg.retain:
+            images.append((time.time(), msg.payload))
+
+    client.on_message = on_message
     client.connect(secret("DEFAULT_MQTT_HOST", "192.168.0.22"), 1883, 10)
+    client.subscribe(f"{base}/{dev}/image")
     client.loop_start()
 
     def publish(topic: str, payload: str):
@@ -131,6 +157,12 @@ def main() -> int:
     r = log.wait(picture_rx, 180, m)
     ok = bool(r and "JPEG" in r[1] and "width 320" in r[1] and " 0/" in r[1])
     check("D1 full picture", ok, r[1].split("] ", 1)[1] if r else "no picture in 180 s")
+    if r:
+        mm = re.search(r"(\d+) bytes.* (\d+)/(\d+) chunks", r[1])
+        if mm:
+            nbytes, chunks = int(mm.group(1)), int(mm.group(3))
+            check("56-byte picture packets", chunks == (nbytes + 39) // 40,
+                  f"{chunks} chunks for {nbytes} bytes (8-byte packets would be {(nbytes + 7) // 8})")
 
     # 4. poll right after the picture
     if r:
@@ -145,6 +177,38 @@ def main() -> int:
     r = log.wait(picture_rx, 120, m)
     check("D3 delta", bool(r and "Delta" in r[1] and "ignored" not in r[1] and "could not" not in r[1]),
           r[1].split("] ", 1)[1] if r else "no picture in 120 s")
+
+    # 7. grayscale flash picture, then a delta against the colour base
+    m = log.mark()
+    n_img = len(images)
+    publish(f"{dev}/picture/set", "D4")
+    r = log.wait(picture_rx, 120, m)
+    time.sleep(2)
+    gray = [p for t, p in images[n_img:]]
+    comps = jpeg_components(gray[-1]) if gray else 0
+    check("D4 flash picture", bool(r and "JPEG" in r[1] and comps == 1),
+          (r[1].split("] ", 1)[1] + f", {comps} component(s) on MQTT") if r else "no picture in 120 s")
+    m = log.mark()
+    publish(f"{dev}/picture/set", "D3")
+    r = log.wait(picture_rx, 120, m)
+    check("D3 after D4", bool(r and "Delta" in r[1] and "ignored" not in r[1] and "could not" not in r[1]),
+          r[1].split("] ", 1)[1] if r else "no picture in 120 s")
+
+    # 8. alarm pictures: colour with light, flash picture in the dark
+    for cmd in ("D5", "D6"):
+        m = log.mark()
+        n_img = len(images)
+        publish(f"{dev}/picture/set", cmd)
+        r = log.wait(picture_rx, 150, m)
+        time.sleep(2)
+        new = [p for t, p in images[n_img:]]
+        kind = ""
+        if r and "Delta" in r[1]:
+            kind = "colour delta"
+        elif new:
+            kind = "grayscale flash picture (dark)" if jpeg_components(new[-1]) == 1 else "colour picture"
+        check(f"{cmd} alarm picture", bool(r and "ignored" not in r[1] and "could not" not in r[1]),
+              (kind + ": " + r[1].split("] ", 1)[1]) if r else "no picture in 150 s")
 
     # 5. alarm on / off through the downlink
     for state, want in (("ON", "armed 1"), ("OFF", "armed 0")):
