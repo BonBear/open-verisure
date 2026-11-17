@@ -5,6 +5,10 @@
 
 #include "ha_discovery.h"
 
+/** Seconds without a packet before Home Assistant shows a camera's entities as unavailable
+ *  (the camera polls every ~30 s, every ~2 minutes when disarmed and idle). */
+#define HA_CAMERA_EXPIRE_S 600
+
 /**
  * @brief Sensor entity configuration table.
  * @details Defines discovery parameters for all sensor metrics sent by a Verisure node.
@@ -301,6 +305,11 @@ String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, con
     }
     if (def->category) {
         p += "\"entity_category\":\"" + String(def->category) + "\",";
+    }
+    if (isMotionCam) {
+        // the camera polls at least every ~2 minutes: after 10 minutes without a packet its
+        // entities turn unavailable (dead battery, out of range) instead of keeping old values
+        p += "\"expire_after\":" + String(HA_CAMERA_EXPIRE_S) + ",";
     }
 
     String availTopic = String(baseTopic) + "/status";

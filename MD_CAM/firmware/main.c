@@ -416,6 +416,17 @@ bool radio_send_dma(void) {
 
     RFST = 0x03; // STX
 
+    // With the Blackfin on, measure VBAT while the PA sends: the radio's TX current on top of
+    // the Blackfin's is the deepest sag a picture causes. The CPU only waits here anyway.
+    if (s_bf_powered) {
+        uint16_t mv;
+        timeout = 5000;
+        while ((MARCSTATE & 0x1F) != 0x13 && --timeout);   // TX
+        mv = read_battery_mv();
+        if (timeout && mv < s_bat_load_min)
+            s_bat_load_min = mv;
+    }
+
     timeout = 50000;
     while (!(RFIF & 0x10) && --timeout) {
         if ((MARCSTATE & 0x1F) == 0x16) {
@@ -1218,6 +1229,7 @@ static void cam_alarm_loop(void) {
     bool pic_open = false;
     uint8_t tamper_cnt = 0;
     uint16_t tamper_gap = 0;
+    bool tamper_pic = false;        // an alarm picture is due for a tamper while armed
 
     bf_power_off();
 #if BF_SLEEP_IDLE
@@ -1239,6 +1251,15 @@ static void cam_alarm_loop(void) {
             tamper_cnt = 0;
             tamper_gap = TAMPER_MIN_GAP;
             transmit(active, false, 0xB5, s_tamper);
+            // armed and taken off the wall: one alarm picture of whoever does it. Poll first, as
+            // for motion, so a camera that was disarmed (polls every ~2 minutes) gets a fresh
+            // alarm state
+            if (s_tamper) {
+                poll = 0;
+                cam_poll(active, bf_on);
+                if (s_armed)
+                    tamper_pic = true;
+            }
         }
         if (bf_on) {
             uint16_t mv = read_battery_mv();
@@ -1277,9 +1298,18 @@ static void cam_alarm_loop(void) {
         was_armed = s_armed;
 
         cmd = 0;
+        if (!s_armed)
+            tamper_pic = false;
         if (s_dl_cmd) {
             cmd = s_dl_cmd;
             s_dl_cmd = 0;
+        } else if (tamper_pic && !pic_open) {
+            // as the first picture of a motion event
+#if BF_AUTO_FLASH && BF_IMG_CMD == 0xD3
+            cmd = 0xD5;
+#else
+            cmd = BF_IMG_CMD;
+#endif
         } else if (s_armed && active && !pic_open && !gap) {
             cmd = BF_IMG_CMD;
 #if BF_IMG_HIRES_ON_MOTION
@@ -1312,6 +1342,7 @@ static void cam_alarm_loop(void) {
             }
             keep = BF_HOLD_S * BF_TICKS_PER_S;
         } else if (cmd) {
+            tamper_pic = false;     // any picture now covers a pending tamper picture
             if (!bf_on) {
                 bf_power_on();
 #if BF_IMG_TIMING

@@ -82,6 +82,9 @@ all others are door/window sensors.
 | **Battery**, **Battery Voltage**, **Signal Strength** | `sensor` | as for the door sensor | Battery % also takes the voltage under load into account |
 | **Battery Voltage Under Load** | `sensor` | `voltage` (mV) | Lowest VBAT while the Blackfin was last on (`battery_load_mv`, only in camera states once known) |
 | **Low Battery** | `binary_sensor` | `battery` | Low-battery flag (`low_battery`): idle < 2.7 V or under load < 2.6 V |
+
+The camera's sensor entities have `expire_after` 600 s: without a packet for 10 minutes (it polls
+every ~30 s, every ~2 minutes when disarmed) they turn unavailable instead of keeping old values.
 | **Camera** | `camera` | `verisure/<id>/image` | Latest picture (alarm picture or on request) |
 | **Take 640x480 picture** | `button` | `picture/set` = `D2` | Picture on request, sent with the camera's next poll |
 | **Take flash picture** | `button` | `picture/set` = `D4` | Grayscale picture lit by the IR flash |
