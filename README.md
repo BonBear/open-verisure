@@ -97,6 +97,31 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 
 ---
 
+## Flasher wiring
+
+Both CC1110 boards use TI's 2-wire debug interface (`DD`, `DC`, `RESET_N`). The GPIOs are those
+set in `ESP_CC_Flasher/src/main.h` for an ESP32 DevKit (ESP32-C3: DC = GPIO 3, DD = GPIO 4,
+RESET = GPIO 1).
+
+| ESP32 flasher | Door sensor `J2` | Camera `J6` | Signal |
+| :--- | :--- | :--- | :--- |
+| GND | `J2-7` | `J6-5` | Ground |
+| GPIO 23 | `J2-4` | `J6-2` | `DD` (debug data, `P2_1`) |
+| GPIO 19 | `J2-5` | `J6-3` | `DC` (debug clock, `P2_2`) |
+| GPIO 33 | `J2-6` | `J6-4` | `RESET_N` |
+| 3V3 | `J2-3` (only if no battery) | **do not connect** | Target power |
+
+Pin 1 of `J2` is the square pad with a white dot. Rules:
+
+* **Camera power:** use its batteries or a bench supply/Otii at 3.0 V on the `VBAT` pad, never the
+  flasher's 3V3. The camera's inrush (~0.9 A for ~1 ms) drops the flasher's USB connection, and the
+  Blackfin draws 170-190 mA with peaks above 0.5 A. `J6-1` sits behind 1 kOhm and is not a supply pin.
+* **Power the flasher over USB first,** then connect it: an unpowered flasher holds `RESET_N` low.
+* One target at a time. Details:
+  [documentation/hardware_cc_flasher.md](documentation/hardware_cc_flasher.md).
+
+---
+
 ## Security
 
 * **AES-128** on every packet, hardware AES on the CC1110 and mbedTLS on the gateway.
@@ -116,7 +141,7 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 
 * [Protocol, RF & cryptography](documentation/cryptography_and_protocol.md)
 * [Gateway hardware & wiring](documentation/hardware_gateway_esp32s2.md)
-* [CC-Flasher wiring (J2 header)](documentation/hardware_cc_flasher.md)
+* [CC-Flasher wiring (door sensor J2, camera J6)](documentation/hardware_cc_flasher.md)
 * [Home Assistant & MQTT](documentation/homeassistant_mqtt.md)
 * [Door sensor hardware](documentation/verisure_sensor_hardware.md)
 * [Camera protocol as implemented](MD_CAM/docs/Camera_protocol.md)

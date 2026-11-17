@@ -96,8 +96,7 @@ flowchart LR
         D6["J2-6 RESET_N"]
     end
 
-    subgraph CAM["Motion camera J6"]
-        CV["VBAT pad"]
+    subgraph CAM["Motion camera J6 (powered by batteries or VBAT supply)"]
         C5["J6-5 GND"]
         C2["J6-2 DD"]
         C3["J6-3 DC"]
@@ -109,14 +108,14 @@ flowchart LR
     FDD --- D4
     FDC --- D5
     FRST --- D6
-    F3V3 -.- CV
     FGND -.- C5
     FDD -.- C2
     FDC -.- C3
     FRST -.- C4
 ```
 
-Solid lines: door sensor, dashed lines: camera (one target at a time). An unpowered flasher holds
+Solid lines: door sensor, dashed lines: camera (one target at a time). The flasher's 3V3 goes to
+the door sensor only; the camera has its own supply. An unpowered flasher holds
 RESET_N low, so give the flasher USB power before connecting it to a running device.
 
 
