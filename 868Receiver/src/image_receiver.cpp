@@ -10,9 +10,9 @@
 #include "jpeg_splice.h"
 #include "downlink.h"
 
-/* --------------------------- JPEG chunks (type 0x80 / 0x82) ---------------------------
- * Chunk n carries bytes 8n .. 8n+len-1 of the JPEG (0x80: 8-byte chunks in 24-byte packets;
- * 0x82: 40-byte chunks in 56-byte packets, so 40n), the last one shorter. Chunks are placed by number, so a lost packet only leaves an 8-byte
+/* --------------------------- JPEG chunks (type 0x82) ---------------------------
+ * Chunk n carries bytes 40n .. 40n+len-1 of the JPEG (40-byte chunks in 56-byte packets; the
+ * 8-byte chunk size is from the old 24-byte type 0x80, which crypto.cpp no longer accepts), the last one shorter. Chunks are placed by number, so a lost packet only leaves an 8-byte
  * hole (zeros); the sender puts a restart marker after every MCU (or MCU row), so a hole
  * only damages that part. A blob is finished by its last chunk, or by the first chunk of
  * the next blob. Full 320x240 pictures (COM id) become the base that later delta blobs

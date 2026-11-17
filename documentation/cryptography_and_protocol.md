@@ -98,9 +98,11 @@ The gateway applies a multi-stage authentication filter:
    * The camera's poll answers echo the poll's 32-bit counter, so a recorded answer never fits
      a later poll, as long as the counter is never reused: the camera's build script stops when it
      cannot read the seed from the gateway (`--no-seed` overrides).
-   * The camera's picture chunks (56-byte packets) are not replay-checked: a recorded picture
-     can be replayed and is then published as the newest picture, and recorded 0x83 chunks can be
-     patched into a picture being completed. Binding chunks to the counter is an open item.
+   * The camera's picture chunks (56-byte packets) carry the counter of the picture's start
+     packet (low half in bytes 0..1, high half in bytes 46..47). The gateway accepts them only
+     within 128 counters before (64 after) the last accepted counter and only for the newest
+     picture seen or a newer one (resent chunks only for the newest), so a recorded older picture
+     is dropped.
 4. **Old format (older firmware without flag bit 5):**
    * 16-bit `seq` that restarts at 0 after a reset; the gateway requires `seq > last_seq` within a
      16-bit window. A packet with the power-on flag is accepted anyway, so a recorded power-on

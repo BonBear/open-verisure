@@ -64,6 +64,7 @@ counter format, bits 7:6 reset cause. Byte 12 is the type:
 | type | Meaning |
 |---|---|
 | `0x00` | announce, the first packet after a boot (counter low byte 0) |
+| `0xB2` | picture start, sent before every picture: arg = picture command; its counter tags the picture's chunks |
 | `0xBA` | poll: arg = state (0x01 armed, 0x02 Blackfin on, 0x04 acknowledgement) |
 | `0xB9` | motion: arg = 1 start, 0 end |
 | `0xB8` | picture failed (no answer from the Blackfin within ~50 s): arg = its last status |
@@ -71,18 +72,22 @@ counter format, bits 7:6 reset cause. Byte 12 is the type:
 | `0xB7`, `0xB4`, `0xB6` | test (only with `BF_IMG_TIMING 1`): time per picture packet for the RF send and the SPI read, boot pings |
 
 Below 2.3 V at boot the camera neither logs a counter block nor sends; it sleeps and measures
-again about every minute. Picture chunks (below) do not use the counter and are not
-replay-checked (a recorded picture can be replayed and is published as the newest one); they
-carry their own 16-bit number. The build script reads the counter seed from the gateway and
+again about every minute. The build script reads the counter seed from the gateway and
 stops if it cannot (`--no-seed` flashes anyway; then `replay reset <ID>` on the gateway).
 
 **Picture packet, 56 bytes, type 0x82:** ID + three AES blocks chained as CBC with a zero IV
 (C0 = E(P0), C1 = E(P1 ⊕ C0), C2 = E(P2 ⊕ C1)). Plain text (48 bytes):
-`num(2) 0x82 chunk(2) flags data[40] 'V' 'S'`, flags: 0x80 first, 0x40 last, bits 0–5 length.
-Chunk n carries bytes 40n.. of the picture. About 20 ms per packet: a 320x240 picture of ~7 KB
+`tag_lo(2) 0x82 chunk(2) flags data[40] tag_hi(2)`, flags: 0x80 first, 0x40 last, bits 0–5
+length. The tag (big endian) is the counter of the picture's start packet (0xB2). The gateway
+rebuilds it from the camera's last accepted counter and accepts a chunk only if it is at most
+128 before or 64 after that counter and its high half matches, and a chunk must belong to the
+newest picture seen or a newer one (a resent chunk to exactly the newest), so a recorded picture
+is dropped (`[Replay] Dropped picture chunks`); a replay of the newest picture only repeats it. Chunk n carries bytes 40n.. of the picture. About 20 ms per packet: a 320x240 picture of ~7 KB
 takes ~4 s on air, 5–8 s from the command to the finished picture.
-**Resent chunk, 56 bytes, type 0x83:** the same format as 0x82, sent only on the gateway's request.
-(Older picture packets, type 0x80, 24 bytes with 8 bytes of data, are still accepted by the gateway.)
+**Resent chunk, 56 bytes, type 0x83:** the same format as 0x82 with the same tag, sent only on the
+gateway's request. (Older picture packets, type 0x80, 24 bytes with 8 bytes of data and no counter,
+are no longer accepted since 2026-11-17.) Bench test: `-DPIC_TAG_SKEW=300` builds a camera whose
+chunks carry an older tag, as a recorded picture would; the gateway must drop them.
 
 ## 3. Reception in the gateway
 

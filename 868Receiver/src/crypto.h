@@ -117,16 +117,14 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
 /**
  * @brief Camera image packet of 56 bytes (packet type 0x82): 8 bytes device ID + 3 AES blocks
  *        chained as CBC with a zero IV (C0 = E(P0), C1 = E(P1 ^ C0), C2 = E(P2 ^ C1)). Plain:
- *        [0..1] seq, [2] 0x82, [3..4] chunk number, [5] flags (0x80 first, 0x40 last, bits 0..5
- *        length 1..40), [6..45] data, [46] 'V', [47] 'S'. Handled by the image receiver.
+ *        [0..1] tag low 16 bits, [2] 0x82, [3..4] chunk number, [5] flags (0x80 first, 0x40 last,
+ *        bits 0..5 length 1..40), [6..45] data, [46..47] tag high 16 bits. The tag is the counter
+ *        of the picture's start packet (0xB2) and must be close to the device's last accepted
+ *        counter, else the chunk is dropped as a replay. Valid chunks go to the image receiver.
  *        Type 0x83 is the same for a chunk resent on the gateway's request.
- * @return True if the packet was a valid 0x82 packet of a known-format device ID.
+ * @return True if the packet decoded as a picture chunk (taken or dropped as stale).
  */
 bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16]);
-
-/** True if the last packet given to cryptoProcessPacket() was a camera image packet (type
- * 0x80/0x82), which is handled there and returns false without being a rejection. */
-bool cryptoLastPacketWasImage(void);
 
 /**
  * @brief Forget a device's replay state (RAM and NVS), e.g. after reflashing erased its flash,

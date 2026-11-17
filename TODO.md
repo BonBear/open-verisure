@@ -11,7 +11,6 @@ on site (list B). Bench routines (flashing, JTAG, HOLD) are in `MD_CAM/README.md
 
 ## A. Claude can do unattended
 
-- [ ] **Picture chunks are not replay-checked.** The 56-byte picture packets (0x82/0x83) carry no counter, so a recorded picture can be replayed and is published as the newest one, and recorded 0x83 chunks can be patched into a picture being completed (`cryptoProcessBigPacket` in `868Receiver/src/crypto.cpp`). Bind the chunks to the counter of the packet that started the picture (e.g. the picture number in the chunk's 16-bit field, announced in a counter-format packet before the first chunk) and drop chunks of an older picture. Needs the camera on the bench.
 - [ ] **Camera silent once after a picture command.** On 2026-11-16, right after flashing both the gateway and the camera, the camera sent nothing for 70 s after a D1 command (no picture, no polls). Not seen again in the following runs, and the Otii showed no supply cut-off then. If it comes back: record the current (Blackfin on or not, CC1110 awake or not) and the gateway log.
 
 ## B. Needs you

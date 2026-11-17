@@ -441,8 +441,9 @@ static void enter_pm2(void) {
  * Every entry is read back. When the page of the newest entry is full, the other page is erased
  * and used. Reflashing erases the log: build_and_flash_md_cam.py builds the firmware with
  * CTR_SEED = the block above the gateway's last accepted counter (GET /api/replay).
- * Picture chunks (56-byte packets) do not use the counter: the gateway does not replay-check
- * them (they only fill the picture being received), they carry their own 16-bit number.
+ * Picture chunks (56-byte packets) do not use up counter values: each picture starts with a
+ * 24-byte packet of type 0xB2, and all its chunks (also resent ones) carry that packet's counter
+ * (see transmit_big_chunk), which binds them to it.
  */
 #define CTR_PAGE0        30                      // pages 30 and 31: 0x7800-0x7FFF (--code-size 0x7800)
 #define CTR_ENTRIES      256                     // 1 KB page / 4 bytes
@@ -460,7 +461,7 @@ static __xdata uint8_t ctr_page;     // page the next entry goes to
 static __xdata uint16_t ctr_next;    // next free entry in ctr_page (CTR_ENTRIES = full)
 static __xdata uint32_t s_ctr;       // counter of the next 24-byte packet
 static __xdata uint32_t s_ctr_first; // first counter of this boot (its block is already logged)
-static __xdata uint16_t s_chunk_seq; // number in the picture chunks (not replay-checked)
+static __xdata uint32_t s_pic_tag;   // counter of the start packet (0xB2) of the last picture
 static __xdata uint8_t s_rst_cause;  // SLEEP.RST at boot, sent in flags bits 7:6
 
 static const __code uint8_t *ctr_entry(uint8_t page, uint16_t i) {
@@ -591,8 +592,8 @@ static void ctr_boot(void) {
  * ============================================================================ */
 
 // 24-byte packet: plain[0..1] counter low 16 bits, [2] flags, [3] battery %, [4..5] battery mV,
-// [6..9] device ID[0..3], [10..11] 'V' 'S', [12] marker (0xBA poll, 0xB3..0xB9 events/diagnostics,
-// 0 announce), [13] its argument, [14..15] counter high 16 bits. Returns the counter it used.
+// [6..9] device ID[0..3], [10..11] 'V' 'S', [12] marker (0xBA poll, 0xB2 picture start,
+// 0xB3..0xB9 events/diagnostics, 0 announce), [13] its argument, [14..15] counter high 16 bits. Returns the counter it used.
 static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t arg) {
     uint8_t plain[16];
     uint16_t batt_mv;
@@ -656,30 +657,37 @@ static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t ar
 
 // Picture packet of 56 bytes (gateway packet type 0x82, cryptoProcessBigPacket): device ID,
 // then 3 AES blocks chained as CBC with a zero IV (C0 = E(P0), C1 = E(P1 ^ C0), C2 = E(P2 ^ C1)),
-// so a block cannot be swapped in from another packet without breaking 'VS'. Plain: seq,
-// 0x82, chunk number, flags (0x80 first, 0x40 last, bits 0..5 length), 40 data bytes, 'V' 'S'.
+// so a block cannot be swapped in from another packet without breaking the tag at the end.
+// Plain: tag low 16 bits, 0x82, chunk number, flags (0x80 first, 0x40 last, bits 0..5 length),
+// 40 data bytes, tag high 16 bits (both big endian). The tag is the counter of the picture's
+// start packet (s_pic_tag): the gateway accepts a chunk only if that counter is close to the
+// last one it accepted, so a recorded picture cannot be replayed later.
 // The gateway receives 58-byte frames and tells this from the 24-byte packets by the CRC.
 static __xdata uint8_t s_big_plain[48];
+#ifndef PIC_TAG_SKEW
+#define PIC_TAG_SKEW 0           // bench test only (-DPIC_TAG_SKEW=300): chunks carry an older tag,
+#endif                           // as a recorded picture would; the gateway must drop them
 
-static void transmit_big_chunk(uint8_t type, uint16_t seq, uint16_t chunk_idx, uint8_t chunk_len,
+static void transmit_big_chunk(uint8_t type, uint16_t chunk_idx, uint8_t chunk_len,
                                bool is_first, bool is_last, const uint8_t *data) {
     uint8_t i, b, flags = chunk_len & 0x3F;
+    uint32_t tag = s_pic_tag - PIC_TAG_SKEW;
 
     aes_load_key(DEVICE_AES_KEY);
     for (i = 0; i < 8; i++)
         tx_buf[i] = (uint8_t)DEVICE_ID[i];
     if (is_first) flags |= 0x80;
     if (is_last)  flags |= 0x40;
-    s_big_plain[0] = (uint8_t)(seq >> 8);
-    s_big_plain[1] = (uint8_t)(seq & 0xFF);
+    s_big_plain[0] = (uint8_t)(tag >> 8);
+    s_big_plain[1] = (uint8_t)tag;
     s_big_plain[2] = type;          // 0x82 picture chunk, 0x83 resent chunk
     s_big_plain[3] = (uint8_t)(chunk_idx >> 8);
     s_big_plain[4] = (uint8_t)(chunk_idx & 0xFF);
     s_big_plain[5] = flags;
     for (i = 0; i < 40; i++)
         s_big_plain[6 + i] = (i < chunk_len) ? data[i] : 0x00;
-    s_big_plain[46] = 'V';
-    s_big_plain[47] = 'S';
+    s_big_plain[46] = (uint8_t)(tag >> 24);
+    s_big_plain[47] = (uint8_t)(tag >> 16);
     for (b = 0; b < 3; b++) {
         if (b) {
             for (i = 0; i < 16; i++)
@@ -784,9 +792,11 @@ static uint16_t t1_now(void) {
 // picture was sent. (Before 2026-11-16: 8 bytes per 24-byte packet, ~9 ms each.)
 static uint16_t s_pic_len;      // length of the last picture, still in snap_link's send buffer
 
-static bool bf_send_picture(uint8_t cmd) {
+static bool bf_send_picture(uint8_t cmd, bool motion) {
     uint8_t st = 0, tries, i, n;
     uint16_t len, off, idx;
+    s_pic_len = 0;                    // the command replaces the picture in snap_link's buffer
+    s_pic_tag = transmit(motion, false, 0xB2, cmd);   // picture start: its counter tags the chunks
     bf_link_xfer(cmd);
     // ~0.83 s per try: 60 tries ~50 s. A cold 640x480 (0xD2) needed ~13 s, but snap_link's
     // AEC wait after power-up can add up to ~15 s more in a scene that keeps changing
@@ -826,7 +836,7 @@ static bool bf_send_picture(uint8_t cmd) {
         b = t1_now();
         t_spi += (uint16_t)(b - a);
 #endif
-        transmit_big_chunk(0x82, s_chunk_seq++, idx, n, idx == 0, off + n >= len, s_img_blk);
+        transmit_big_chunk(0x82, idx, n, idx == 0, off + n >= len, s_img_blk);
         WDT_FEED();
 #if BF_IMG_TIMING
         a = t1_now();
@@ -999,7 +1009,7 @@ static void bf_resend(uint16_t first, uint32_t map) {
         n = (s_pic_len - off) > BF_IMG_CHUNK ? BF_IMG_CHUNK : (uint8_t)(s_pic_len - off);
         for (i = 0; i < n; i++)
             s_img_blk[i] = bf_link_xfer(0x00);
-        transmit_big_chunk(0x83, s_chunk_seq++, idx, n, idx == 0, off + n >= s_pic_len, s_img_blk);
+        transmit_big_chunk(0x83, idx, n, idx == 0, off + n >= s_pic_len, s_img_blk);
         WDT_FEED();
         next = idx + 1;
     }
@@ -1181,7 +1191,7 @@ static void cam_alarm_loop(void) {
                 bf_on = true;
             }
             // keep it powered only after a good picture: a hung Blackfin gets power-cycled
-            if (bf_send_picture(cmd)) {
+            if (bf_send_picture(cmd, active)) {
                 keep = BF_KEEP_ON_S * BF_TICKS_PER_S;
                 pic_open = true;
                 ack_left = BF_ACK_MAX_S * BF_TICKS_PER_S;

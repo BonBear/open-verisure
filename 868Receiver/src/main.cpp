@@ -395,7 +395,7 @@ void loop() {
                     Serial.printf("    Signal  : RSSI %d dBm | LQI %u | CRC: OK\n", telem.rssi, telem.lqi);
                     Serial.printf("    Pins    : P0=0x%02X P1=0x%02X P2=0x%02X (P2_0=%d) RST_CAUSE=%u\n\n",
                                   telem.rawP0, telem.rawP1, telem.rawP2, telem.rawP2 & 0x01, telem.rawRst);
-                } else if (!cryptoLastPacketWasImage()) {   // camera packets are handled, not rejected
+                } else {
                     printTimestamp(now);
                     Serial.println("[Security] Packet received but rejected (invalid key, spoofing, or replay attack).");
                 }

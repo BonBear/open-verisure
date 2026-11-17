@@ -25,13 +25,11 @@ struct DeviceSession {
     uint32_t lastCtr;       /**< Last accepted 32-bit counter (ctrMode) */
     bool needBoot;          /**< After 'replay reset': accept only a boot packet (low byte 0) */
     unsigned long lastStore;/**< millis() of the last NVS write of lastCtr */
+    uint32_t picTag;        /**< Tag (start packet counter) of the newest accepted picture chunk */
     unsigned long lastSeen; /**< Timestamp (millis) when last authenticated packet arrived */
 };
 
 static DeviceSession s_devices[MAX_TRACKED_DEVICES];
-static bool s_lastWasImage = false;
-
-bool cryptoLastPacketWasImage(void) { return s_lastWasImage; }
 static size_t s_deviceCount = 0;
 
 bool cryptoDeriveDeviceKey(const uint8_t masterKey[16], const char* deviceId, uint8_t outDeviceKey[16]) {
@@ -142,6 +140,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId) {
         s->lastCtr = 0;
         s->needBoot = false;
         s->lastStore = 0;
+        s->picTag = 0;
         s->lastSeen = 0;
         // A device that has sent the persistent counter keeps its floor across gateway restarts
         uint32_t floor;
@@ -154,6 +153,9 @@ static DeviceSession* getOrCreateSession(const char* deviceId) {
     }
     return nullptr; // Session table full
 }
+
+#define PIC_TAG_AHEAD  64       // a picture's start packet may be this far ahead of the last counter
+#define PIC_TAG_BEHIND 128      // ... or this far behind (a picture's polls and resend rounds: <~100)
 
 bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16]) {
     if (!rxBuf56 || !masterKey) return false;
@@ -175,13 +177,39 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
     }
     memset(devKey, 0, sizeof(devKey));
     uint8_t len = plain[5] & 0x3F;
-    if ((plain[2] != 0x82 && plain[2] != 0x83) || plain[46] != 'V' || plain[47] != 'S' || len == 0 || len > 40)
+    if ((plain[2] != 0x82 && plain[2] != 0x83) || len == 0 || len > 40)
         return false;
-    // camera data never moves the replay window (as the 0x80 chunks)
+    // Replay check: every chunk carries the 32-bit counter of its picture's start packet (0xB2),
+    // low 16 bits in [0..1], high 16 bits in [46..47] (where 'VS' used to be; it is also the
+    // integrity check of the last CBC block). The full value is rebuilt from the device's last
+    // accepted counter and must lie within PIC_TAG_BEHIND before it (the polls and resend rounds
+    // that follow a picture) or PIC_TAG_AHEAD after it (start packet lost), so a recorded picture
+    // is useless once the camera has sent ~128 more packets. Within that window a new chunk (0x82)
+    // must belong to the newest picture seen or a newer one, and a resent chunk (0x83) to exactly
+    // the newest picture (the one being completed), so an older recorded picture or its resent
+    // chunks cannot come back. Camera data never moves the counter's replay window itself.
     DeviceSession* sess = getOrCreateSession(devId);
-    if (sess) sess->lastSeen = millis();
+    if (!sess || !sess->ctrMode || !sess->hasLastSeq || sess->needBoot) return false;
+    uint16_t num = ((uint16_t)plain[0] << 8) | plain[1];
+    int16_t d = (int16_t)(num - (uint16_t)sess->lastCtr);
+    uint32_t tag = sess->lastCtr + (int32_t)d;
+    bool resent = plain[2] == 0x83;
+    if (plain[46] != (uint8_t)(tag >> 24) || plain[47] != (uint8_t)(tag >> 16) ||
+        d > PIC_TAG_AHEAD || d < -PIC_TAG_BEHIND ||
+        (resent ? tag != sess->picTag : (int32_t)(tag - sess->picTag) < 0)) {
+        static unsigned long s_lastLog = 0;
+        if (millis() - s_lastLog > 5000) {
+            s_lastLog = millis();
+            Serial.printf("[Replay] Dropped picture chunks from \"%s\": picture %04X%04X, last counter %08lX\n",
+                          devId, ((unsigned)plain[46] << 8) | plain[47], (unsigned)num,
+                          (unsigned long)sess->lastCtr);
+        }
+        return true;            // a valid but stale chunk: handled (dropped), not a 24-byte packet
+    }
+    sess->picTag = tag;
+    sess->lastSeen = millis();
     uint16_t idx = ((uint16_t)plain[3] << 8) | plain[4];
-    if (plain[2] == 0x83)       // a chunk resent on request: patched into the last picture
+    if (resent)       // a chunk resent on request: patched into the last picture
         imageReceiverProcessResend(devId, idx, len, (plain[5] & 0x40) != 0, &plain[6]);
     else
         imageReceiverProcessChunk(devId, idx, len, (plain[5] & 0x80) != 0, (plain[5] & 0x40) != 0, &plain[6], 40);
@@ -189,7 +217,6 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
 }
 
 bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const uint8_t masterKey[16], VerisureTelemetry* outTelem) {
-    s_lastWasImage = false;
     if (!rxBuf24 || !outTelem || !masterKey) return false;
 
     // 1. Extract 8-character plaintext Device ID
@@ -216,34 +243,8 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
         return false;
     }
 
-    // 3a. Our own downlink answers ('D','L', counter, armed 0/1, cmd, resend, 'V','S'; see
-    // downlink.h) are never uplink: one whose counter starts with 0x80 would otherwise pass as
-    // an image packet below. Matched on 'DL', 'VS' and the armed byte so that a real image
-    // packet whose seq happens to be 0x444C ('DL') is only dropped if its data byte is 0 or 1.
-    // (A telemetry packet needs the device ID in [6..9], which an answer never has.)
-    if (plain[0] == 'D' && plain[1] == 'L' && plain[6] <= 1 && plain[14] == 'V' && plain[15] == 'S') {
-        return false;
-    }
-
-    // 3b. Check for RF Camera Image Chunk (plain[2] == 0x80, plain[14..15] == 'V', 'S')
-    if (plain[2] == 0x80 && plain[14] == 'V' && plain[15] == 'S') {
-        uint16_t seq = ((uint16_t)plain[0] << 8) | plain[1];
-        uint16_t chunkIdx = ((uint16_t)plain[3] << 8) | plain[4];
-        uint8_t chunkFlags = plain[5];
-        uint8_t chunkLen = chunkFlags & 0x0F;
-        bool isFirst = (chunkFlags & 0x80) != 0;
-        bool isLast  = (chunkFlags & 0x40) != 0;
-
-        // Camera data never moves the replay window: a replayed old chunk would
-        // otherwise rewind lastSeq and let old telemetry through again.
-        (void)seq;
-        DeviceSession* sess = getOrCreateSession(devId);
-        if (sess) sess->lastSeen = millis();
-
-        imageReceiverProcessChunk(devId, chunkIdx, chunkLen, isFirst, isLast, &plain[6], 8);
-        s_lastWasImage = true;
-        return false; // Handled directly as image stream, not a telemetry packet
-    }
+    // (Legacy 24-byte picture chunks, type 0x80, are no longer accepted: they carried no counter.
+    // A downlink answer echoed back cannot pass below: its [6] is 0 or 1, never a device ID.)
 
     // 4. Authenticate Magic Bytes (plain[10..11] == 'V', 'S')
     // If the key is wrong or data was corrupted, AES diffusion produces random bytes
