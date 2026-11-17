@@ -118,6 +118,7 @@ The gateway hosts an embedded web server on port 80 ([http://192.168.0.142](http
 
 ### REST API Endpoints:
 * **`GET /api/status`:** Returns real-time JSON status for Wi-Fi, radio noise floor, MQTT broker link, and all registered sensors.
+* **`GET /api/replay?id=<ID>`:** The last accepted persistent packet counter of a sensor (`{"id","known","counter"}`); the door sensor's build script starts a reflashed sensor above it.
 * **`GET /api/scan`:** Performs an asynchronous Wi-Fi scan and returns available networks with RSSI and encryption flags.
 * **`POST /api/save`:** Persists Wi-Fi SSID, password, MQTT broker host, port, credentials, topic prefix, and Master Key into ESP32-S2 NVS (Non-Volatile Storage).
 * **`POST /api/reboot`:** Triggers a software restart of the gateway.

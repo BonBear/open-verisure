@@ -83,10 +83,15 @@ The gateway applies a multi-stage authentication filter:
      for every accepted packet but at most every 2 s, so the floor survives a gateway restart.
      Only packets accepted less than 2 s before a gateway restart can be replayed after it.
    * Once a device has sent the new format, packets from it in the old format are dropped.
-   * Reflashing a sensor erases its log, so its counter starts again at 256. The gateway then logs
-     `[Replay] Dropped ... 'replay reset <ID>'`. That command on the gateway's serial console clears
-     the device's floor; the gateway then accepts only a boot packet (counter low byte 0) in the
-     new format from it, so a recorded packet from before the reflash cannot take its place.
+   * Reflashing a sensor erases its log. `VerisureDoorSensor/build_and_flash.py` therefore asks the
+     gateway for the sensor's last accepted counter (`GET /api/replay?id=<ID>`) and builds the
+     firmware with `CTR_SEED` = the block above it, so the counter simply continues.
+   * Without the gateway (or with an older build) the counter starts again at 256 and the gateway
+     logs `[Replay] Dropped ... 'replay reset <ID>'`. That command on the gateway's serial console
+     clears the device's floor; the gateway then accepts only a boot packet (counter low byte 0) in
+     the new format from it, so a recorded packet from before the reflash cannot take its place.
+   * Below 2.3 V at boot the sensor neither logs nor sends; it sleeps and measures again every
+     minute, so a dying battery that resets on the TX current dip cannot wear out the log.
 4. **Old format (camera, older door firmware):**
    * 16-bit `seq` that restarts at 0 after a reset; the gateway requires `seq > last_seq` within a
      16-bit window. A packet with the power-on flag is accepted anyway, so a recorded power-on

@@ -4,6 +4,7 @@
 #include "sensor_registry.h"
 #include "hardware_pins.h"
 #include "mqtt_manager.h"
+#include "crypto.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -398,6 +399,23 @@ static void handleRoot() {
     s_server.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
 }
 
+/** GET /api/replay?id=XXXXXXXX: the device's last accepted persistent counter (not secret; the
+ *  door sensor's build script starts a reflashed sensor above it). */
+static void handleApiReplay() {
+    String id = s_server.arg("id");
+    bool valid = id.length() == 8;
+    for (unsigned i = 0; valid && i < 8; i++) valid = isalnum((unsigned char)id[i]);
+    if (!valid) {
+        s_server.send(400, "application/json", "{\"error\":\"id must be 8 letters/digits\"}");
+        return;
+    }
+    uint32_t ctr = 0;
+    bool ok = cryptoReplayFloor(id.c_str(), &ctr);
+    String json = "{\"id\":\"" + id + "\",\"known\":" +
+                  String(ok ? "true" : "false") + ",\"counter\":" + String((unsigned long)ctr) + "}";
+    s_server.send(200, "application/json", json);
+}
+
 static void handleApiStatus() {
     const GatewayConfig& cfg = ConfigManager::get();
     unsigned long now = millis();
@@ -663,6 +681,7 @@ void webPortalInit() {
     // Web routes
     s_server.on("/", HTTP_GET, handleRoot);
     s_server.on("/api/status", HTTP_GET, handleApiStatus);
+    s_server.on("/api/replay", HTTP_GET, handleApiReplay);
     s_server.on("/api/radio", HTTP_GET, handleApiRadio);
     s_server.on("/api/scan", HTTP_GET, handleApiScan);
     s_server.on("/api/save", HTTP_POST, handleApiSave);

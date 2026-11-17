@@ -133,3 +133,10 @@ bool cryptoLastPacketWasImage(void);
  * @return True if the device had replay state.
  */
 bool cryptoReplayReset(const char* deviceId);
+
+/**
+ * @brief Last accepted persistent counter of a device (RAM or NVS), for the build script: a
+ *        reflashed sensor starts above it (VerisureDoorSensor/build_and_flash.py, CTR_SEED).
+ * @return False if the device has never sent the counter format.
+ */
+bool cryptoReplayFloor(const char* deviceId, uint32_t* ctr);

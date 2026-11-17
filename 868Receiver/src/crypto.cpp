@@ -345,6 +345,16 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     return true;
 }
 
+bool cryptoReplayFloor(const char* deviceId, uint32_t* ctr) {
+    for (size_t i = 0; i < s_deviceCount; i++) {
+        if (strcmp(s_devices[i].deviceId, deviceId) == 0 && s_devices[i].ctrMode) {
+            *ctr = s_devices[i].lastCtr;
+            return true;
+        }
+    }
+    return ctrLoad(deviceId, ctr);
+}
+
 bool cryptoReplayReset(const char* deviceId) {
     bool found = false;
     if (strlen(deviceId) != 8) return false;
