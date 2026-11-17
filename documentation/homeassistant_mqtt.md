@@ -85,6 +85,7 @@ all others are door/window sensors.
 
 The camera's sensor entities have `expire_after` 600 s: without a packet for 10 minutes (it polls
 every ~30 s, every ~2 minutes when disarmed) they turn unavailable instead of keeping old values.
+The door sensor's entities have `expire_after` 9000 s (2.5 h; it sends a heartbeat about every hour).
 | **Camera** | `camera` | `verisure/<id>/image` | Latest picture (alarm picture or on request) |
 | **Take 640x480 picture** | `button` | `picture/set` = `D2` | Picture on request, sent with the camera's next poll |
 | **Take flash picture** | `button` | `picture/set` = `D4` | Grayscale picture lit by the IR flash |

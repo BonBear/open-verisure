@@ -313,7 +313,10 @@ static bool tamper_read(void) {
 }
 
 static bool s_tamper;       // reported in flags bit 2
-#define TAMPER_MIN_GAP (2 * BF_TICKS_PER_S)   // at least ~2 s between two 0xB5 packets
+#define TAMPER_MIN_GAP (2 * BF_TICKS_PER_S)     // ~2 s between two 0xB5 packets at first,
+#define TAMPER_MAX_GAP (300U * BF_TICKS_PER_S)  // doubling per change up to ~5 min,
+#define TAMPER_CALM    (600U * BF_TICKS_PER_S)  // back to the start after ~10 min without a change
+#define TAMPER_PIC_GAP (600U * BF_TICKS_PER_S)  // at most one tamper picture per ~10 min
 
 /* ============================================================================
  * Radio (868.950 MHz @ 27.000 MHz crystal Y1)
@@ -626,8 +629,9 @@ static void flash_write4(uint16_t addr) {
     while (FCTL & 0x80);             // BUSY until all 4 bytes are written
 }
 
-/** @brief Append a block number to the log (up to 3 slots if a write does not read back). */
-static void ctr_log(uint32_t block) {
+/** @brief Append a block number to the log (up to 3 slots if a write does not read back).
+ *  @return false if no slot read back (worn page, weak supply, no crystal): see ctr_pending. */
+static bool ctr_log(uint32_t block) {
     uint8_t tries;
     uint32_t got;
 
@@ -645,9 +649,16 @@ static void ctr_log(uint32_t block) {
         flash_write4(CTR_PAGE_ADDR(ctr_page) + (ctr_next << 2));
         ctr_next++;
         if (ctr_decode(ctr_entry(ctr_page, ctr_next - 1), &got) && got == block)
-            return;
+            return true;
     }
+    return false;
 }
+
+/* A block whose log entry failed is retried before every packet in it: packets in an unlogged
+ * block would be reused after the next reset (the gateway drops them, and the device would be
+ * silent until its counter passes them again, ~10 days for a door sensor). 0 = none (block 0 is
+ * never used). The boot also skips one block (see ctr_boot), which covers one unlogged block. */
+static __xdata uint32_t ctr_pending;
 
 /** @brief Find the newest valid block and log the next one, which this boot uses (on the
  *  crystal). Sets s_ctr to the first counter value of this boot. */
@@ -676,8 +687,10 @@ static void ctr_boot(void) {
     ctr_next = used[ctr_page - CTR_PAGE0];
     // An empty log means the chip was just flashed: start at CTR_SEED (build_and_flash_md_cam.py
     // sets it above the gateway's last accepted counter, so no 'replay reset' is needed)
-    best = found ? best + 1 : (CTR_SEED >= 1 && CTR_SEED <= CTR_BLOCK_MAX ? CTR_SEED : 1);
-    ctr_log(best);
+    // A found log skips one block (best + 2), in case the last block before the reset could not
+    // be logged (ctr_pending): its packets may have reached the gateway.
+    best = found ? best + 2 : (CTR_SEED >= 1 && CTR_SEED <= CTR_BLOCK_MAX ? CTR_SEED : 1);
+    ctr_pending = ctr_log(best) ? 0 : best;
     s_ctr = best << 8;
     s_ctr_first = s_ctr;
 }
@@ -698,7 +711,9 @@ static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t ar
     clock_xosc();
     // a new block is logged before its first packet (the boot's block already is)
     if ((uint8_t)ctr == 0 && ctr != s_ctr_first)
-        ctr_log(ctr >> 8);
+        ctr_pending = ctr_log(ctr >> 8) ? 0 : ctr >> 8;
+    else if (ctr_pending && ctr_pending == ctr >> 8 && ctr_log(ctr_pending))
+        ctr_pending = 0;
     radio_init();
     aes_load_key(DEVICE_AES_KEY);
 
@@ -1229,7 +1244,10 @@ static void cam_alarm_loop(void) {
     // resend round and replaced the picture the gateway was still completing (2026-11-16).
     bool pic_open = false;
     uint8_t tamper_cnt = 0;
-    uint16_t tamper_gap = 0;
+    uint16_t tamper_gap = 0;                    // ticks until the next 0xB5 may go out
+    uint16_t tamper_backoff = TAMPER_MIN_GAP;   // the gap after the next change (doubles)
+    uint16_t tamper_calm = 0;                   // ticks without a change (resets the backoff)
+    uint16_t tamper_pic_wait = 0;               // ticks until the next tamper picture may be taken
     bool tamper_pic = false;        // an alarm picture is due for a tamper while armed
 
     bf_power_off();
@@ -1239,8 +1257,10 @@ static void cam_alarm_loop(void) {
     WDCTL = 0x08;                   // watchdog on, ~1 s (32768 periods of 32 kHz); cannot be stopped
     for (;;) {
         // tamper: a change counts after two equal samples in a row (0.5 s apart with the
-        // Blackfin off), and at most one 0xB5 per TAMPER_MIN_GAP ticks, so a bouncing or
-        // marginal contact cannot start a TX storm; every packet carries the state (flags bit 2)
+        // Blackfin off). The gap before the next 0xB5 starts at TAMPER_MIN_GAP and doubles with
+        // every change up to TAMPER_MAX_GAP, back to the start after TAMPER_CALM without one, so
+        // a loose mount or a marginal contact cannot flood the radio or drain the battery; every
+        // packet carries the current state anyway (flags bit 2)
         if (tamper_read() != s_tamper) {
             if (tamper_cnt < 2)
                 tamper_cnt++;
@@ -1250,15 +1270,17 @@ static void cam_alarm_loop(void) {
         if (tamper_cnt >= 2 && !tamper_gap) {
             s_tamper = !s_tamper;
             tamper_cnt = 0;
-            tamper_gap = TAMPER_MIN_GAP;
+            tamper_gap = tamper_backoff;
+            tamper_backoff = tamper_backoff < TAMPER_MAX_GAP / 2 ? tamper_backoff * 2 : TAMPER_MAX_GAP;
+            tamper_calm = 0;
             transmit(active, false, 0xB5, s_tamper);
-            // armed and taken off the wall: one alarm picture of whoever does it. Poll first, as
-            // for motion, so a camera that was disarmed (polls every ~2 minutes) gets a fresh
-            // alarm state
+            // armed and taken off the wall: one alarm picture of whoever does it (at most one per
+            // TAMPER_PIC_GAP). Poll first, as for motion, so a camera that was disarmed (polls
+            // every ~2 minutes) gets a fresh alarm state
             if (s_tamper) {
                 poll = 0;
                 cam_poll(active, bf_on);
-                if (s_armed)
+                if (s_armed && !tamper_pic_wait)
                     tamper_pic = true;
             }
         }
@@ -1305,6 +1327,7 @@ static void cam_alarm_loop(void) {
             cmd = s_dl_cmd;
             s_dl_cmd = 0;
         } else if (tamper_pic && !pic_open) {
+            tamper_pic_wait = TAMPER_PIC_GAP;
             // as the first picture of a motion event
 #if BF_AUTO_FLASH && BF_IMG_CMD == 0xD3
             cmd = 0xD5;
@@ -1379,6 +1402,12 @@ static void cam_alarm_loop(void) {
             keep = keep > n ? keep - n : 0;
             gap = gap > n ? gap - n : 0;
             tamper_gap = tamper_gap > n ? tamper_gap - n : 0;
+            tamper_pic_wait = tamper_pic_wait > n ? tamper_pic_wait - n : 0;
+            if (tamper_calm < TAMPER_CALM) {
+                tamper_calm += n;
+                if (tamper_calm >= TAMPER_CALM)
+                    tamper_backoff = TAMPER_MIN_GAP;
+            }
             if (pic_open) {
                 ack_left = ack_left > n ? ack_left - n : 0;
                 if (!ack_left)
@@ -1425,6 +1454,13 @@ void main(void) {
 #if BF_SLEEP_IDLE
     bf_power_off();                  // idle pin state while the guard sleeps
     sleep_timer_init();
+    // after a watchdog reset first sleep ~30 s: a fault that resets the chip again and again
+    // would otherwise write a counter entry and send a packet every second (log wear, radio)
+    if (s_rst_cause == 2) {
+        uint8_t i;
+        for (i = 0; i < 60; i++)
+            cam_sleep();             // 0.5 s sleep-timer ticks (or a PIR edge)
+    }
     battery_guard();
 #endif
     ctr_boot();

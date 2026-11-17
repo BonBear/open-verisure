@@ -80,7 +80,10 @@ The gateway applies a multi-stage authentication filter:
      There is no exception for resets or tamper.
    * The log entries carry a check byte, are read back after writing and are skipped when a
      power loss cut a write or an erase short; the two pages are used in turn, so an erase never
-     loses the newest entry.
+     loses the newest entry. A boot skips one block (newest logged + 2), and a block whose entry
+     could not be written is retried before each of its packets, so packets sent in an unlogged
+     block are never reused after a reset. After a watchdog reset the device first sleeps ~30 s,
+     so a fault that keeps resetting it cannot wear out the log pages.
    * The gateway keeps the last accepted counter per device in NVS (namespace `replay`), written
      for every accepted packet but at most every 2 s, so the floor survives a gateway restart.
      Only packets accepted less than 2 s before a gateway restart can be replayed after it.

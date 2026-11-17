@@ -504,8 +504,9 @@ static void flash_write4(uint16_t addr) {
     while (FCTL & 0x80);             // BUSY until all 4 bytes are written
 }
 
-/** @brief Append a block number to the log (up to 3 slots if a write does not read back). */
-static void ctr_log(uint32_t block) {
+/** @brief Append a block number to the log (up to 3 slots if a write does not read back).
+ *  @return false if no slot read back (worn page, weak supply, no crystal): see ctr_pending. */
+static bool ctr_log(uint32_t block) {
     uint8_t tries;
     uint32_t got;
 
@@ -523,9 +524,16 @@ static void ctr_log(uint32_t block) {
         flash_write4(CTR_PAGE_ADDR(ctr_page) + (ctr_next << 2));
         ctr_next++;
         if (ctr_decode(ctr_entry(ctr_page, ctr_next - 1), &got) && got == block)
-            return;
+            return true;
     }
+    return false;
 }
+
+/* A block whose log entry failed is retried before every packet in it: packets in an unlogged
+ * block would be reused after the next reset (the gateway drops them, and the device would be
+ * silent until its counter passes them again, ~10 days for a door sensor). 0 = none (block 0 is
+ * never used). The boot also skips one block (see ctr_boot), which covers one unlogged block. */
+static __xdata uint32_t ctr_pending;
 
 /** @brief Find the newest valid block and log the next one, which this boot uses.
  *  @return The first counter value of this boot. */
@@ -554,8 +562,10 @@ static uint32_t ctr_boot(void) {
     ctr_next = used[ctr_page - CTR_PAGE0];
     // An empty log means the chip was just flashed: start at CTR_SEED, which build_and_flash.py
     // sets above the gateway's last accepted counter, so no 'replay reset' is needed.
-    best = found ? best + 1 : (CTR_SEED >= 1 && CTR_SEED <= CTR_BLOCK_MAX ? CTR_SEED : 1);
-    ctr_log(best);
+    // A found log skips one block (best + 2), in case the last block before the reset could not
+    // be logged (ctr_pending): its packets may have reached the gateway.
+    best = found ? best + 2 : (CTR_SEED >= 1 && CTR_SEED <= CTR_BLOCK_MAX ? CTR_SEED : 1);
+    ctr_pending = ctr_log(best) ? 0 : best;
     return best << 8;
 }
 
@@ -570,6 +580,7 @@ static uint32_t ctr_boot(void) {
 #define BOOT_MIN_MV        2300                      // the low-battery flag is set below 2400 mV
 #define BOOT_RECHECK_S     60
 #define BOOT_RECHECK_TICKS (BOOT_RECHECK_S * TICKS_PER_S)
+#define WDT_BOOT_PAUSE_S   30                        // sleep this long after a watchdog reset
 
 /** @brief Sleep in PM2 for a number of 0.5 s sleep-timer ticks. @pre Crystal running. */
 static void sleep_ticks(uint16_t ticks) {
@@ -911,8 +922,12 @@ void main(void) {
     // 3. Initialize the 27 MHz system clock
     clock_init();
 
-    // 3b. Nothing is logged or sent below BOOT_MIN_MV (see battery_guard)
+    // 3b. Nothing is logged or sent below BOOT_MIN_MV (see battery_guard). After a watchdog
+    // reset, first sleep WDT_BOOT_PAUSE_S: a fault that resets the chip again and again would
+    // otherwise write a counter entry and send a packet every second (log wear, radio load).
     sleep_timer_init();
+    if (rst_cause == 0x02)
+        sleep_ticks(WDT_BOOT_PAUSE_S * TICKS_PER_S);
     battery_guard();
 
     // 4. Turn on Green LED once clock is stable
@@ -1020,8 +1035,10 @@ void main(void) {
             // 2. Plaintext Payload (16 Bytes) before AES-128 encryption
             uint8_t plain[16];
             // a new block of 256 is logged in flash before it is used (see ctr_boot)
-            if ((ctr & 0xFF) == 0 && boot_pkts)
-                ctr_log(ctr >> 8);       // clock_xosc() has run (flash timing needs the crystal)
+            if ((ctr & 0xFF) == 0 && boot_pkts)   // clock_xosc() has run (flash timing needs it)
+                ctr_pending = ctr_log(ctr >> 8) ? 0 : ctr >> 8;
+            else if (ctr_pending && ctr_pending == ctr >> 8 && ctr_log(ctr_pending))
+                ctr_pending = 0;
             plain[0] = (uint8_t)(ctr >> 8);
             plain[1] = (uint8_t)ctr;
 

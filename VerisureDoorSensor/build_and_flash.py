@@ -89,8 +89,9 @@ def counter_seed(gateway: str, no_seed: bool = False) -> int:
     except OSError:
         pass
     if not m:
-        print("[!] No DEVICE_ID in config.h: counter starts at block 1")
-        return 1
+        # the firmware would then build with config.h.example's ID and restart its counter
+        print(f"[-] No DEVICE_ID in {CONFIG_H}: no counter seed. Generate config.h first, or use --no-seed.")
+        sys.exit(1)
     dev = m.group(1)
     try:
         r = requests.get(f"{gateway}/api/replay", params={"id": dev}, timeout=5)
@@ -439,6 +440,8 @@ def main():
 
     if args.compile_only:
         print("[+] Compilation complete (--compile-only specified). Exiting.")
+        print("[!] This build is NOT seeded (counter block 1): flash it with this script, not by hand,")
+        print("    or the gateway drops the sensor until 'replay reset <ID>'.")
         return
 
     if args.serial:

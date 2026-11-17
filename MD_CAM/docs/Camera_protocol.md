@@ -160,9 +160,11 @@ Home Assistant gets the buttons "Take 640x480 picture" (D2) and "Take flash pict
   ~120 s (`BF_POLL_DISARMED_S`) when disarmed and idle; and right after every picture or resend.
   Motion always polls first, so it gets a fresh alarm state; a picture requested from Home
   Assistant while disarmed waits up to ~2 minutes for the next poll.
-- Tamper: a change is sent at once (0xB5); every packet carries the state. Taken off the wall
+- Tamper: a change is sent at once (0xB5); every packet carries the state. Repeated changes back
+  off: 2 s between reports, doubling to 5 min, back to 2 s after 10 min without a change. Taken off the wall
   (tamper), the camera polls at once for a fresh alarm state and, if armed, takes one alarm
-  picture (0xD5) right away (bench 2026-11-17: 4 s from release to the finished picture).
+  picture (0xD5) right away (bench 2026-11-17: 4 s from release to the finished picture), at most
+  one per 10 minutes.
 - Battery under load: sampled every loop pass with the Blackfin on and during every radio TX
   (the deepest sag: TX current on top of the Blackfin's).
 - Armed and motion: first picture 0xD5, second 0xD6, then 0xD5 every ~5 s while the motion lasts
