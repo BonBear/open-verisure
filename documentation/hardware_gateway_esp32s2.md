@@ -56,6 +56,25 @@ flowchart LR
 
 ---
 
+## 📡 Antenna and Frequency Correction
+
+* **Antenna:** the helical spring that comes with these CC1101 modules was the weak link. A
+  quarter-wave wire (22 AWG hookup wire, ~8.0 cm with its insulation, 8.2 cm bare) soldered in
+  `ANT` instead, standing straight up and away from the ESP32 board and the USB cable, raised the
+  camera's packets at its mounting place from -84..-86 dBm to -56..-58 dBm (2026-11-17). The `GND`
+  pads next to `ANT` are for a coax shield (SMA antenna); a second 8 cm wire in `GND`, pointing the
+  other way, turns the wire into a simple dipole.
+* **Frequency offset:** this module's 26 MHz crystal runs ~69 ppm low, so the sensors arrived
+  ~+60 kHz off channel, beyond the frequency loop's +-50 kHz; weak packets then failed their CRC.
+  `RX_FREQ_OFFSET` in `868Receiver/src/main.cpp` (FSCTRL0, 1.587 kHz per step, RX and TX) corrects
+  it. Each received packet logs its `Freq. error`; with another module, adjust the offset until it
+  stays near 0.
+* **Result at the camera's mounting place, on batteries:** every poll received; 320x240 and
+  640x480 pictures complete with no missing chunks; with every 7th chunk dropped on purpose the
+  resend completed them in 8 and 18 rounds (1.2 s and 2.8 s).
+
+---
+
 ## 🔬 Silicon Analysis: ADC1 vs ADC2 and Wi-Fi Stability on ESP32-S2
 
 A key hardware insight discovered during this project was identifying and resolving a silicon-level conflict that caused the gateway to fail Wi-Fi authentication (throwing `AUTH_EXPIRE / Reason 2`).
