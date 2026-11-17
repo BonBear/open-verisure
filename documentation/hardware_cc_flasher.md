@@ -1,10 +1,10 @@
-# CC-Flasher & Programming: ESP32 to Verisure J2 Header
+# CC-Flasher & Programming: ESP32 to the Verisure CC1110 Debug Headers
 
-This document details the wiring, pinout, and flashing routine for programming the **Texas Instruments CC1110F32** microcontroller on the Verisure sensor PCB using an **ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)** (Aaron Christophel's open-source CC-Debugger implementation).
+This document details the wiring, pinout, and flashing routine for programming the **Texas Instruments CC1110F32** microcontroller on the Verisure door sensor (header **J2**) and the GW MD CAM2 motion camera (header **J6**) using an **ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)** (Aaron Christophel's open-source CC-Debugger implementation).
 
 ---
 
-## 📌 J2 Header Pinout (Verisure Sensor PCB)
+## 📌 J2 Header Pinout (Door Sensor PCB)
 
 The flashing and debug interface consists of 7 through-hole/test pads situated alongside the battery compartment on the rear side of the PCB, marked **`J2`**.
 
@@ -23,7 +23,7 @@ The flashing and debug interface consists of 7 through-hole/test pads situated a
 
 ---
 
-## 🔌 Wiring: ESP32 Flasher to Verisure J2
+## 🔌 Wiring: ESP32 Flasher to Door Sensor J2
 
 | ESP32 Flasher Pin | Default Flasher GPIO | Verisure J2 Pin | Function |
 | :---: | :---: | :---: | :---: |
@@ -62,11 +62,70 @@ The pins are set in the flasher firmware (`ESP_CC_Flasher/src/main.h`: ESP32 Dev
 
 ---
 
+## 📷 Wiring: ESP32 Flasher to Motion Camera J6
+
+The camera's CC1110 has the same 2-wire debug interface on header **J6** (details in
+[MD_CAM/docs/Hardware_pinout_and_measurements.md](../MD_CAM/docs/Hardware_pinout_and_measurements.md)).
+J6-1 goes through 1 kOhm to DVDD, so power the camera on its `VBAT` pad (batteries removed) and
+not through J6-1.
+
+| ESP32 Flasher Pin | Camera | Function |
+| :---: | :---: | :---: |
+| **3V3** (or a bench supply) | **`VBAT`** pad | Target power |
+| **GND** | **`J6-5`** | Ground |
+| **GPIO 23** | **`J6-2`** (`P2_1`) | Debug Data (`DD`) |
+| **GPIO 19** | **`J6-3`** (`P2_2`) | Debug Clock (`DC`) |
+| **GPIO 33** | **`J6-4`** (`RESET_N`, 2.7 kOhm in series) | Debug Reset |
+
+```mermaid
+flowchart LR
+    subgraph FLASHER["ESP32 CC-Flasher"]
+        F3V3["3V3"]
+        FGND["GND"]
+        FDD["GPIO 23 (DD)"]
+        FDC["GPIO 19 (DC)"]
+        FRST["GPIO 33 (RESET)"]
+    end
+
+    subgraph DOOR["Door sensor J2"]
+        D3["J2-3 VCC"]
+        D7["J2-7 GND"]
+        D4["J2-4 DD"]
+        D5["J2-5 DC"]
+        D6["J2-6 RESET_N"]
+    end
+
+    subgraph CAM["Motion camera J6"]
+        CV["VBAT pad"]
+        C5["J6-5 GND"]
+        C2["J6-2 DD"]
+        C3["J6-3 DC"]
+        C4["J6-4 RESET_N"]
+    end
+
+    F3V3 --- D3
+    FGND --- D7
+    FDD --- D4
+    FDC --- D5
+    FRST --- D6
+    F3V3 -.- CV
+    FGND -.- C5
+    FDD -.- C2
+    FDC -.- C3
+    FRST -.- C4
+```
+
+Solid lines: door sensor, dashed lines: camera (one target at a time). An unpowered flasher holds
+RESET_N low, so give the flasher USB power before connecting it to a running device.
+
+
+---
+
 ## 💻 Automated Build and Flashing Process
 
-All compilation and flashing steps are fully automated via the Python script [`build_and_flash.py`](file:///c:/repo/Antigravity/build_and_flash.py).
+Compilation and flashing are automated by [`build_and_flash.py`](../build_and_flash.py) for the door sensor and [`MD_CAM/build_and_flash_md_cam.py`](../MD_CAM/build_and_flash_md_cam.py) for the camera. Both can flash over Wi-Fi (HTTP API, below) or over the flasher's USB serial port (`--serial COM12`, faster).
 
-### Step-by-Step Flow:
+### Step-by-Step Flow (HTTP API, door sensor):
 1. **Compilation with SDCC:**
    Compiles `VerisureDoorSensor/main.c` into an optimized MCS-51 8051 binary:
    ```powershell

@@ -82,7 +82,7 @@ def main():
     dur_str = f"{duration} seconds" if duration > 0 else "until Ctrl+C is pressed"
     print("=" * 65)
     print(f"  MONITORING VERISURE GATEWAY ON {port} ({dur_str})")
-    print("  Press tamper button, move magnet, or shake the sensor!")
+    print("  Trigger a device (door sensor: magnet, shock, tamper; camera: PIR) to see its packets.")
     print("=" * 65 + "\n")
 
     try:
