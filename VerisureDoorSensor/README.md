@@ -28,7 +28,8 @@ Open-source firmware for the Verisure **GW-MC-SHOCK** door/window sensor (TI CC1
 **Status:** verified on the bench (2026-11-17): PM2 sleep (idle ~17 µA), heartbeat, boot, and the
 events: reed open/close (a packet per change, ~0.33 s apart when toggled fast), shock and tamper
 (pressed/released), each sent at once; the gateway logs a frequency error of +3.2 kHz. Idle current
-with the lid on is not measured yet.
+at 3.0 V is the same with the door closed and the tamper switch pressed (lid on) as with them open:
+17.9 µA (Otii, 4 minutes), so the pull-ups dropped in PM2 for closed switches work.
 
 ## Hardware
 
