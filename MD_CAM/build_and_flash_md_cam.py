@@ -68,11 +68,43 @@ def key_check_value(key: bytes) -> str:
     return (enc.update(bytes(16)) + enc.finalize())[:3].hex().upper()
 
 
-def compile_firmware() -> None:
+def counter_seed() -> int:
+    """First counter block for a freshly flashed camera (main.c CTR_SEED).
+
+    Flashing erases the camera's counter log, which would restart its packet counter at block 1,
+    below what the gateway last accepted, so the gateway would drop it until 'replay reset <ID>'.
+    Instead the gateway's last accepted counter (GET /api/replay?id=...) is read and the camera
+    starts two blocks above it (the old firmware keeps sending until it is flashed and may enter
+    the next block meanwhile). Returns 1 if the gateway does not know the camera.
+
+    Without the gateway the script stops: a camera that restarts at block 1 reuses counters, and
+    the gateway's recorded poll answers for them would fit again. --no-seed flashes anyway.
+    """
+    if "--no-seed" in sys.argv:
+        print(f"[!] --no-seed: counter starts at block 1; run 'replay reset {DEVICE_ID}' on the gateway")
+        return 1
+    try:
+        r = requests.get(f"{GATEWAY_HTTP}/api/replay", params={"id": DEVICE_ID}, timeout=5)
+        data = r.json()
+    except Exception as e:
+        print(f"[-] Gateway {GATEWAY_HTTP} not reachable ({e}): no counter seed.")
+        print("    Set GATEWAY_HTTP, or use --no-seed (counter restarts at block 1, needs 'replay reset').")
+        sys.exit(1)
+    if not data.get("known"):
+        print(f"[+] Gateway has no counter for {DEVICE_ID} yet: counter starts at block 1")
+        return 1
+    seed = (int(data["counter"]) >> 8) + 2
+    print(f"[+] Gateway's last counter for {DEVICE_ID}: {data['counter']}; camera starts at block {seed}")
+    return seed
+
+
+def compile_firmware(ctr_seed: int = 1) -> None:
     os.makedirs(BUILD_DIR, exist_ok=True)
     cmd_c = [
         "sdcc", "-mmcs51", "--model-large",
-        "--code-size", "0x8000", "--xram-loc", "0xF000", "--xram-size", "0x0E00",
+        "--code-size", "0x7800",   # 0x7800-0x7FFF: packet counter log (main.c)
+        "--xram-loc", "0xF000", "--xram-size", "0x0E00",
+        f"-DCTR_SEED={ctr_seed}UL",
         *[a for a in sys.argv[1:] if a.startswith("-D")],   # e.g. -DSLEEP_PIN_TEST=1 (bench builds)
         "-c", "main.c", "-o", "build/"
     ]
@@ -83,7 +115,8 @@ def compile_firmware() -> None:
 
     cmd_l = [
         "sdcc", "-mmcs51", "--model-large",
-        "--code-size", "0x8000", "--xram-loc", "0xF000", "--xram-size", "0x0E00",
+        "--code-size", "0x7800",   # 0x7800-0x7FFF: packet counter log (main.c)
+        "--xram-loc", "0xF000", "--xram-size", "0x0E00",
         "build/main.rel", "-o", "build/main.ihx"
     ]
     res = subprocess.run(cmd_l, cwd=FW_DIR, capture_output=True, text=True)
@@ -168,7 +201,8 @@ def flash_serial(port: str) -> None:
 
 def main():
     sync_key_from_gateway()
-    compile_firmware()
+    # a flashed build starts its packet counter above the gateway's last accepted one
+    compile_firmware(counter_seed())
     if "--serial" in sys.argv:
         flash_serial(sys.argv[sys.argv.index("--serial") + 1])
     else:

@@ -149,26 +149,35 @@ static void radioTransmit(const uint8_t* pkt) {
  */
 static void answerCameraPoll(const VerisureTelemetry& t) {
     uint8_t key[16], plain[16], pkt[VERISURE_PACKET_LEN];
-    uint16_t nonce = ((uint16_t)t.rawP1 << 8) | t.rawP2;
+    uint8_t state = t.rawP1;             // plain[13] of the poll
     bool armed = downlinkArmed();
 
+    // only polls with the persistent counter: the answer echoes it, which makes it unique
+    if (!t.hasCounter) {
+        Serial.printf("[Downlink] %s polls without the persistent counter: not answered (old camera firmware?)\n",
+                      t.deviceId);
+        return;
+    }
     if (!cryptoDeriveDeviceKey(ConfigManager::get().masterKey, t.deviceId, key)) return;
-    uint16_t arg = 0;
+    uint16_t first = 0;
+    uint32_t map = 0;
     imageReceiverPollSeen(t.deviceId);   // may queue a resend for a picture that lost its end
-    uint8_t cmd = downlinkCommandForPoll(t.deviceId, t.rawRst, &arg);
-    downlinkBuildPlain(t.sequence, nonce, armed, cmd, arg, t.deviceId, plain);
+    uint8_t cmd = downlinkCommandForPoll(t.deviceId, state, &first, &map);
+    downlinkBuildPlain(t.counter, armed, cmd, first, map, plain);
     memcpy(pkt, t.deviceId, 8);
     bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
     memset(key, 0, sizeof(key));
     if (!ok) return;
     radioTransmit(pkt);
-    Serial.printf("[Downlink] -> %s: armed %d, cmd 0x%02X (poll seq %u, camera state 0x%02X)",
-                  t.deviceId, armed ? 1 : 0, cmd, t.sequence, t.rawRst);
-    if (cmd >= 0xF0) Serial.printf(", resend %u chunks from %u", (cmd & 0x0F) + 1, arg);
+    Serial.printf("[Downlink] -> %s: armed %d, cmd 0x%02X (poll %lu, camera state 0x%02X)",
+                  t.deviceId, armed ? 1 : 0, cmd, (unsigned long)t.counter, state);
+    if (cmd == DOWNLINK_CMD_RESEND)
+        Serial.printf(", resend %d chunks from %u (map %08lX)", __builtin_popcount(map), first,
+                      (unsigned long)map);
     Serial.println();
-    if (((t.rawRst & DOWNLINK_STATE_ARMED) != 0) != armed) {
+    if (((state & DOWNLINK_STATE_ARMED) != 0) != armed) {
         Serial.printf("[Downlink] NOTE: %s reported armed %d before this answer\n",
-                      t.deviceId, (t.rawRst & DOWNLINK_STATE_ARMED) ? 1 : 0);
+                      t.deviceId, (state & DOWNLINK_STATE_ARMED) ? 1 : 0);
     }
 }
 

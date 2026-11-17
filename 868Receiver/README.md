@@ -38,24 +38,24 @@ Settings can also be changed later in the web portal (stored in NVS).
   JPEG), after 24 bytes a normal device packet. The FIFO is read in pieces while a frame comes in,
   and RX is not flushed between packets, so back-to-back picture packets are not lost.
 * **Security:** per-device key derived from the master key, AES-128 decryption, `VS` magic and
-  device ID echo, and a replay filter: the door sensor sends a 32-bit counter that never goes
-  back (kept in its flash), which must increase with no exception for resets or tamper; its last
-  value is kept in NVS (`replay`) across gateway restarts. The camera still uses a 16-bit seq that
-  restarts after a reset (accepted with the power-on flag). Details:
+  device ID echo, and a replay filter: the door sensor and the camera send a 32-bit counter that
+  never goes back (kept in their flash), which must increase with no exception for resets or
+  tamper; its last value is kept in NVS (`replay`) across gateway restarts. Details:
   [cryptography & protocol](../documentation/cryptography_and_protocol.md).
 * **Home Assistant:** MQTT auto-discovery per device (door sensor entities; camera entity, motion
   and buttons "Take 640x480 picture" and "Take flash picture" for the camera), an alarm switch, and
   availability (LWT).
 * **Camera downlink:** answers each camera poll within ~0.1 s with the alarm state and a queued
-  picture command (one per camera).
+  picture command (one per camera); the answer echoes the poll's 32-bit counter.
 * **Pictures:** chunks are placed by number; a picture ends with its last chunk, the next
   picture's first chunk or 5 s of silence. Full 320x240 pictures are the base that deltas are
   spliced into; if a delta has no base the gateway asks the camera for a full picture. Grayscale
   flash pictures and 640x480 pictures are kept apart. Every picture is published on MQTT.
 * **Resend:** a full picture with missing chunks is published as it is, then the gateway asks the
-  camera (with the answer to the poll that follows the picture) for up to 16 chunks from the first
-  missing one, repeatedly, until it is complete (tested with every 3rd chunk dropped: complete in
-  ~4 s); the complete picture is stored and published again.
+  camera (with the answer to the poll that follows the picture) for the missing chunks among the
+  32 from the first missing one (a bitmap), repeatedly, until it is complete (tested with every
+  7th chunk dropped: a 640x480 picture complete after 14 rounds in 2.2 s); the complete picture
+  is stored and published again.
 
 ## MQTT topics (base topic `verisure`)
 

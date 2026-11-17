@@ -99,9 +99,9 @@ bool cryptoDecryptPayload(const uint8_t deviceKey[16], const uint8_t inCipher[16
  * Devices that set flag 0x20 send a 32-bit counter (seq in plain[0..1], high half in plain[14..15])
  * whose upper 24 bits (the "block") the device keeps in flash, so it never goes back, not even
  * after a reset. The gateway keeps the last accepted counter in NVS, written for every accepted
- * packet but at most every 2 s (a door sensor sends a few packets an hour; the limit only matters
- * if one floods), so after a gateway restart only packets newer than that are accepted. Only
- * packets accepted less than 2 s before the restart can be replayed. */
+ * packet but at most every 2 s (a door sensor sends a few packets an hour, the camera a poll
+ * every 30 s and every 2 s after a picture), so after a gateway restart only packets newer than
+ * that are accepted. Only packets accepted less than 2 s before the restart can be replayed. */
 #define CTR_STORE_MIN_MS 2000
 static Preferences s_replayPrefs;
 static bool s_replayPrefsOpen = false;
@@ -216,12 +216,12 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
         return false;
     }
 
-    // 3a. Our own downlink answers ('D','L', seq, chal, armed, cmd, id[0..3], 0, 0, 'V','S';
-    // see downlink.h) are never uplink: a replayed one with seq_hi 0x80/0x81 would otherwise
-    // pass as an image packet below. The full layout is matched so that a real image
-    // packet whose seq happens to be 0x444C ('DL') is not dropped.
-    if (plain[0] == 'D' && plain[1] == 'L' &&
-        memcmp(&plain[8], devId, 4) == 0 && plain[14] == 'V' && plain[15] == 'S') {
+    // 3a. Our own downlink answers ('D','L', counter, armed 0/1, cmd, resend, 'V','S'; see
+    // downlink.h) are never uplink: one whose counter starts with 0x80 would otherwise pass as
+    // an image packet below. Matched on 'DL', 'VS' and the armed byte so that a real image
+    // packet whose seq happens to be 0x444C ('DL') is only dropped if its data byte is 0 or 1.
+    // (A telemetry packet needs the device ID in [6..9], which an answer never has.)
+    if (plain[0] == 'D' && plain[1] == 'L' && plain[6] <= 1 && plain[14] == 'V' && plain[15] == 'S') {
         return false;
     }
 
@@ -338,6 +338,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     outTelem->rawP2      = hasCtr ? 0 : plain[14];
     outTelem->rawRst     = hasCtr ? (flags >> 6) : plain[15];   // with the counter: reset cause in flags[7:6]
     outTelem->counter    = hasCtr ? ctr : seq;
+    outTelem->hasCounter = hasCtr;
     outTelem->rssi       = rssi;
     outTelem->lqi        = lqi;
     outTelem->valid      = true;

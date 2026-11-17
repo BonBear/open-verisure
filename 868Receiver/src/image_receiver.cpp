@@ -46,8 +46,8 @@ static bool s_grayNewest = false;
 
 // Resend of missing chunks (56-byte packets only): a full picture with holes (or a lost end)
 // is published as it is and also copied to s_rsImg; with its next poll answer the gateway asks
-// the camera for up to 16 chunks from the first missing one. The camera sends them as type
-// 0x83, they are patched into s_rsImg, and the next run is asked for, until the picture is
+// the camera for the missing chunks among the 32 from the first missing one (a bitmap). The
+// camera sends them as type 0x83, they are patched into s_rsImg, and the next ones are asked for, until the picture is
 // complete: then it goes through jpegFinish() again (stored and published like a picture
 // without holes). Limits: RS_MAX_ROUNDS requests, RS_TIMEOUT_MS without an answer, RS_TOTAL_MS.
 #define RS_MAX_ROUNDS 40
@@ -117,32 +117,45 @@ static void requestNewBase(void) {
 
 static bool rsHave(uint16_t i) { return (s_rsHave[i >> 3] >> (i & 7)) & 1; }
 
-// Ask for the next run of missing chunks (up to 16 from the first one), or finish.
+// Ask for the missing chunks among the 32 from the first missing one (a bitmap, so chunks the
+// gateway already has are not sent again; with the end not seen yet the chunks after the
+// known data count as missing), or finish.
 static void rsRequestNext(void) {
     uint16_t first = 0xFFFF, last = 0, i;
+    uint32_t map = 0;
     for (i = 0; i < s_rsChunks; i++) {
         if (!rsHave(i)) {
-            if (first == 0xFFFF) first = i;
-            if (i < first + 16) last = i;
+            first = i;
+            break;
         }
     }
-    if (first == 0xFFFF) {
-        if (s_rsEndSeen) {               // complete: store and publish it as a normal picture
-            Serial.printf("[ImageReceiver] Picture from %s complete after resend: %u bytes, %u round(s), %lu ms\n",
-                          s_rsDevice, (unsigned int)s_rsLen, s_rsRounds, millis() - s_rsStart);
-            s_rsActive = false;
-            if (s_lastIdx >= 0) return;  // a new picture is coming in (cannot happen: it cancels)
-            memcpy(s_imgBuf, s_rsImg, s_rsLen);
-            s_chunkSize = JPEG_CHUNK_MAX;
-            s_haveCount = s_rsChunks;
-            strncpy(s_activeDeviceId, s_rsDevice, 9);
-            s_noResend = true;
-            jpegFinish(s_rsLen, true);
-            s_noResend = false;
-            return;
+    if (first != 0xFFFF || !s_rsEndSeen) {
+        if (first == 0xFFFF) first = s_rsChunks;   // the end is missing: ask for what follows
+        for (i = 0; i < 32 && first + i < JPEG_MAX_CHUNKS; i++) {
+            uint16_t c = first + i;
+            if (c < s_rsChunks ? !rsHave(c) : !s_rsEndSeen) {
+                map |= 1UL << i;
+                last = c;
+            }
         }
-        first = s_rsChunks;              // the end is missing: ask for what follows
-        last = first + 15;
+    }
+    if (first == 0xFFFF) {               // complete: store and publish it as a normal picture
+        Serial.printf("[ImageReceiver] Picture from %s complete after resend: %u bytes, %u round(s), %lu ms\n",
+                      s_rsDevice, (unsigned int)s_rsLen, s_rsRounds, millis() - s_rsStart);
+        s_rsActive = false;
+        if (s_lastIdx >= 0) return;      // a new picture is coming in (cannot happen: it cancels)
+        memcpy(s_imgBuf, s_rsImg, s_rsLen);
+        s_chunkSize = JPEG_CHUNK_MAX;
+        s_haveCount = s_rsChunks;
+        strncpy(s_activeDeviceId, s_rsDevice, 9);
+        s_noResend = true;
+        jpegFinish(s_rsLen, true);
+        s_noResend = false;
+        return;
+    }
+    if (!map) {                          // nothing addressable (picture at JPEG_MAX_CHUNKS)
+        s_rsActive = false;
+        return;
     }
     if (++s_rsRounds > RS_MAX_ROUNDS || millis() - s_rsStart > RS_TOTAL_MS) {
         Serial.printf("[ImageReceiver] Resend for %s stopped after %u rounds\n", s_rsDevice, s_rsRounds - 1);
@@ -151,9 +164,9 @@ static void rsRequestNext(void) {
     }
     s_rsReqEnd = last;
     s_rsTime = millis();
-    bool ok = downlinkRequestResend(s_rsDevice, first, (uint8_t)(last - first + 1));
-    Serial.printf("[ImageReceiver] Resend of chunks %u..%u from %s %s\n", first, last, s_rsDevice,
-                  ok ? "queued" : "NOT queued");
+    bool ok = downlinkRequestResend(s_rsDevice, first, map);
+    Serial.printf("[ImageReceiver] Resend of %d chunks in %u..%u from %s %s\n", __builtin_popcount(map), first, last,
+                  s_rsDevice, ok ? "queued" : "NOT queued");
 }
 
 void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen, bool isLast,

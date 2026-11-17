@@ -425,16 +425,184 @@ static void enter_pm2(void) {
 }
 
 /* ============================================================================
+ * Persistent packet counter (replay protection across resets)
+ * ============================================================================
+ * As in the door sensor (VerisureDoorSensor/main.c, same log format): every 24-byte packet
+ * carries a 32-bit counter, its low 16 bits in plain[0..1] and its high 16 bits in plain[14..15]
+ * (flag 0x20). The upper 24 bits, the "block", are logged in the last two flash pages before
+ * they are used: a new block at every boot and after every 256 packets. So the counter never
+ * goes back, not even after a reset, the gateway drops every packet that is not newer than the
+ * last one, and its poll answer can echo the counter instead of a challenge (a recorded answer
+ * never fits a later poll). Before this the camera restarted its 16-bit seq at every reset and
+ * the gateway had to accept its power-on packet, which re-opened all recorded packets.
+ * The log: 4-byte entries, appended; 0xFFFFFFFF = empty. An entry is [b0, check, b1, b2] with the
+ * 24-bit block b2:b1:b0 and check = b0 ^ b1 ^ b2 ^ 0xA5. A write cut short leaves b2 = 0xFF and
+ * blocks never reach 0xFF0000, so such an entry, or one with a wrong check byte, is skipped.
+ * Every entry is read back. When the page of the newest entry is full, the other page is erased
+ * and used. Reflashing erases the log: build_and_flash_md_cam.py builds the firmware with
+ * CTR_SEED = the block above the gateway's last accepted counter (GET /api/replay).
+ * Picture chunks (56-byte packets) do not use the counter: the gateway does not replay-check
+ * them (they only fill the picture being received), they carry their own 16-bit number.
+ */
+#define CTR_PAGE0        30                      // pages 30 and 31: 0x7800-0x7FFF (--code-size 0x7800)
+#define CTR_ENTRIES      256                     // 1 KB page / 4 bytes
+#define CTR_BLOCK_MAX    0xFEFFFFUL              // b2 = 0xFF marks a cut write
+#ifndef CTR_SEED
+#define CTR_SEED         1UL                     // first block when the log is empty
+#endif
+#define CTR_PAGE_ADDR(p) ((uint16_t)(p) << 10)
+#define X_FWDATA_H       0xDF                    // FWDATA in XDATA space (DMA destination)
+#define X_FWDATA_L       0xAF
+#define DMA_TRIG_FLASH   18
+
+static __xdata uint8_t ctr_buf[4];
+static __xdata uint8_t ctr_page;     // page the next entry goes to
+static __xdata uint16_t ctr_next;    // next free entry in ctr_page (CTR_ENTRIES = full)
+static __xdata uint32_t s_ctr;       // counter of the next 24-byte packet
+static __xdata uint32_t s_ctr_first; // first counter of this boot (its block is already logged)
+static __xdata uint16_t s_chunk_seq; // number in the picture chunks (not replay-checked)
+static __xdata uint8_t s_rst_cause;  // SLEEP.RST at boot, sent in flags bits 7:6
+
+static const __code uint8_t *ctr_entry(uint8_t page, uint16_t i) {
+    return (const __code uint8_t *)(CTR_PAGE_ADDR(page) + (i << 2));
+}
+
+static bool ctr_erased(const __code uint8_t *e) {
+    return (e[0] & e[1] & e[2] & e[3]) == 0xFF;
+}
+
+/** @return true and the block in *block if the entry is valid. */
+static bool ctr_decode(const __code uint8_t *e, uint32_t *block) {
+    if (e[3] == 0xFF || e[1] != (uint8_t)(e[0] ^ e[2] ^ e[3] ^ 0xA5))
+        return false;
+    *block = (uint32_t)e[0] | ((uint32_t)e[2] << 8) | ((uint32_t)e[3] << 16);
+    return true;
+}
+
+/** @brief Flash timing (FWT) is set for the 27 MHz crystal: no flash operation without it. */
+static bool flash_clock_ok(void) {
+    return (CLKCON & 0x40) == 0;   // OSC = 0: crystal
+}
+
+static void flash_erase_page(uint8_t page) {
+    if (!flash_clock_ok()) return;
+    WDT_FEED();
+    FWT = 0x23;                  // 21000 * 27 MHz / 16e9 = 35.4 (SWRS033 flash timing)
+    FADDRH = page << 1;          // word address of the page
+    FADDRL = 0;
+    FCTL |= 0x01;                // ERASE
+    __asm nop __endasm;
+    while (FCTL & 0x80);         // BUSY (~20 ms)
+}
+
+/** @brief Write the 4 bytes in ctr_buf to flash (word aligned) with DMA, the way the CC1110
+ *  needs it when the code runs from flash. */
+static void flash_write4(uint16_t addr) {
+    if (!flash_clock_ok()) return;
+    WDT_FEED();
+    FWT = 0x23;
+    FADDRH = (uint8_t)(addr >> 9);   // word address = byte address / 2
+    FADDRL = (uint8_t)(addr >> 1);
+    dma_desc.src_h = (uint8_t)(((uint16_t)ctr_buf) >> 8);
+    dma_desc.src_l = (uint8_t)(((uint16_t)ctr_buf) & 0xFF);
+    dma_desc.dst_h = X_FWDATA_H;
+    dma_desc.dst_l = X_FWDATA_L;
+    dma_desc.len_h = 0x00;
+    dma_desc.len_l = 4;
+    dma_desc.cfg0  = DMA_TRIG_FLASH; // byte size, single mode, trigger FLASH
+    dma_desc.cfg1  = 0x42;           // SRCINC=1, DESTINC=0, no IRQ, PRIORITY=High
+    DMA0CFGH = (uint8_t)(((uint16_t)&dma_desc) >> 8);
+    DMA0CFGL = (uint8_t)(((uint16_t)&dma_desc) & 0xFF);
+    DMAIRQ &= ~0x01;
+    DMAARM = 0x01;
+    __asm
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+        nop
+    __endasm;
+    FCTL |= 0x02;                    // WRITE: each byte written to FWDATA by the DMA
+    while (FCTL & 0x80);             // BUSY until all 4 bytes are written
+}
+
+/** @brief Append a block number to the log (up to 3 slots if a write does not read back). */
+static void ctr_log(uint32_t block) {
+    uint8_t tries;
+    uint32_t got;
+
+    if (block > CTR_BLOCK_MAX) block = CTR_BLOCK_MAX;
+    ctr_buf[0] = (uint8_t)block;
+    ctr_buf[2] = (uint8_t)(block >> 8);
+    ctr_buf[3] = (uint8_t)(block >> 16);
+    ctr_buf[1] = ctr_buf[0] ^ ctr_buf[2] ^ ctr_buf[3] ^ 0xA5;
+    for (tries = 0; tries < 3; tries++) {
+        if (ctr_next >= CTR_ENTRIES) {
+            ctr_page = (ctr_page == CTR_PAGE0) ? CTR_PAGE0 + 1 : CTR_PAGE0;
+            flash_erase_page(ctr_page);
+            ctr_next = 0;
+        }
+        flash_write4(CTR_PAGE_ADDR(ctr_page) + (ctr_next << 2));
+        ctr_next++;
+        if (ctr_decode(ctr_entry(ctr_page, ctr_next - 1), &got) && got == block)
+            return;
+    }
+}
+
+/** @brief Find the newest valid block and log the next one, which this boot uses (on the
+ *  crystal). Sets s_ctr to the first counter value of this boot. */
+static void ctr_boot(void) {
+    uint32_t best = 0, v;
+    bool found = false;
+    uint8_t pg;
+    uint16_t i, used[2];
+
+    for (pg = 0; pg < 2; pg++) {
+        used[pg] = 0;                    // slots up to the last written one (valid or not)
+        for (i = 0; i < CTR_ENTRIES; i++) {
+            const __code uint8_t *e = ctr_entry(CTR_PAGE0 + pg, i);
+            if (ctr_erased(e))
+                continue;
+            used[pg] = i + 1;
+            if (ctr_decode(e, &v) && (!found || v > best)) {
+                best = v;
+                found = true;
+                ctr_page = CTR_PAGE0 + pg;
+            }
+        }
+    }
+    if (!found)
+        ctr_page = CTR_PAGE0;
+    ctr_next = used[ctr_page - CTR_PAGE0];
+    // An empty log means the chip was just flashed: start at CTR_SEED (build_and_flash_md_cam.py
+    // sets it above the gateway's last accepted counter, so no 'replay reset' is needed)
+    best = found ? best + 1 : (CTR_SEED >= 1 && CTR_SEED <= CTR_BLOCK_MAX ? CTR_SEED : 1);
+    ctr_log(best);
+    s_ctr = best << 8;
+    s_ctr_first = s_ctr;
+}
+
+/* ============================================================================
  * Packet build + transmit
  * ============================================================================ */
 
-static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
-                     uint8_t p0_pu, uint8_t p0_pd, uint8_t p1_pu, uint8_t p2_packed) {
+// 24-byte packet: plain[0..1] counter low 16 bits, [2] flags, [3] battery %, [4..5] battery mV,
+// [6..9] device ID[0..3], [10..11] 'V' 'S', [12] marker (0xBA poll, 0xB3..0xB9 events/diagnostics,
+// 0 announce), [13] its argument, [14..15] counter high 16 bits. Returns the counter it used.
+static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t arg) {
     uint8_t plain[16];
     uint16_t batt_mv;
     uint8_t flags = 0;
+    uint32_t ctr = s_ctr;
 
     clock_xosc();
+    // a new block is logged before its first packet (the boot's block already is)
+    if ((uint8_t)ctr == 0 && ctr != s_ctr_first)
+        ctr_log(ctr >> 8);
     radio_init();
     aes_load_key(DEVICE_AES_KEY);
 
@@ -445,12 +613,13 @@ static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
     }
 
     if (is_motion) flags |= 0x01;           // Bit 0: Motion
-    if (is_tamper) flags |= 0x04;           // Bit 2: Tamper
     if (is_por)    flags |= 0x08;           // Bit 3: Power-on reset
     if (batt_mv < 2400) flags |= 0x10;      // Bit 4: Low battery
+    flags |= 0x20;                          // Bit 5: persistent counter format
+    flags |= s_rst_cause << 6;              // Bits 7:6: reset cause (SLEEP.RST)
 
-    plain[0]  = (uint8_t)(seq >> 8);
-    plain[1]  = (uint8_t)(seq & 0xFF);
+    plain[0]  = (uint8_t)(ctr >> 8);
+    plain[1]  = (uint8_t)ctr;
     plain[2]  = flags;
     plain[3]  = calculate_battery_pct(batt_mv);
     plain[4]  = (uint8_t)(batt_mv >> 8);
@@ -461,24 +630,19 @@ static void transmit(uint16_t seq, bool is_motion, bool is_tamper, bool is_por,
     plain[9]  = (uint8_t)DEVICE_ID[3];
     plain[10] = 'V';
     plain[11] = 'S';
-    if (p0_pu != 0) {
-        plain[12] = p0_pu;
-        plain[13] = p0_pd;
-        plain[14] = p1_pu;
-        plain[15] = p2_packed;
-    } else {
-        plain[12] = P0;
-        plain[13] = P1;
-        plain[14] = P1;
-        plain[15] = P2;
-    }
+    plain[12] = marker;
+    plain[13] = arg;
+    plain[14] = (uint8_t)(ctr >> 16);
+    plain[15] = (uint8_t)(ctr >> 24);
 
     aes_encrypt_block(plain, &tx_buf[8]);
+    s_ctr = ctr + 1;
 
     g_tx_count++;
     if (!radio_send_dma()) {
         g_tx_fail++;
     }
+    return ctr;
 
     // Keep 27 MHz crystal running for high-speed SPI with Blackfin DSP
     // clock_rcosc();
@@ -556,6 +720,7 @@ static void transmit_big_chunk(uint8_t type, uint16_t seq, uint16_t chunk_idx, u
 #define BF_AUTO_FLASH 1          // pictures while armed (motion and the idle one): snap_link takes a
                                  // grayscale flash picture instead when the room is dark (0xD5 for 0xD3,
                                  // 0xD6 for 0xD2). The flash board is infrared, so nobody sees it
+#define BF_CMD_RESEND 0xF0       // downlink command: resend the chunks in the bitmap (bf_resend)
 #define BF_CMD_HOLD 0xE8         // downlink command: power the Blackfin and keep it on BF_HOLD_S
 #define BF_HOLD_S 600            // (no picture); for JTAG work on the Blackfin
 #define BF_ACK_MAX_S 30          // after a picture: wait at most this long for the gateway's acknowledgement
@@ -599,8 +764,8 @@ static uint8_t bf_link_xfer(uint8_t tx) {
 #define BF_IMG_CHUNK 40          // JPEG bytes per RF picture packet (type 0x82, 56 bytes)
 static uint8_t s_img_blk[BF_IMG_CHUNK];
 
-#define BF_IMG_TIMING 0          // test: after a picture, RF B7 with the mean time per chunk of the
-                                 // SPI read, the RF send and the whole loop (units of 0.25 ms, Timer 1).
+#define BF_IMG_TIMING 0          // test: after a picture, RF B7 and B4 with the mean time per chunk of
+                                 // the RF send and the SPI read (units of 0.25 ms, Timer 1).
                                  // 2026-11-16 after the AES fix: 0.75 / 8 / 9 ms (before: 0.5 / 52 / 53)
                                  // also RF B6 after power-on: pings until snap_link answered (37, ~1.2 s)
 #if BF_IMG_TIMING
@@ -614,11 +779,12 @@ static uint16_t t1_now(void) {
 // seconds; the Blackfin does not answer meanwhile), so poll 0xB0/0xA0 until the answer is
 // 0x5A. Then read the length (2 bytes, little endian) and the data, 40 bytes per 56-byte RF
 // packet (type 0x82, chunk number, length, first/last flags; transmit_big_chunk); the gateway
-// places the chunks by number. RF on a failure: B8, tries, status. Returns true if the
+// places the chunks by number. RF on a failure: B8 + last status, or B3 + length high byte.
+// Returns true if the
 // picture was sent. (Before 2026-11-16: 8 bytes per 24-byte packet, ~9 ms each.)
 static uint16_t s_pic_len;      // length of the last picture, still in snap_link's send buffer
 
-static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
+static bool bf_send_picture(uint8_t cmd) {
     uint8_t st = 0, tries, i, n;
     uint16_t len, off, idx;
     bf_link_xfer(cmd);
@@ -632,13 +798,13 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
             break;
     }
     if (st != 0x5A) {
-        transmit((*p_seq)++, false, false, false, 0xB8, tries, st, 0);
+        transmit(false, false, 0xB8, st);   // no picture after ~50 s: last status
         return false;
     }
     len = bf_link_xfer(0x00);
     len |= (uint16_t)bf_link_xfer(0x00) << 8;
     if (len < 4 || len > 65000u) {
-        transmit((*p_seq)++, false, false, false, 0xB8, 0xFF, (uint8_t)len, (uint8_t)(len >> 8));
+        transmit(false, false, 0xB3, (uint8_t)(len >> 8));   // implausible length (high byte)
         return false;
     }
     s_pic_len = len;
@@ -660,7 +826,7 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
         b = t1_now();
         t_spi += (uint16_t)(b - a);
 #endif
-        transmit_big_chunk(0x82, (*p_seq)++, idx, n, idx == 0, off + n >= len, s_img_blk);
+        transmit_big_chunk(0x82, s_chunk_seq++, idx, n, idx == 0, off + n >= len, s_img_blk);
         WDT_FEED();
 #if BF_IMG_TIMING
         a = t1_now();
@@ -672,8 +838,8 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
     }
 #if BF_IMG_TIMING
     // 0.25 ms = 52.7 ticks
-    transmit((*p_seq)++, false, false, false, 0xB7, (uint8_t)(t_spi / z / 53), (uint8_t)(t_tx / z / 53),
-             (uint8_t)(t_all / z / 53));
+    transmit(false, false, 0xB7, (uint8_t)(t_tx / z / 53));
+    transmit(false, false, 0xB4, (uint8_t)(t_spi / z / 53));
     }
 #endif
     return true;
@@ -687,42 +853,19 @@ static bool bf_send_picture(uint8_t cmd, uint16_t *p_seq) {
  * 640x480) until BF_PIR_HOLD_S after the last PIR activity, and it is switched off again when the motion event ends. A picture requested from Home
  * Assistant is taken in either state.
  *
- * Every BF_POLL_S the camera sends a poll (telemetry packet, plain[12] = 0xBA, [13..14] =
- * challenge, [15] = state: bit 0 armed, bit 1 Blackfin powered, bit 2 a command arrived
- * and the gateway has not seen this yet) and listens BF_RX_WINDOW for the gateway's answer
- * (868Receiver/src/downlink.h): 8 bytes device ID + AES(device key, 'D' 'L' seq challenge
- * armed cmd id[0..3] 0 0 'V' 'S'). The challenge is new for every poll (next_challenge)
- * and hidden inside the encrypted poll, so a recorded answer fits a later poll only by
- * chance (1 in 65536 for a matching sequence number).
+ * Every BF_POLL_S the camera sends a poll (telemetry packet, plain[12] = 0xBA, [13] = state:
+ * bit 0 armed, bit 1 Blackfin powered, bit 2 a command arrived and the gateway has not seen
+ * this yet) and listens BF_RX_WINDOW for the gateway's answer (868Receiver/src/downlink.h):
+ * 8 bytes device ID + AES(device key, 'D' 'L' counter[4] armed cmd first[2] map[4] 'V' 'S').
+ * The answer must echo the poll's 32-bit counter, which never repeats (persistent counter),
+ * so a recorded answer never fits a later poll.
  * ============================================================================ */
 static __xdata uint8_t rx_buf[PACKET_LEN + 2];
 static __xdata uint8_t s_dl_plain[16];
-static __xdata uint16_t s_boot_noise;  // radio noise taken at boot
-static __xdata uint32_t s_poll_ctr;
-static __xdata uint8_t s_chal_in[16], s_chal_out[16];
-static __xdata uint16_t s_chal;      // challenge of the last poll
+static __xdata uint32_t s_poll_ctr;  // counter of the last poll, echoed by the answer
 static __xdata uint8_t s_dl_cmd;     // picture requested by the gateway, 0 = none
 static bool s_armed = BF_ARMED_AT_BOOT;
 static bool s_cmd_ack;               // report in polls that a command arrived, until answered
-
-// Fresh 16-bit challenge for every poll: AES(device key, boot noise | poll counter). It is
-// encrypted inside the poll, so a listener cannot tell which recorded answer would fit.
-static uint16_t next_challenge(void) {
-    uint8_t i;
-    s_poll_ctr++;
-    for (i = 0; i < 16; i++)
-        s_chal_in[i] = 0;
-    s_chal_in[0] = (uint8_t)(s_boot_noise >> 8);
-    s_chal_in[1] = (uint8_t)s_boot_noise;
-    s_chal_in[2] = (uint8_t)(s_poll_ctr >> 24);
-    s_chal_in[3] = (uint8_t)(s_poll_ctr >> 16);
-    s_chal_in[4] = (uint8_t)(s_poll_ctr >> 8);
-    s_chal_in[5] = (uint8_t)s_poll_ctr;
-    s_chal_in[6] = 'C';
-    aes_load_key(DEVICE_AES_KEY);
-    aes_encrypt_block(s_chal_in, s_chal_out);
-    return ((uint16_t)s_chal_out[0] << 8) | s_chal_out[1];
-}
 
 static void aes_decrypt_block(const uint8_t *in, uint8_t *out) {
     uint8_t i;
@@ -791,35 +934,17 @@ static bool radio_receive_dma(uint16_t window) {
     return done && (rx_buf[PACKET_LEN + 1] & 0x80) != 0;
 }
 
-// 16 bits from the radio noise floor (RSSI LSBs), taken once at boot.
-static uint16_t radio_noise_nonce(void) {
-    uint16_t n = 0;
-    uint8_t i;
-    clock_xosc();
-    radio_init();
-    RFST = 0x02; // SRX
-    delay_ms(2);
-    for (i = 0; i < 64; i++) {
-        n = (uint16_t)((n << 3) | (n >> 13)) ^ RSSI;
-        delay_ms(1);
-    }
-    RFST = 0x04;
-    return n;
-}
-
 // Poll the gateway and take its answer. Returns true for a valid answer.
-static uint16_t s_rs_idx;       // resend request from the last poll answer (s_rs_count 0 = none)
-static uint8_t s_rs_count;
+static __xdata uint16_t s_rs_first;  // resend request from the last poll answer: chunk s_rs_first + i
+static __xdata uint32_t s_rs_map;    // for every bit i set (0 = none)
 
-static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
-    uint16_t seq = (*p_seq)++;
+static bool cam_poll(bool motion, bool bf_on) {
     uint8_t i, state = 0;
 
     if (s_armed) state |= 0x01;
     if (bf_on) state |= 0x02;
     if (s_cmd_ack) state |= 0x04;
-    s_chal = next_challenge();
-    transmit(seq, motion, false, false, 0xBA, (uint8_t)(s_chal >> 8), (uint8_t)s_chal, state);
+    s_poll_ctr = transmit(motion, false, 0xBA, state);
     if (!radio_receive_dma(BF_RX_WINDOW))
         return false;
     for (i = 0; i < 8; i++)
@@ -829,12 +954,8 @@ static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
     aes_decrypt_block(&rx_buf[8], s_dl_plain);
     if (s_dl_plain[0] != 'D' || s_dl_plain[1] != 'L' || s_dl_plain[14] != 'V' || s_dl_plain[15] != 'S')
         return false;
-    if (s_dl_plain[2] != (uint8_t)(seq >> 8) || s_dl_plain[3] != (uint8_t)seq)
-        return false;
-    if (s_dl_plain[4] != (uint8_t)(s_chal >> 8) || s_dl_plain[5] != (uint8_t)s_chal)
-        return false;
     for (i = 0; i < 4; i++)
-        if (s_dl_plain[8 + i] != (uint8_t)DEVICE_ID[i])
+        if (s_dl_plain[2 + i] != (uint8_t)(s_poll_ctr >> (24 - 8 * i)))
             return false;
     // the gateway has seen this poll (and with it any acknowledgement)
     s_cmd_ack = false;
@@ -844,31 +965,43 @@ static bool cam_poll(uint16_t *p_seq, bool motion, bool bf_on) {
         s_dl_plain[7] == BF_CMD_HOLD) {
         s_dl_cmd = s_dl_plain[7];
         s_cmd_ack = true;
-    } else if (s_dl_plain[7] >= 0xF0) {
-        // resend request: count - 1 in the low nibble, first chunk in [12..13]
-        s_rs_idx = ((uint16_t)s_dl_plain[12] << 8) | s_dl_plain[13];
-        s_rs_count = (s_dl_plain[7] & 0x0F) + 1;
+    } else if (s_dl_plain[7] == BF_CMD_RESEND) {
+        // resend request: first chunk in [8..9], bitmap of the 32 chunks from it in [10..13]
+        s_rs_first = ((uint16_t)s_dl_plain[8] << 8) | s_dl_plain[9];
+        s_rs_map = (uint32_t)s_dl_plain[10] | ((uint32_t)s_dl_plain[11] << 8) |
+                   ((uint32_t)s_dl_plain[12] << 16) | ((uint32_t)s_dl_plain[13] << 24);
     }
     return true;
 }
 
-// Resend chunks the gateway missed (downlink 0xF0 | count - 1, chunk number in [12..13]): snap_link
-// seeks to the chunk (0xE1 hi lo) in the picture it still holds, and the chunks go out as type
+// Resend chunks the gateway missed (downlink BF_CMD_RESEND: chunk first + i for every bit i in
+// map): snap_link seeks to a chunk (0xE1 hi lo) in the picture it still holds and reads on from
+// there, so a seek is only needed where a run of requested chunks starts. They go out as type
 // 0x83 so the gateway patches them into that picture instead of starting a new one.
-static void bf_resend(uint16_t idx, uint8_t count, uint16_t *p_seq) {
-    uint16_t off = idx * BF_IMG_CHUNK;
-    uint8_t i, n;
-    if (!s_pic_len || off >= s_pic_len)
+static void bf_resend(uint16_t first, uint32_t map) {
+    uint16_t idx, off, chunks, next = 0xFFFF;
+    uint8_t i, k, n;
+    if (!s_pic_len)
         return;
-    bf_link_xfer(0xE1);
-    bf_link_xfer((uint8_t)(idx >> 8));
-    bf_link_xfer((uint8_t)idx);
-    for (; count && off < s_pic_len; count--, idx++, off += n) {
+    chunks = (s_pic_len + BF_IMG_CHUNK - 1) / BF_IMG_CHUNK;
+    for (k = 0; k < 32 && map; k++, map >>= 1) {
+        if (!(map & 1))
+            continue;
+        idx = first + k;
+        if (idx >= chunks || idx < first)
+            break;
+        off = idx * BF_IMG_CHUNK;
+        if (idx != next) {
+            bf_link_xfer(0xE1);
+            bf_link_xfer((uint8_t)(idx >> 8));
+            bf_link_xfer((uint8_t)idx);
+        }
         n = (s_pic_len - off) > BF_IMG_CHUNK ? BF_IMG_CHUNK : (uint8_t)(s_pic_len - off);
         for (i = 0; i < n; i++)
             s_img_blk[i] = bf_link_xfer(0x00);
-        transmit_big_chunk(0x83, (*p_seq)++, idx, n, idx == 0, off + n >= s_pic_len, s_img_blk);
+        transmit_big_chunk(0x83, s_chunk_seq++, idx, n, idx == 0, off + n >= s_pic_len, s_img_blk);
         WDT_FEED();
+        next = idx + 1;
     }
 }
 
@@ -957,7 +1090,7 @@ static uint16_t cam_sleep(void) {
 }
 #endif
 
-static void cam_alarm_loop(uint16_t *p_seq) {
+static void cam_alarm_loop(void) {
     uint16_t poll = BF_POLL_S * BF_TICKS_PER_S;   // first poll right away
     uint16_t hold = 0, keep = 0, gap = 0, ack_left = 0;
     uint32_t idle = 0;
@@ -971,7 +1104,6 @@ static void cam_alarm_loop(uint16_t *p_seq) {
     bool pic_open = false;
 
     bf_power_off();
-    s_boot_noise = radio_noise_nonce();
 #if BF_SLEEP_IDLE
     sleep_timer_init();
 #endif
@@ -984,23 +1116,23 @@ static void cam_alarm_loop(uint16_t *p_seq) {
                 // poll first (it already carries the motion flag) for a fresh alarm state,
                 // so the gateway is not busy with the B9 packet while the camera listens
                 poll = 0;
-                cam_poll(p_seq, true, bf_on);
-                transmit((*p_seq)++, true, false, false, 0xB9, 1, 0, 0);
+                cam_poll(true, bf_on);
+                transmit(true, false, 0xB9, 1);
             }
             hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
         }
         if (poll >= (pic_open ? BF_ACK_POLL_TICKS : BF_POLL_S * BF_TICKS_PER_S)) {
             poll = 0;
-            if (cam_poll(p_seq, active, bf_on) && !s_rs_count)
+            if (cam_poll(active, bf_on) && !s_rs_map)
                 pic_open = false;   // answered without a resend request: the picture is done
         }
-        if (s_rs_count) {
+        if (s_rs_map) {
             if (bf_on) {
-                bf_resend(s_rs_idx, s_rs_count, p_seq);
+                bf_resend(s_rs_first, s_rs_map);
                 keep = BF_KEEP_ON_S * BF_TICKS_PER_S;
                 poll = BF_POLL_S * BF_TICKS_PER_S;   // poll again right away for the next request
             }
-            s_rs_count = 0;
+            s_rs_map = 0;
         }
         if (s_armed && !was_armed)
             idle = 0;               // the armed idle picture counts from arming
@@ -1044,12 +1176,12 @@ static void cam_alarm_loop(uint16_t *p_seq) {
             if (!bf_on) {
                 bf_power_on();
 #if BF_IMG_TIMING
-                transmit((*p_seq)++, false, false, false, 0xB6, s_boot_tries, 0, 0);
+                transmit(false, false, 0xB6, s_boot_tries);
 #endif
                 bf_on = true;
             }
             // keep it powered only after a good picture: a hung Blackfin gets power-cycled
-            if (bf_send_picture(cmd, p_seq)) {
+            if (bf_send_picture(cmd)) {
                 keep = BF_KEEP_ON_S * BF_TICKS_PER_S;
                 pic_open = true;
                 ack_left = BF_ACK_MAX_S * BF_TICKS_PER_S;
@@ -1085,7 +1217,7 @@ static void cam_alarm_loop(uint16_t *p_seq) {
 
         if (active && !hold && P1_7 != 0) {
             active = false;
-            transmit((*p_seq)++, false, false, false, 0xB9, 0, 0, 0);
+            transmit(false, false, 0xB9, 0);
         }
         if (bf_on && !s_dl_cmd && !keep && !pic_open && (!active || !s_armed)) {
             bf_power_off();
@@ -1094,20 +1226,42 @@ static void cam_alarm_loop(uint16_t *p_seq) {
     }
 }
 
+#if BF_SLEEP_IDLE
+/* Battery guard at boot: every boot writes a counter entry to flash (ctr_boot). A dying battery
+ * that resets the chip on a current peak could reboot every few seconds and wear the two log
+ * pages out (and write them at a marginal supply). So below BOOT_MIN_MV the camera neither logs
+ * nor sends: it sleeps in PM2 and measures again about every BOOT_RECHECK_S. */
+#define BOOT_MIN_MV      2300             // the low-battery flag is set below 2400 mV
+#define BOOT_RECHECK_S   60
+
+static void battery_guard(void) {
+    uint8_t i;
+    while (read_battery_mv() < BOOT_MIN_MV) {
+        for (i = 0; i < 2 * BOOT_RECHECK_S; i++)
+            cam_sleep();             // 0.5 s sleep-timer ticks (or a PIR edge)
+    }
+}
+#endif
+
 void main(void) {
-    uint16_t seq = 25000;
+    s_rst_cause = (SLEEP >> 3) & 0x03;   // 0 power-on, 1 external, 2 watchdog
 
     setup_gpio();
     clock_xosc();
+#if BF_SLEEP_IDLE
+    bf_power_off();                  // idle pin state while the guard sleeps
+    sleep_timer_init();
+    battery_guard();
+#endif
+    ctr_boot();
 
     radio_init();
     delay_ms(50);
 
-    // Initial announce packet
-    transmit(seq++, false, false, true, 0, 0, 0, 0);
+    // Announce packet: the first of this boot (counter low byte 0), with the power-on flag
+    // only after a power-on reset
+    transmit(false, s_rst_cause == 0, 0, 0);
     delay_ms(100);
 
-    // seq continues above the announce (25000, whose power-on flag resets the gateway's
-    // replay filter), so the first poll is accepted before any picture packet is sent
-    cam_alarm_loop(&seq);
+    cam_alarm_loop();
 }

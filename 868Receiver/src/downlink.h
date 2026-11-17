@@ -1,20 +1,20 @@
 /**
  * @file downlink.h
- * @brief Gateway -> camera downlink: alarm state and picture requests.
+ * @brief Gateway -> camera downlink: alarm state, picture requests and resend requests.
  *
  * The camera (MD_CAM CC1110, cam_alarm_loop) sends a poll packet every ~30 s: an ordinary
- * telemetry packet with plain[12] = 0xBA, plain[13..14] = a challenge that is new for every
- * poll and plain[15] = camera state (bit 0 armed, bit 1 Blackfin powered, bit 2 a downlink
- * command arrived). After the poll it listens for ~0.1 s.
+ * telemetry packet in the persistent-counter format (flag 0x20) with plain[12] = 0xBA and
+ * plain[13] = camera state (bit 0 armed, bit 1 Blackfin powered, bit 2 a downlink command
+ * arrived). After the poll it listens for ~0.1 s.
  *
  * The gateway answers only a poll that passed authentication and the replay filter, with a
  * 24-byte packet: 8 bytes device ID (plain) + AES-128-ECB(device key, plaintext):
- *   [0] 'D'  [1] 'L'  [2..3] poll sequence  [4..5] poll challenge  [6] armed (0/1)
- *   [7] command (0 none, 0xD1..0xD6 take a picture, 0xE8 HOLD, 0xF0..0xFF resend count - 1
- *   chunks from the chunk number in [12..13])  [8..11] device ID[0..3]
- *   [12..13] chunk number for a resend, else 0  [14] 'V'  [15] 'S'
- * The camera accepts it only if the sequence and challenge match its own last poll, so a
- * recorded answer fits a later poll only by chance (1 in 65536).
+ *   [0] 'D'  [1] 'L'  [2..5] the poll's 32-bit counter (big endian)  [6] armed (0/1)
+ *   [7] command (0 none, 0xD1..0xD6 take a picture, 0xE8 HOLD, 0xF0 resend)
+ *   [8..9] resend: first chunk (big endian)  [10..13] resend: bitmap, bit i (byte 10 + i/8,
+ *   bit i%8) = chunk first + i is missing  [14] 'V'  [15] 'S'
+ * The camera accepts it only if the counter is the one of its own last poll. The counter
+ * never repeats (it survives resets, see crypto.cpp), so a recorded answer never fits again.
  */
 #pragma once
 
@@ -38,18 +38,20 @@ void downlinkSetArmed(bool armed);
  *  Returns false for an unknown command or a full table. */
 bool downlinkRequestPicture(const char* deviceId, uint8_t cmd);
 
-/** Ask a camera to resend count (1..16) picture chunks from chunk idx with its next poll answer
- *  (sent once, a picture command goes first). */
-bool downlinkRequestResend(const char* deviceId, uint16_t idx, uint8_t count);
+#define DOWNLINK_CMD_RESEND   0xF0
+
+/** Ask a camera to resend the picture chunks first + i for every bit i set in map (32 chunks
+ *  at most per request) with its next poll answer (sent once, a picture command goes first). */
+bool downlinkRequestResend(const char* deviceId, uint16_t first, uint32_t map);
 
 /** True while a resend request for this camera waits for its next poll answer. */
 bool downlinkResendPending(const char* deviceId);
 
-/** Command to put in the answer to this poll (0 = none) and its argument (chunk number of a
- *  resend). A pending picture command stays queued until the camera reports
+/** Command to put in the answer to this poll (0 = none) and, for DOWNLINK_CMD_RESEND, its first
+ *  chunk and bitmap. A pending picture command stays queued until the camera reports
  *  DOWNLINK_STATE_ACK in a later poll; a resend request goes out once. */
-uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16_t* arg);
+uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16_t* first, uint32_t* map);
 
 /** Build the 16-byte plaintext of a poll answer (see the format above). */
-void downlinkBuildPlain(uint16_t pollSeq, uint16_t nonce, bool armed, uint8_t cmd, uint16_t arg,
-                        const char* deviceId, uint8_t out[16]);
+void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t first, uint32_t map,
+                        uint8_t out[16]);

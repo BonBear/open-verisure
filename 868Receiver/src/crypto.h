@@ -27,7 +27,7 @@
  *    - Devices with flag 0x20 send a 32-bit counter that never goes back (its upper part is kept
  *      in the device's flash); it must increase, also after a device reset, and its floor is
  *      kept in NVS across gateway restarts.
- *    - Old format (16-bit seq restarting at 0): reject duplicate or older sequence numbers
+ *    - Old format (16-bit seq restarting at 0, older firmware): reject duplicate or older sequence numbers
  *      unless flagged as a power-on reset.
  * ============================================================================
  */
@@ -68,6 +68,7 @@ struct VerisureTelemetry {
     uint8_t rawP2;          /**< Diagnostic: Port 2 raw input states from CC1110 */
     uint8_t rawRst;         /**< Diagnostic: Microcontroller reset reason from SLEEP register */
     uint32_t counter;       /**< 32-bit persistent counter (flag 0x20), else the 16-bit seq */
+    bool hasCounter;        /**< The packet carried the persistent counter (flag 0x20) */
     bool valid;             /**< True if packet passed authentication, decryption and replay check */
 };
 

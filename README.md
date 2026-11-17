@@ -104,10 +104,10 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
   not expose the others.
 * **Authentication:** decrypted packets must contain the magic bytes `VS` and echo the device ID;
   camera picture packets are chained (CBC) so blocks cannot be swapped between packets.
-* **Replay protection:** the door sensor sends a 32-bit packet counter that survives resets (its
-  upper part is logged in flash; the gateway keeps the last value in NVS), so the gateway accepts
-  only newer packets. The camera still uses a 16-bit sequence (porting the counter is on the TODO
-  list); camera downlink answers carry the poll's sequence and a random challenge.
+* **Replay protection:** the door sensor and the camera send a 32-bit packet counter that
+  survives resets (its upper part is logged in flash; the gateway keeps the last value in NVS),
+  so the gateway accepts only newer packets. Camera downlink answers echo the poll's counter, so
+  a recorded answer never fits again.
 * **No secrets in git:** `secrets.h` and `config.h` are git-ignored. See [SECURITY.md](SECURITY.md).
 
 ---

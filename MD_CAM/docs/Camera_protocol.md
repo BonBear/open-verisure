@@ -53,18 +53,32 @@ Every packet starts with the device ID in plain text (8 ASCII characters), follo
 with the device key (derived from the master key). The radio adds a CRC-16.
 
 **Short packet, 24 bytes** (telemetry, poll, events): ID + one AES block (ECB).
-Plain text: `seq(2) flags batt% mv(2) id[0..3] 'V' 'S' p0 p1 p2 p3`. The camera uses p0 as a type:
+Plain text: `ctr_lo(2) flags batt% mv(2) id[0..3] 'V' 'S' type arg ctr_hi(2)`. The 32-bit packet
+counter (bytes 0..1 big endian and 14..15 little endian, flag 0x20) is persistent: its upper
+24 bits are logged in the CC1110's last two flash pages (0x7800–0x7FFF) before they are used,
+at every boot and every 256 packets, as in the door sensor, so it never goes back, not even
+after a reset ([cryptography_and_protocol.md](../../documentation/cryptography_and_protocol.md)).
+Flags: 0x01 motion, 0x08 power-on (first packet after a power-on reset), 0x10 low battery, 0x20
+counter format, bits 7:6 reset cause. Byte 12 is the type:
 
-| p0 | Meaning |
+| type | Meaning |
 |---|---|
-| `0xBA` | poll: p1/p2 = challenge, p3 = state (0x01 armed, 0x02 Blackfin on, 0x04 acknowledgement) |
-| `0xB9` | motion: p1 = 1 start, 0 end |
-| `0xB8` | picture failed: p1 = tries, p2/p3 = status/length |
-| `0xB7` | test: time per picture packet (only with `BF_IMG_TIMING 1`) |
+| `0x00` | announce, the first packet after a boot (counter low byte 0) |
+| `0xBA` | poll: arg = state (0x01 armed, 0x02 Blackfin on, 0x04 acknowledgement) |
+| `0xB9` | motion: arg = 1 start, 0 end |
+| `0xB8` | picture failed (no answer from the Blackfin within ~50 s): arg = its last status |
+| `0xB3` | picture failed (implausible length): arg = length high byte |
+| `0xB7`, `0xB4`, `0xB6` | test (only with `BF_IMG_TIMING 1`): time per picture packet for the RF send and the SPI read, boot pings |
+
+Below 2.3 V at boot the camera neither logs a counter block nor sends; it sleeps and measures
+again about every minute. Picture chunks (below) do not use the counter and are not
+replay-checked (a recorded picture can be replayed and is published as the newest one); they
+carry their own 16-bit number. The build script reads the counter seed from the gateway and
+stops if it cannot (`--no-seed` flashes anyway; then `replay reset <ID>` on the gateway).
 
 **Picture packet, 56 bytes, type 0x82:** ID + three AES blocks chained as CBC with a zero IV
 (C0 = E(P0), C1 = E(P1 ⊕ C0), C2 = E(P2 ⊕ C1)). Plain text (48 bytes):
-`seq(2) 0x82 chunk(2) flags data[40] 'V' 'S'`, flags: 0x80 first, 0x40 last, bits 0–5 length.
+`num(2) 0x82 chunk(2) flags data[40] 'V' 'S'`, flags: 0x80 first, 0x40 last, bits 0–5 length.
 Chunk n carries bytes 40n.. of the picture. About 20 ms per packet: a 320x240 picture of ~7 KB
 takes ~4 s on air, 5–8 s from the command to the finished picture.
 **Resent chunk, 56 bytes, type 0x83:** the same format as 0x82, sent only on the gateway's request.
@@ -88,8 +102,11 @@ Picture chunks are placed by their number; missing chunks stay zero. A picture e
 chunk, the first chunk of the next picture, a poll from the camera, or 5 s of silence ("end lost",
 an EOI is added). **Resend:** if a full picture (0x82) has missing chunks it is published anyway,
 and with the answer to the camera's next poll (which comes right after the picture) the gateway
-asks for up to 16 chunks from the first missing one; the camera sends them as 0x83 and polls
-again, until the picture is complete (at most 40 rounds / 60 s). The complete picture is then
+asks for the missing chunks among the 32 from the first missing one (a bitmap, so chunks it
+already has are not sent again); the camera sends them as 0x83 and polls again, until the
+picture is complete (at most 40 rounds / 60 s). On the bench with every 7th chunk dropped, a
+640x480 picture (70 of 493 chunks missing) was complete after 14 rounds in 2.2 s (32 rounds
+with the earlier runs of 16). The complete picture is then
 stored and published as usual. A full 320x240 picture with a COM id becomes the base for deltas;
 grayscale pictures without an id are kept apart (the web page shows the newest); 640x480 pictures
 are kept apart.
@@ -97,10 +114,14 @@ are kept apart.
 ## 4. Radio downlink (gateway → camera)
 
 An answer to every poll within ~0.1 s, 24 bytes: ID + an AES block with the plain text
-`'D' 'L' seq(2) chal(2) armed cmd id[0..3] arg(2) 'V' 'S'`. The camera accepts an answer only if
-its seq and challenge match its own last poll. `cmd`: 0 = none, 0xD1–0xD6 = take a picture,
-0xE8 = HOLD (service: Blackfin on for ~10 min without a picture, for JTAG flashing; MQTT `HOLD`),
-0xF0–0xFF = resend (low nibble + 1) chunks from the chunk number in `arg` (bytes 12..13).
+`'D' 'L' ctr(4) armed cmd first(2) map(4) 'V' 'S'`. `ctr` is the poll's 32-bit counter (big
+endian); the camera accepts an answer only if it is the counter of its own last poll, and since
+the counter never repeats, a recorded answer never fits again. (Until 2026-11-17 the answer
+carried the poll's 16-bit seq and a 16-bit challenge.) The gateway answers only polls in the
+counter format. `cmd`: 0 = none, 0xD1–0xD6 = take a picture, 0xE8 = HOLD (service: Blackfin on
+for ~10 min without a picture, for JTAG flashing; MQTT `HOLD`), 0xF0 = resend: chunk `first + i`
+for every bit i set in `map` (byte 10 bit 0 = i 0, little endian); `first` and `map` are 0
+otherwise.
 
 ## 5. MQTT (base topic `verisure`)
 

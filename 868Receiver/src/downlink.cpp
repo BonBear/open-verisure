@@ -13,8 +13,8 @@
 struct PendingCommand {
     char deviceId[9];
     uint8_t cmd;
-    uint8_t resendCount;    // resend request (0 = none): count chunks from resendIdx
-    uint16_t resendIdx;
+    uint32_t resendMap;     // resend request (0 = none): bit i = chunk resendFirst + i
+    uint16_t resendFirst;
     bool sent;      // included in at least one poll answer
     unsigned long queuedAt;
 };
@@ -25,9 +25,9 @@ static PendingCommand s_pending[DOWNLINK_MAX_CAMERAS];
 static void expirePending() {
     unsigned long now = millis();
     for (int i = 0; i < DOWNLINK_MAX_CAMERAS; i++) {
-        if ((s_pending[i].cmd || s_pending[i].resendCount) && now - s_pending[i].queuedAt > DOWNLINK_CMD_TTL_MS) {
+        if ((s_pending[i].cmd || s_pending[i].resendMap) && now - s_pending[i].queuedAt > DOWNLINK_CMD_TTL_MS) {
             s_pending[i].cmd = 0;
-            s_pending[i].resendCount = 0;
+            s_pending[i].resendMap = 0;
         }
     }
 }
@@ -56,7 +56,7 @@ void downlinkSetArmed(bool armed) {
 
 static PendingCommand* findPending(const char* deviceId) {
     for (int i = 0; i < DOWNLINK_MAX_CAMERAS; i++) {
-        if ((s_pending[i].cmd || s_pending[i].resendCount) && strncmp(s_pending[i].deviceId, deviceId, 8) == 0)
+        if ((s_pending[i].cmd || s_pending[i].resendMap) && strncmp(s_pending[i].deviceId, deviceId, 8) == 0)
             return &s_pending[i];
     }
     return nullptr;
@@ -68,9 +68,9 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd) {
     PendingCommand* p = findPending(deviceId);
     if (!p) {
         for (int i = 0; i < DOWNLINK_MAX_CAMERAS && !p; i++) {
-            if (!s_pending[i].cmd && !s_pending[i].resendCount) p = &s_pending[i];
+            if (!s_pending[i].cmd && !s_pending[i].resendMap) p = &s_pending[i];
         }
-        if (p) p->resendCount = 0;
+        if (p) p->resendMap = 0;
     }
     if (!p) return false;
     strncpy(p->deviceId, deviceId, 8);
@@ -81,13 +81,13 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd) {
     return true;
 }
 
-bool downlinkRequestResend(const char* deviceId, uint16_t idx, uint8_t count) {
-    if (!deviceId || count == 0 || count > 16) return false;
+bool downlinkRequestResend(const char* deviceId, uint16_t first, uint32_t map) {
+    if (!deviceId || map == 0) return false;
     expirePending();
     PendingCommand* p = findPending(deviceId);
     if (!p) {
         for (int i = 0; i < DOWNLINK_MAX_CAMERAS && !p; i++) {
-            if (!s_pending[i].cmd && !s_pending[i].resendCount) p = &s_pending[i];
+            if (!s_pending[i].cmd && !s_pending[i].resendMap) p = &s_pending[i];
         }
         if (!p) return false;
         p->cmd = 0;
@@ -95,8 +95,8 @@ bool downlinkRequestResend(const char* deviceId, uint16_t idx, uint8_t count) {
         strncpy(p->deviceId, deviceId, 8);
         p->deviceId[8] = '\0';
     }
-    p->resendIdx = idx;
-    p->resendCount = count;
+    p->resendFirst = first;
+    p->resendMap = map;
     p->queuedAt = millis();
     return true;
 }
@@ -105,11 +105,12 @@ bool downlinkResendPending(const char* deviceId) {
     if (!deviceId) return false;
     expirePending();
     PendingCommand* p = findPending(deviceId);
-    return p && p->resendCount;
+    return p && p->resendMap;
 }
 
-uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16_t* arg) {
-    if (arg) *arg = 0;
+uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16_t* first, uint32_t* map) {
+    if (first) *first = 0;
+    if (map) *map = 0;
     expirePending();
     PendingCommand* p = findPending(deviceId);
     if (!p) return 0;
@@ -119,29 +120,31 @@ uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16
         p->sent = true;
         return p->cmd;
     }
-    if (p->resendCount) {
-        uint8_t c = 0xF0 | (uint8_t)(p->resendCount - 1);
-        if (arg) *arg = p->resendIdx;
-        p->resendCount = 0;     // once: the gateway asks again for what is still missing
-        return c;
+    if (p->resendMap) {
+        if (first) *first = p->resendFirst;
+        if (map) *map = p->resendMap;
+        p->resendMap = 0;       // once: the gateway asks again for what is still missing
+        return DOWNLINK_CMD_RESEND;
     }
     return 0;
 }
 
-void downlinkBuildPlain(uint16_t pollSeq, uint16_t nonce, bool armed, uint8_t cmd, uint16_t arg,
-                        const char* deviceId, uint8_t out[16]) {
+void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t first, uint32_t map,
+                        uint8_t out[16]) {
     memset(out, 0, 16);
     out[0] = 'D';
     out[1] = 'L';
-    out[2] = (uint8_t)(pollSeq >> 8);
-    out[3] = (uint8_t)(pollSeq & 0xFF);
-    out[4] = (uint8_t)(nonce >> 8);
-    out[5] = (uint8_t)(nonce & 0xFF);
+    out[2] = (uint8_t)(pollCounter >> 24);
+    out[3] = (uint8_t)(pollCounter >> 16);
+    out[4] = (uint8_t)(pollCounter >> 8);
+    out[5] = (uint8_t)pollCounter;
     out[6] = armed ? 1 : 0;
     out[7] = cmd;
-    memcpy(&out[8], deviceId, 4);
-    out[12] = (uint8_t)(arg >> 8);
-    out[13] = (uint8_t)(arg & 0xFF);
+    if (cmd == DOWNLINK_CMD_RESEND) {
+        out[8] = (uint8_t)(first >> 8);
+        out[9] = (uint8_t)first;
+        for (int i = 0; i < 4; i++) out[10 + i] = (uint8_t)(map >> (8 * i));
+    }
     out[14] = 'V';
     out[15] = 'S';
 }
