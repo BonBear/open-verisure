@@ -13,8 +13,8 @@ This document contains the verified pinout and register configuration for all se
 | **Push button** (`SW1`) | `RESET_N` (Pin 31) | Input (Reset) | Hardware reset via 100 Ω to GND | External hardware reset/pairing button. Detected in software via `SLEEP.RST[1:0] == 00`. |
 | **Red LED** (`LED_RED`) | `P0_2` | Output | `P0SEL &= ~0x04; P0DIR \|= 0x04;` | Active high (`1` = on, `0` = off). |
 | **Green LED** (`LED_GREEN`) | `P0_4` | Output | `P0SEL &= ~0x10; P0DIR \|= 0x10;` | Active high (`1` = on, `0` = off). |
-| **Debug Data (`DD`)** | `P2_1` (Pin 21) | I/O | CC-Debugger interface | Connected to `J2-5` and the ESP32 CC-Flasher (`http://cc.local`). |
-| **Debug Clock (`DC`)** | `P2_2` (Pin 22) | Input | CC-Debugger interface | Connected to `J2-4` and the ESP32 CC-Flasher (`http://cc.local`). |
+| **Debug Data (`DD`)** | `P2_1` (Pin 21) | I/O | CC-Debugger interface | Connected to `J2-4` and the ESP32 CC-Flasher (`http://cc.local`). |
+| **Debug Clock (`DC`)** | `P2_2` (Pin 22) | Input | CC-Debugger interface | Connected to `J2-5` and the ESP32 CC-Flasher (`http://cc.local`). |
 | **Reset (`RESET_N`)** | `RESET_N` (Pin 31 / Pin 6) | Input | Active low | Connected to `J2-6`, the ESP32 CC-Flasher and push button `SW1`. |
 
 ---
@@ -28,8 +28,8 @@ Physical multimeter measurements against the CC1110 and the voltage rails:
 | **`J2-1`** | **Pin 3** | Square pad with white silkscreen dot. Aux / UART / GPIO. |
 | **`J2-2`** | **Pin 2** | Round pad. Aux / UART / GPIO. |
 | **`J2-3`** | **VCC** | **Target 3.3V Power**. Connected directly to the battery positive terminal via fuse `F1` / `BAT+_R`. |
-| **`J2-4`** | **Pin 22 (`P2_2`)** | **`DC` (Debug Clock)** for CC-Debugger / ESP-Flasher. |
-| **`J2-5`** | **Pin 21 (`P2_1`)** | **`DD` (Debug Data)** for CC-Debugger / ESP-Flasher. |
+| **`J2-4`** | **`P2_1`** | **`DD` (Debug Data)** for CC-Debugger / ESP-Flasher (verified 2026-11-17 on 2JHL2KMX: DD is J2-4 and DC J2-5, the reverse of earlier notes). |
+| **`J2-5`** | **`P2_2`** | **`DC` (Debug Clock)** for CC-Debugger / ESP-Flasher. |
 | **`J2-6`** | **Pin 6** | **Reset / Control pin** for the programming interface. |
 | **`J2-7`** | **GND** | **System ground (GND)**. Connected directly to the PCB ground plane. |
 

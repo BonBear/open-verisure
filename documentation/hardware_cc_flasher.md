@@ -16,8 +16,8 @@ The flashing and debug interface consists of 7 through-hole/test pads situated a
 | **`J2-1`** | Square pad (white dot) | Pin 3 (`P1_0`) | Aux / UART | Factory test point / Aux GPIO |
 | **`J2-2`** | Round pad | Pin 2 (`P1_1`) | Aux / UART | Factory test point / Aux GPIO |
 | **`J2-3`** | Round pad | **VCC (3.3V)** | **VDD (Target Power)** | Direct supply from battery positive terminal via fuse `F1` |
-| **`J2-4`** | Round pad | **Pin 22 (`P2_2`)** | **`DC` (Debug Clock)** | CC-Debugger clock line (2-wire debug interface) |
-| **`J2-5`** | Round pad | **Pin 21 (`P2_1`)** | **`DD` (Debug Data)** | CC-Debugger bidirectional data line |
+| **`J2-4`** | Round pad | **`P2_1`** | **`DD` (Debug Data)** | CC-Debugger bidirectional data line (verified 2026-11-17: DD is J2-4, not J2-5) |
+| **`J2-5`** | Round pad | **`P2_2`** | **`DC` (Debug Clock)** | CC-Debugger clock line (2-wire debug interface) |
 | **`J2-6`** | Round pad | **Pin 31 (`RESET_N`)**| **`RESET` (Debug Reset)**| Active-low reset line forcing chip into debug mode |
 | **`J2-7`** | Round pad (near text "J2")| **GND** | **System Ground (GND)** | Connected directly to the solid ground plane |
 
@@ -29,8 +29,8 @@ The flashing and debug interface consists of 7 through-hole/test pads situated a
 | :---: | :---: | :---: | :---: |
 | **3V3** | 3.3V Power Out | **`J2-3` (VCC)** | 3.3V Target Power |
 | **GND** | Ground | **`J2-7` (GND)** | Ground |
-| **GPIO 19** | Debug Clock (`CC_DC`)| **`J2-4` (DC)** | Debug Clock |
-| **GPIO 23** | Debug Data (`CC_DD`) | **`J2-5` (DD)** | Bidirectional Debug Data |
+| **GPIO 19** | Debug Clock (`CC_DC`)| **`J2-5` (DC)** | Debug Clock |
+| **GPIO 23** | Debug Data (`CC_DD`) | **`J2-4` (DD)** | Bidirectional Debug Data |
 | **GPIO 33** | Debug Reset (`CC_RST`)| **`J2-6` (RESET)** | Active-Low Debug Reset |
 
 ```mermaid
@@ -46,15 +46,15 @@ flowchart LR
     subgraph J2["Verisure J2 Header (PCB Rear)"]
         J3["J2-3 (VCC)"]
         J7["J2-7 (GND)"]
-        J4["J2-4 (DC / Pin 22)"]
-        J5["J2-5 (DD / Pin 21)"]
+        J4["J2-4 (DD / P2_1)"]
+        J5["J2-5 (DC / P2_2)"]
         J6["J2-6 (RESET_N / Pin 31)"]
     end
 
     F3V3 ===|Red wire| J3
     FGND ===|Black wire| J7
-    FDC ===|Yellow wire| J4
-    FDD ===|Blue wire| J5
+    FDC ===|Yellow wire| J5
+    FDD ===|Blue wire| J4
     FRST ===|Green wire| J6
 ```
 

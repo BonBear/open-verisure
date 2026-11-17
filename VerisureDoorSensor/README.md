@@ -31,8 +31,8 @@ The sensor has an unpopulated 7-pad header **J2** (pin 1 = square pad).
 | ESP32 flasher pin | J2 pad | Signal |
 | :---: | :---: | :---: |
 | 3V3 | 3 | VCC (target power) |
-| GPIO 19 | 4 | DC (debug clock) |
-| GPIO 23 | 5 | DD (debug data) |
+| GPIO 23 | 4 | DD (debug data) |
+| GPIO 19 | 5 | DC (debug clock) |
 | GPIO 33 | 6 | RESET_N |
 | GND | 7 | Ground |
 
