@@ -1,5 +1,7 @@
 # Verisure GW MD CAM2: Measurement Log Phase 2 (Camera, Power-Enable & Buses)
 
+> Historical log (status as of 2026-10-30); the current state is in [MD_CAM/README.md](../README.md).
+
 This measurement log is for mapping how the **TI CC1110 (`U15`)** switches on power to the **Blackfin DSP (`U5`)**, the camera and the flash memory, and how the buses (SPI / UART) are connected between them.
 
 > [!CAUTION]
@@ -108,35 +110,36 @@ Measure with the multimeter whether any of the 4 CC1110 candidate pins (`P1_0`, 
 
 ---
 
-## 📝 Results & Summary (100 % Verified & Mapped)
+## 📝 Results & Summary (2026-10-30, partly superseded)
+
+> Several of these early conclusions were corrected by later measurements (2026-11-11 to 2026-11-14); the corrections are marked **Corrected** below. The current pinout is in [Hardware_pinout_and_measurements.md](Hardware_pinout_and_measurements.md).
 
 * **Power-Enable & Voltage Control for the Blackfin DSP (`U5`):**
   - **`P0_2` (Pin 7):** Enables the transistor `Q13` for the **1.2V Blackfin Core rail**.
-  - **`P1_0` (Pin 4):** Enables the transistor `Q7` for the **3.3V switched peripheral rail**.
+  - **`P1_0` (Pin 4):** Drives the gate of `Q7`. **Corrected:** Q7 holds the Blackfin **/RESET** (P1_0 = 1 holds the Blackfin in reset, 0 releases it); it is not a 3.3 V rail.
   - **`P1_6` (Pin 33) & `P0_7` (Pin 13):** Enables auxiliary rails / trigger.
-  - **`P0_0` (Pin 5):** **Blackfin Hardware Reset (`/RESET`, active low)**.
+  - **`P0_0` (Pin 5):** First taken for the Blackfin `/RESET`. **Corrected:** P0_0 is a probable **supply enable** for the Blackfin; /RESET is controlled by P1_0 via Q7.
     - With `P0_0 = 0` the Blackfin is held in reset and the board draws only **20–22 mA**.
-    - With `P0_0 = 1` the Blackfin is released from reset and runs the factory firmware with a stable current consumption of **92–95 mA**.
+    - With `P0_0 = 1` the Blackfin starts and runs the factory firmware with a stable current consumption of **92–95 mA**.
 
 * **U3 SPI Flash Memory (`DSP V175`):**
   - **IC:** EON Silicon Solution (cFeon) `EN25F40` 4 Megabit / 512 KB Serial NOR Flash.
   - **JEDEC ID:** **`0x1C 0x31 0x13`** (Read out and confirmed via Logic 4 and CC1110 SPI Master).
-  - **Chip Select (`/CS`, Pin 1):** Controlled **internally by the Blackfin DSP's `SPI0_SEL1`**, not directly from the CC1110.
-    - When the Blackfin is held in reset (`P0_0 = 0`) its pins are held low, which activates U3 (/CS = 0V), allowing the CC1110 to read out the JEDEC ID.
-    - When the Blackfin starts (`P0_0 = 1`) the DSP drives `SPI0_SEL1` high and puts U3 in standby so that MISO is tri-stated.
+  - **Chip Select (`/CS`, Pin 1):** First assumed to be driven by the Blackfin's `SPI0_SEL1`. **Corrected:** U3 /CS follows the CC1110's **`P1_1`** (see Steps E–H below: `P1_1 = 0` silences U3).
 
 * **The Inter-Processor Bus (CC1110 <-> Blackfin ADSP-BF512):**
   - **SPI Master (`USART0 Alt. 2`):** `SCK` = `P1_3`, `MISO` = `P1_4`, `MOSI` = `P1_5`.
   - **Chip Select & Bus Switch:** 
-    - **`P1_2` (`SS Upper`):** The Blackfin DSP's active Slave Select (`/SPISS`, active low). During the Blackfin's boot phase this must be held HIGH (1) to prevent an SPI Mode Fault in the DSP.
+    - **`P1_2` (`SS Upper`):** First taken for the Blackfin's Slave Select. **Corrected:** P1_2 **enables the SPI path to Blackfin SPI1** (port H, PH0..PH3); the boot selector also reads it on PH0 at power-on.
     - **`P1_1` (`SS Lower`):** Active-high **Bus Switch Enable**. When `P1_1 = 1` the SPI bus is fully open towards the Blackfin and can clock 4096 clocks continuously at 844 kHz. When `P1_1 = 0` the bus is clamped low. During boot `P1_1 = 1` must be held active.
   - **Measured continuity (Multimeter):** `U3 Pin 2` (`SO`) beeps with direct continuity (0 Ω) to `CC1110 Pin 35` (`MISO`), which guarantees that the Saleae probes sit directly on the bus.
   - **DSP Slave behaviour:** The Blackfin DSP actively drives MISO to `0x00` (`SENDZ = 1`) while waiting for its internal image-processing pipeline to fill the transmit buffer with a captured image.
   - **LED board (`P/N3302042 C`):** Connected to `J2`/`J3`. A red indicator LED lights up at power-on. The high-power flash is controlled via combined logic (Blackfin/P0_7/light sensor).
 
 * **Verified Boot and Signal Sequence from Reference Board #2 (Logic 4):**
+  - **Corrected:** the Blackfin boots from the **EON EN25F20** on SPI0 (PG12–PG15), **not** from U3. The U3 reads below are therefore not the boot ROM loading its program.
   - At cold start the Blackfin ADSP-BF512 starts as **SPI Master** at 2.000 MHz.
-  - For 20.7 ms the Boot ROM reads from the U3 Flash (`EN25F40`) via opcodes `0x05` (RDSR), `0x9F` (RDID) and `0x0B` (Fast Read at 0x000000, 0x020000, 0x040000, 0x07F000, 0x07E200, 0x07E000).
+  - For 20.7 ms the Blackfin reads from the U3 Flash (`EN25F40`) via opcodes `0x05` (RDSR), `0x9F` (RDID) and `0x0B` (Fast Read at 0x000000, 0x020000, 0x040000, 0x07F000, 0x07E200, 0x07E000).
   - After 20.7 ms U3 `/CS` is set high and the Blackfin configures SPI0 as **SPI Slave**.
   - The CC1110 then takes over as **SPI Master** in Mode 0 / Mode 3 with 16-bit word framing and toggles `/SPISS` (`P1_2`).
   - Current consumption at 3.00 V: **3.0 mA** in idle, **73–75 mA** during image capture/DSP phase.
@@ -144,7 +147,7 @@ Measure with the multimeter whether any of the 4 CC1110 candidate pins (`P1_0`, 
 * **Live Shutter Test with button SW3 on Board #1 (2026-10-30):**
   - **Shutter trigger:** Pressing SW3 was detected immediately by the CC1110 (100 Hz micro-pull scan on `P1_6`).
   - **RF telemetry:** Immediately sent opcode `0xEE` ("button":"ON") to the ESP32-S2 Gateway (`seq: 25429`, RSSI -34 dBm, LQI 116).
-  - **Voltage sequencing & Current profile:** The bench power supply (COM5, 3.00 V) jumped from 3.0 mA idle current to **75.0–76.0 mA** for exactly **1.84 seconds** (44–46 active samples), and then returned deterministically to 3.0 mA.
+  - **Voltage sequencing & Current profile:** The bench power supply (3.00 V) jumped from 3.0 mA idle current to **75.0–76.0 mA** for exactly **1.84 seconds** (44–46 active samples), and then returned deterministically to 3.0 mA.
   - **SPI communication:** The CC1110 generated 16384 clock pulses at 844 kHz (2048 bytes read out) and sent command sweeps (0x0004, 0x0003, 0x0001, 0x0100, 0x0002, 0x0200, 0x8001, 0x55AA).
   - **DSP MISO behaviour:** The Blackfin responded with a stable logic zero (`0x00`, `SENDZ=1`) during all read-outs.
   - **Bus isolation:** Analysis confirmed that `P1_1` must be actively driven HIGH (1) to open the bus switch; when `P1_1` is floating or 0 the bus is clamped to 0V.

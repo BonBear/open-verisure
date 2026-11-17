@@ -13,8 +13,8 @@ The flashing and debug interface consists of 7 through-hole/test pads situated a
 
 | J2 Pin | Shape & Marking | Measured Node on CC1110 | Signal Name | Description & Function |
 | :---: | :--- | :---: | :---: | :--- |
-| **`J2-1`** | Square pad (white dot) | Pin 3 (`P1_0`) | Aux / UART | Factory test point / Aux GPIO |
-| **`J2-2`** | Round pad | Pin 2 (`P1_1`) | Aux / UART | Factory test point / Aux GPIO |
+| **`J2-1`** | Square pad (white dot) | `P1_0` or `P1_1` (not verified) | Aux / UART | Factory test point / Aux GPIO |
+| **`J2-2`** | Round pad | `P1_0` or `P1_1` (not verified) | Aux / UART | Factory test point / Aux GPIO |
 | **`J2-3`** | Round pad | **VCC (3.3V)** | **VDD (Target Power)** | Direct supply from battery positive terminal via fuse `F1` |
 | **`J2-4`** | Round pad | **`P2_1`** | **`DD` (Debug Data)** | CC-Debugger bidirectional data line (verified 2026-11-17: DD is J2-4, not J2-5) |
 | **`J2-5`** | Round pad | **`P2_2`** | **`DC` (Debug Clock)** | CC-Debugger clock line (2-wire debug interface) |
@@ -67,11 +67,12 @@ The pins are set in the flasher firmware (`ESP_CC_Flasher/src/main.h`: ESP32 Dev
 The camera's CC1110 has the same 2-wire debug interface on header **J6** (details in
 [MD_CAM/docs/Hardware_pinout_and_measurements.md](../MD_CAM/docs/Hardware_pinout_and_measurements.md)).
 J6-1 goes through 1 kOhm to DVDD, so power the camera on its `VBAT` pad (batteries removed) and
-not through J6-1.
+not through J6-1. Do not feed it from the flasher's 3V3: the inrush into the camera's tantalum
+capacitors can drop the flasher's USB connection.
 
 | ESP32 Flasher Pin | Camera | Function |
 | :---: | :---: | :---: |
-| **3V3** (or a bench supply) | **`VBAT`** pad | Target power |
+| Bench supply or Otii (3.0 V), not the flasher's 3V3 | **`VBAT`** pad | Target power |
 | **GND** | **`J6-5`** | Ground |
 | **GPIO 23** | **`J6-2`** (`P2_1`) | Debug Data (`DD`) |
 | **GPIO 19** | **`J6-3`** (`P2_2`) | Debug Clock (`DC`) |
@@ -123,17 +124,18 @@ RESET_N low, so give the flasher USB power before connecting it to a running dev
 
 ## 💻 Automated Build and Flashing Process
 
-Compilation and flashing are automated by [`VerisureDoorSensor/build_and_flash.py`](../VerisureDoorSensor/build_and_flash.py) for the door sensor and [`MD_CAM/build_and_flash_md_cam.py`](../MD_CAM/build_and_flash_md_cam.py) for the camera. Both can flash over Wi-Fi (HTTP API, below) or over the flasher's USB serial port (`--serial COM12`, faster).
+Compilation and flashing are automated by [`VerisureDoorSensor/build_and_flash.py`](../VerisureDoorSensor/build_and_flash.py) for the door sensor and [`MD_CAM/build_and_flash_md_cam.py`](../MD_CAM/build_and_flash_md_cam.py) for the camera. Both can flash over Wi-Fi (HTTP API, below) or over the flasher's USB serial port (`--serial <flasher port>`, faster). The door sensor's script first reads the gateway's `GET <gateway>/api/replay?id=<ID>` and builds with `-DCTR_SEED` so a reflashed sensor's packet counter continues (see [cryptography_and_protocol.md](cryptography_and_protocol.md)).
 
 ### Step-by-Step Flow (HTTP API, door sensor):
 1. **Compilation with SDCC:**
    Compiles `VerisureDoorSensor/main.c` into an optimized MCS-51 8051 binary:
    ```powershell
-   sdcc -mmcs51 --model-small --code-size 0x8000 --xram-loc 0xF000 --xram-size 0x0E00 -c main.c -o build/
-   sdcc -mmcs51 --model-small --code-size 0x8000 --xram-loc 0xF000 --xram-size 0x0E00 build/main.rel -o build/main.ihx
+   sdcc -mmcs51 --model-small --code-size 0x7800 --xram-loc 0xF000 --xram-size 0x0E00 -DCTR_SEED=<block> -c main.c -o build/
+   sdcc -mmcs51 --model-small --code-size 0x7800 --xram-loc 0xF000 --xram-size 0x0E00 build/main.rel -o build/main.ihx
    packihx build/main.ihx > build/main.hex
    makebin -p build/main.ihx build/main.bin
    ```
+   `--code-size 0x7800` keeps code out of flash pages 30-31 (0x7800-0x7FFF), which hold the packet counter log.
 2. **Chip Detection:**
    Sends `POST http://cc.local/cc_init`. The ESP32 generates debug initialization waveforms on `DC` and `RESET_N`.
    The CC1110 responds with `Device id: 0104 Status: B2` (0104 = CC1110F32, 32 kB Flash).
@@ -146,6 +148,6 @@ Compilation and flashing are automated by [`VerisureDoorSensor/build_and_flash.p
 
 ## ⚠️ Important Precautions
 * **Never flash gateway firmware to the CC Flasher port:**
-  The ESP32 CC-Flasher runs on e.g. `COM12` (Silicon Labs CP210x). The Gateway runs on `COM9` (LOLIN S2 Mini). Always verify target ports prior to running `pio run -t upload`.
+  The ESP32 CC-Flasher is a Silicon Labs CP210x serial port; the gateway is the LOLIN S2 Mini's native USB port. Always verify target ports prior to running `pio run -t upload`.
 * **Reliable Power Connection on 3V3 / GND:**
   If `cc_init` returns `Device id: 0000` or `Status: 00`, inspect the 3V3 and GND jumper wires for loose contact on J2-3 and J2-7.

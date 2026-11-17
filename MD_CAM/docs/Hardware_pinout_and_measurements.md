@@ -4,16 +4,16 @@ This document contains the verified hardware mapping and the measurement results
 
 ---
 
-## 🎉 Summary of Your Measurements (Spot on!)
+## Summary of the Measurements
 
-Your measurements were a **100 % hit** and match exactly both the microscope image of `U15` (`images/Photo_2026_10_22_00_00_49.jpeg`) and TI's official datasheet (`SWRS033`) for the CC1110F32:
+The measurements match both the microscope image of `U15` (`images/camera_cc1110_u15.jpeg`) and TI's datasheet (`SWRS033`) for the CC1110F32:
 
 1. **The programming header is `J6`!**
    * `J6-2` = **Pin 15 (`P2_1` / `DD` - Debug Data)**
    * `J6-3` = **Pin 16 (`P2_2` / `DC` - Debug Clock)**
    * `J6-4` = **`RESET_N`** (also goes to the reset button `SW1` to `GND`, just like on the door sensor!)
    * `J6-5` = **`GND`**
-   * `J6-1` = Has `1 kΩ` to Pin 10 (`DVDD`). *(Important: When flashing we therefore feed 3.3V directly to the `VBAT` pad or battery plus instead of `J6-1`, so that the 1 kΩ resistor does not throttle the current!)*
+   * `J6-1` = Has `1 kΩ` to Pin 10 (`DVDD`). *(Important: When flashing, feed 3.0 V from a bench supply or the Otii directly to the `VBAT` pad or battery plus instead of `J6-1`, so that the 1 kΩ resistor does not throttle the current. Not from the flasher's 3V3: the inrush into the tantalum capacitors can drop the flasher's USB.)*
 2. **The PIR motion sensor (`ALARM`) is fully mapped:**
    * Goes directly to **CC1110 Pin 32 (`P1_7`)** – exactly the same pin Verisure used for the magnetic contact on the door sensor!
    * **Active LOW:** Sits at **`3.08 V`** at rest and drops to **`0 V`** on detected motion.
@@ -24,7 +24,7 @@ Your measurements were a **100 % hit** and match exactly both the microscope ima
      * **Mounted on wall (Secured):** Switch closed to `VBAT+` -> `P1_6` becomes **`3.0 V`** (`1`).
 4. **Why `3.3V`, `2.5V`, `1.8V` and `1.2V` were `0 V` during the battery measurement:**
    * The 3 batteries (3V CR123A/lithium) are **in parallel (`VBAT = 3.12 V`)** and supply **only the CC1110 and the PIR sensor** in idle mode!
-   * All voltage regulators for the camera, Blackfin DSP, SDRAM and the flash LED board (`3.3V`, `2.5V`, `1.8V`, `1.2V`) are **completely switched off (0 V)** until the CC1110 actively chooses to switch them on! The reason they did not switch on when you waved is that Verisure's original firmware in the CC1110 is "disarmed" and ignores PIR alarms until the alarm central requests an image.
+   * All voltage regulators for the camera, Blackfin DSP, SDRAM and the flash LED board (`3.3V`, `2.5V`, `1.8V`, `1.2V`) are **completely switched off (0 V)** until the CC1110 actively chooses to switch them on! They did not switch on at motion because Verisure's original firmware in the CC1110 is "disarmed" and ignores PIR alarms until the alarm central requests an image.
 5. **The SPI and UART buses between the CC1110 and the Blackfin DSP are fully identified:**
    * **SPI (`USART0 Alt. 2`):** `SCK` = Pin 36 (`P1_3`), `MISO` = Pin 35 (`P1_4`), `MOSI` = Pin 34 (`P1_5`), `SS` (upper) = Pin 1 (`P1_2`), `SS` (lower) = Pin 3 (`P1_1`).
    * **Towards the Blackfin (verified 2026-11-11):** The CC pins reach Blackfin **SPI1** on port H when P1_2 = 1: P1_4 -> PH1 (SPI1_SCK), P1_3 -> PH2 (SPI1_MISO), P1_5 -> PH3 (SPI1_MOSI), PH0 (SPI1_SSEL) = 0. SCK and MISO are thus swapped compared with the CC labels above. The PH functions are taken from the Linux kernel's BF51x portmux and have not been checked against ADI's datasheet.
@@ -52,7 +52,7 @@ When you read the text (*"CC1110 F32 TI..."*) the right way up, **Pin 1 is at th
            +------------------------------------------------------+
              (10)  (11)  (12)  (13)  (14)  (15)  (16)  (17)  (18)
              DVDD  P0_5  P0_6  P0_7  P2_0  P2_1  P2_2  P2_3  P2_4
-                   (RX)  (SW3)             (DD)  (DC)  (32.768kHz)
+                   (RX)  (PIR)             (DD)  (DC)  (32.768kHz)
 ```
 
 ---
@@ -66,21 +66,21 @@ When you read the text (*"CC1110 F32 TI..."*) the right way up, **Pin 1 is at th
 | **Pin 3** | **`P1_1`** | Test pad **`SS` (Lower)** | Assumed bus switch enable. Does **not** affect Blackfin PH0..PH3 in any state (verified 2026-11-11); role towards U3 not investigated |
 | **Pin 4** | **`P1_0`** | Gate of **`Q7`** (N-MOSFET, SOT-89 "N06") | **Blackfin /RESET holder**: 1 = Q7 conducts and pulls B10 (/RESET) low, 0 = Blackfin is released (verified 2026-11-11) |
 | **Pin 5** | **`P0_0`** | Blackfin reset circuit | Probably **supply enable for the Blackfin**: the current goes from 20 to 92 mA when P0_0 is set (/RESET is controlled by P1_0 via Q7) |
-| **Pin 6** | `P0_1` | *(Unknown load)* | High gives +7 mA; not visible on Blackfin PF/PG/PH (verified 2026-11-11) |
+| **Pin 6** | `P0_1` | PIR header pin 2 (LED driver Q2) | High gives +7 mA; not visible on Blackfin PF/PG/PH (verified 2026-11-11). See [Measurements_PIR_header.md](Measurements_PIR_header.md) |
 | **Pin 7** | **`P0_2`** | Transistor **`Q13`** | **Power-Enable for the 1.2V Core rail** (Blackfin VDDINT) |
 | **Pin 8** | **`P0_3`** | *(Unknown load)* | **Must be high**: low gives -20 mA (76 instead of 95-97 mA) and the Blackfin appears to be switched off (verified 2026-11-11) |
 | **Pin 9** | **`P0_4`** | Test pad **`TX`** | UART TX (`USART1 Alt. 1`). **Not** visible on Blackfin PF/PG/PH (verified 2026-11-11) |
 | **Pin 10** | `DVDD` | Capacitor `C91` (+ 1 kΩ to `J6-1`) | Digital 3V supply |
 | **Pin 11** | **`P0_5`** | Test pad **`RX`** | UART RX (`USART1 Alt. 1`). **Not** visible on Blackfin PF/PG/PH (verified 2026-11-11) |
-| **Pin 12** | **`P0_6`** | *(Not connected / Unused)* | Unused |
+| **Pin 12** | **`P0_6`** | PIR header pin 3, 5.77 kΩ pull-up to VBAT on the PIR board | Driven high while the Blackfin is off (driven low it sinks ~0.9 mA). See [Measurements_PIR_header.md](Measurements_PIR_header.md) |
 | **Pin 13** | **`P0_7`** | Connector **`J2 Pin 4`** / DSP rail | **Power-Enable / Switched Auxiliary rail** (6 kΩ to J2-4) |
 | **Pin 14** | `P2_0` | *(Pulled up to VBAT somewhere, ~10 kΩ; target not traced)* | Driven high while idle: low it sinks ~0.30 mA (Otii 2026-11-16) |
 | **Pin 15** | **`P2_1` (`DD`)** | **`J6-2`** | **Debug Data (`DD`)** for the CC-Flasher |
 | **Pin 16** | **`P2_2` (`DC`)** | **`J6-3`** | **Debug Clock (`DC`)** for the CC-Flasher |
 | **Pin 17** | `P2_3` (`XOSC32K_Q1`) | Crystal `Y2` (32.768 kHz) | Sleep Timer crystal |
 | **Pin 18** | `P2_4` (`XOSC32K_Q2`) | Crystal `Y2` (32.768 kHz) | Sleep Timer crystal |
-| **Pin 19–20** | `XOSC_Q1/Q2` | Crystal `Y1` (**27.000 MHz**) | RF and system crystal |
-| **Pin 22–23** | `RF_P` / `RF_N` | Balun $\rightarrow$ Spring antenna | 868.950 MHz Sub-1GHz RF |
+| **Pin 20–21** | `XOSC_Q2/Q1` | Crystal `Y1` (**27.000 MHz**) | RF and system crystal |
+| **Pin 23–24** | `RF_P` / `RF_N` | Balun $\rightarrow$ Spring antenna | 868.950 MHz Sub-1GHz RF |
 | **Pin 31** | **`RESET_N`** | **`J6-4`** & **`SW1`** | **Hardware Reset** for the CC-Flasher |
 | **Pin 32** | **`P1_7`** | Test pad **`ALARM`** (from PIR) | **PIR Motion alarm** (`3.08V` = Rest, `0V` = Motion) |
 | **Pin 33** | **`P1_6`** | **`SW3`** (Spring switch, back side) | **Sabotage switch (Tamper)** – closes to `VBAT+` (0V = Tamper, 3V = Secured) |
@@ -92,10 +92,11 @@ When you read the text (*"CC1110 F32 TI..."*) the right way up, **Pin 1 is at th
 
 ## 💡 The LED Board (`LED BOARD P/N3302042 C`)
 
-From your new images (`images/led_board_front.jpg` and `images/led_board_back.jpg`), which connect to the 4-pin connectors `J3` and `J2`:
+From the images (`images/led_board_front.jpg` and `images/led_board_back.jpg`), which connect to the 4-pin connectors `J3` and `J2`:
 * **4 High-power LEDs (Flash/IR):** Light up the room when taking pictures in the dark.
 * **Light sensor (up on the tab above the camera lens):** Measures whether the room is dark or light.
 * **Driver circuit on the back (`U2`):** `MCP6042I` (dual rail-to-rail operational amplifier) + the transistors `Q3`/`Q6` and `1R0` (1.0 Ω) current-sense resistors, which form a constant-current driver for the flash LEDs.
+* **Control:** the IR flash LEDs are switched by Blackfin **PF10** and **PF12**.
 
 ---
 
@@ -103,7 +104,7 @@ From your new images (`images/led_board_front.jpg` and `images/led_board_back.jp
 
 1. **Confirm power supply (`VBAT` to CC1110):**
    * Does the test pad **`VBAT`** beep directly (0 Ω) to **CC1110 Pin 10 (`DVDD`)**?
-   * **Answer:** **[X] Yes (Beeps directly!)** $\rightarrow$ We connect `3V3` from the `ESP_CC_Flasher` to the `VBAT` pad (with the batteries removed). *(The 1 kΩ resistor on `J6-1` is only a `V_SENSE` protection output for the factory test jig).*
+   * **Answer:** **[X] Yes (Beeps directly!)** $\rightarrow$ The camera is powered on the `VBAT` pad (with the batteries removed) from a bench supply or the Otii; the flasher's 3V3 is not used for it (see the note on `J6-1` above). *(The 1 kΩ resistor on `J6-1` is only a `V_SENSE` protection output for the factory test jig).*
 
 2. **Confirm `RESET_N` (`J6-4` to CC1110 Pin 31):**
    * Measure the resistance (Ω) between **`J6-4`** and **CC1110 Pin 31** (`RESET_N`).
@@ -115,7 +116,7 @@ From your new images (`images/led_board_front.jpg` and `images/led_board_back.jp
 
 | ESP_CC_Flasher Pin | Connects to on MD_CAM | Description |
 | :--- | :--- | :--- |
-| **`3V3`** | Test pad **`VBAT`** *(with batteries removed!)* | Direct 3.3V supply to the CC1110 (avoids the 1 kΩ on `J6-1`) |
+| Bench supply / Otii (3.0 V), not the flasher's `3V3` | Test pad **`VBAT`** *(with batteries removed!)* | Direct supply to the CC1110 (avoids the 1 kΩ on `J6-1`) |
 | **`GND`** | **`J6-5`** *(or test pad `GND`)* | System ground |
 | **`CC_DD` (GPIO 23)** | **`J6-2`** | Debug Data (`P2_1` / Pin 15) |
 | **`CC_DC` (GPIO 19)** | **`J6-3`** | Debug Clock (`P2_2` / Pin 16) |

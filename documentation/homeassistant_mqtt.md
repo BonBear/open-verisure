@@ -98,6 +98,7 @@ The picture commands and the camera protocol are described in
 ```json
 {
   "contact": "CLOSED",
+  "motion": "OFF",
   "vibration": "OFF",
   "button": "OFF",
   "power_on": "OFF",
@@ -106,19 +107,25 @@ The picture commands and the camera protocol are described in
   "low_battery": "OFF",
   "rssi": -49,
   "lqi": 127,
-  "seq": 28
+  "seq": 1792
 }
 ```
+
+`seq` is the full packet counter (32-bit for the door sensor, 16-bit for the camera). `motion`
+mirrors `contact` and is what the camera's Motion entity uses.
 
 ---
 
 ## 🌐 Gateway Web Dashboard & REST API
 
-The gateway hosts an embedded web server on port 80 ([http://192.168.0.142](http://192.168.0.142)). It provides a dark-mode responsive interface for monitoring sensor telemetry and configuring network parameters.
+The gateway hosts an embedded web server on port 80 (`http://<gateway-ip>`). It provides a dark-mode responsive interface for monitoring sensor telemetry and configuring network parameters.
 
 ### REST API Endpoints:
 * **`GET /api/status`:** Returns real-time JSON status for Wi-Fi, radio noise floor, MQTT broker link, and all registered sensors.
 * **`GET /api/replay?id=<ID>`:** The last accepted persistent packet counter of a sensor (`{"id","known","counter"}`); the door sensor's build script starts a reflashed sensor above it.
+* **`GET /api/radio`:** CC1101 chip version, part number and MARCSTATE (radio check).
+* **`GET /api/camera.jpg`, `GET /api/camera_large.jpg`:** The last camera picture (320x240) and the last 640x480 picture; 404 until one has arrived.
+* **`GET|POST /api/camera_test?id=<ID>`:** Publishes a tiny test JPEG on the camera's MQTT image topic (checks the Home Assistant camera entity without the camera).
 * **`GET /api/scan`:** Performs an asynchronous Wi-Fi scan and returns available networks with RSSI and encryption flags.
 * **`POST /api/save`:** Persists Wi-Fi SSID, password, MQTT broker host, port, credentials, topic prefix, and Master Key into ESP32-S2 NVS (Non-Volatile Storage).
 * **`POST /api/reboot`:** Triggers a software restart of the gateway.

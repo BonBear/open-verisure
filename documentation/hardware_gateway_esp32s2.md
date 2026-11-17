@@ -48,6 +48,12 @@ flowchart LR
 ### 🖼️ Illustrated Wiring Diagram
 ![LOLIN S2 Mini to CC1101 Wiring Diagram](images/wiring_gateway_s2mini_cc1101.jpg)
 
+### 📷 The parts
+
+| LOLIN S2 Mini, front | LOLIN S2 Mini, back (pin labels) | CC1101 module pinout |
+| :---: | :---: | :---: |
+| ![LOLIN S2 Mini front](images/lolin_s2_mini_front.jpg) | ![LOLIN S2 Mini back](images/lolin_s2_mini_back.jpg) | ![CC1101 module](images/cc1101_module_pinout.jpg) |
+
 ---
 
 ## 🔬 Silicon Analysis: ADC1 vs ADC2 and Wi-Fi Stability on ESP32-S2
@@ -71,7 +77,7 @@ By moving the entire SPI bus to **GPIO 3, 5, 7, and 9** (all within the ADC1 dom
 
 ---
 
-## 🛠️ Source Code Pin Definitions ([`hardware_pins.h`](file:///c:/repo/Antigravity/868Receiver/src/hardware_pins.h))
+## 🛠️ Source Code Pin Definitions ([`hardware_pins.h`](../868Receiver/src/hardware_pins.h))
 
 ```cpp
 #pragma once

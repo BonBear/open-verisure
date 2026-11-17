@@ -11,7 +11,7 @@ The Verisure ecosystem employs a hierarchical key architecture where each physic
 ### Mathematical Specification
 $$\text{DeviceKey} = \text{AES-128-ECB}_{\text{MasterKey}}(\text{DeviceID}_{\text{ASCII}} \,\|\, \text{Padding})$$
 
-1. **Master Key (16 bytes):** Stored securely on the gateway / central receiver (e.g. `01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10`).
+1. **Master Key (16 bytes):** Stored on the gateway (`secrets.h` or its NVS); generate one with `python derive_key.py --generate-master`. Never use an example or sequential key.
 2. **Input Block (16 bytes):** The 8 ASCII characters of the sensor ID right-padded with 8 zero bytes:
    ```text
    ['2', 'J', 'H', 'L', '2', 'M', 'V', 'N', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
@@ -50,7 +50,9 @@ Decrypted by the gateway into the following 16-byte telemetry fields:
 | **`10..11`**| **Magic Bytes** | `char[2]` | Fixed signature: `'V'`, `'S'` (Verisure Sensor). |
 | **`12`** | **Port 0 Diagnostics**| `uint8_t` | Raw state of CC1110 `P0` (P0_1 Tamper, P0_2/P0_4 LEDs). |
 | **`13`** | **Port 1 Diagnostics**| `uint8_t` | Raw state of CC1110 `P1` (P1_7 Reed switch, P1_2 Shock). |
-| **`14..15`** | **Counter, high half** | `uint16_t` (Little-Endian) | With flag bit 5: bits 16..31 of the persistent packet counter. Without it (camera, older door firmware): `P2` and the reset cause. |
+| **`14..15`** | **Counter, high half** | `uint16_t` (Little-Endian) | With flag bit 5: bits 16..31 of the persistent packet counter. Without it (older door firmware): `P2` and the reset cause. |
+
+The camera uses bytes 12..15 differently (poll marker 0xBA, challenge, camera state) and also sends 56-byte picture packets and receives downlink answers; see [MD_CAM/docs/Camera_protocol.md](../MD_CAM/docs/Camera_protocol.md).
 
 ### Flag Bits (Byte 2)
 ```text
@@ -60,7 +62,7 @@ Bit 2 (0x04): Tamper Switch (1 = Cover removed / Alarm, 0 = Cover secured)
 Bit 3 (0x08): Power-On Reset (1 = first packet after a power-on reset)
 Bit 4 (0x10): Low Battery Warning (1 = Voltage below 2400 mV)
 Bit 5 (0x20): Persistent counter in bytes 14..15 (door sensor firmware since 2026-11-17)
-Bit 6..7:     With bit 5: reset cause SLEEP.RST[1:0] (0 = power-on, 1 = RESET_N, 2 = watchdog)
+Bit 6..7:     With bit 5: reset cause SLEEP.RST[1:0] (0 = power-on, 1 = RESET_N, 2 = watchdog, 3 = clock loss)
 ```
 
 ---
@@ -68,7 +70,7 @@ Bit 6..7:     With bit 5: reset cause SLEEP.RST[1:0] (0 = power-on, 1 = RESET_N,
 ## 🛡️ Security & Replay Attack Prevention
 
 The gateway applies a multi-stage authentication filter:
-1. **Hardware CRC16 Verification:** The packet is discarded immediately unless the CC1101 internal CRC check passes (Bit 7 of LQI status byte = 1).
+1. **CRC-16 in software:** The gateway receives fixed 58-byte frames with the CC1101's hardware CRC off (so 24- and 56-byte packets share one setting) and checks the CC1101 CRC-16 (polynomial 0x8005, initial value 0xFFFF) after 24 or 56 bytes itself.
 2. **Cryptographic Integrity Check:** The payload is decrypted using the derived device key. If the magic bytes are not `'V'`, `'S'`, or if the Device ID Echo does not match the header, the frame is rejected as spoofed or corrupted.
 3. **Replay Protection with a persistent counter (flag bit 5, door sensor):**
    * The packet counter is 32 bits: bytes 0..1 and 14..15. Its upper 24 bits (a block of 256

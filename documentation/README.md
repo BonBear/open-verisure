@@ -95,10 +95,12 @@ gateway, and the gateway's answer carries the alarm state and picture commands.
    ```powershell
    pio run -d 868Receiver -t upload
    ```
-   Web management dashboard: [http://192.168.0.142](http://192.168.0.142) (or your local IP).
+   Web management dashboard: `http://<gateway-ip>` (the address is printed on the gateway's serial console).
 
 4. **Build, Flash & Verify the Devices:**
    ```powershell
-   python VerisureDoorSensor/build_and_flash.py            # door sensor
-   python MD_CAM/build_and_flash_md_cam.py --serial COM12   # motion camera
+   python VerisureDoorSensor/build_and_flash.py --serial <flasher port>   # door sensor
+   python MD_CAM/build_and_flash_md_cam.py --serial <flasher port>       # motion camera
    ```
+   Set `GATEWAY_HTTP=http://<gateway-ip>` (or `--gateway`) so the door sensor's script can read its
+   packet counter from the gateway.

@@ -14,7 +14,7 @@ The Verisure ecosystem uses a standardised Sub-1GHz RF architecture centred arou
 * **Frequency deviation:** `21.4 kHz` (`DEVIATN = 0x35`).
 * **Synchronisation word (Sync Word):** `0xD3 0x91` (16-bit / 30/32 match).
 * **Preamble:** 4 bytes (`0xAA`).
-* **Hardware CRC:** 2 bytes CCITT CRC (calculated automatically by the CC1101/CC1110 hardware).
+* **CRC:** 2 bytes, the CC1101/CC1110 CRC-16 (polynomial `0x8005`, initial value `0xFFFF`). The door sensor's CC1110 adds it in hardware; the gateway checks it in software.
 * **Reference crystal (Critical trap!):**
   - The Verisure PCB uses an external crystal at **`27.000 MHz`** (marking "27.000"), **not** the standard 26.000 MHz.
   - Formula for synthesising 868.950 MHz with a 27.000 MHz crystal:
@@ -22,10 +22,10 @@ The Verisure ecosystem uses a standardised Sub-1GHz RF architecture centred arou
     `FREQ2 = 0x20`, `FREQ1 = 0x2E`, `FREQ0 = 0xEF`.
   - Modem configuration for 27 MHz: `MDMCFG4 = 0x8A`, `MDMCFG3 = 0x75`.
 * **Transceiver Power (PA Table):** `+10 dBm` (`PA_TABLE0 = 0xC2`).
-* **FSCAL0 trap (SDCC bug on the CC1110):**
-  - In SDCC, `PA_TABLE0` wrongly points to `0xDF26`, which is actually `FSCAL0`.
-  - `FSCAL0` **must** always remain `0x1F` (charge pump calibration), otherwise the PLL synthesizer loses phase lock.
-  - The true `PA_TABLE0` is at `0xDF2E`.
+* **Radio register addresses:** on the CC1110 the radio registers sit in XDATA at addresses that
+  differ from the CC1101's SPI offsets + 0xDF00 (e.g. `FSCAL0` = 0xDF1F, `PA_TABLE0` = 0xDF2E,
+  0xDF26 reserved); use the SDCC `cc1110.h` names. See
+  [documentation/verisure_sensor_hardware.md](../documentation/verisure_sensor_hardware.md).
 
 ---
 
@@ -34,15 +34,14 @@ The Verisure ecosystem uses a standardised Sub-1GHz RF architecture centred arou
 The protocol is based on symmetric **AES-128-ECB** with a two-stage key derivation (Key Derivation Function):
 
 1. **Master Key (Gateway / Home network):**
-   - 16 bytes (128-bit hex, e.g. `00112233445566778899AABBCCDDEEFF`).
+   - 16 bytes (128-bit, written as `<32 hex digits from derive_key.py --generate-master>`).
    - Shared by the whole system and configured in the gateway's NVS/`secrets.h`.
 2. **Device ID:**
    - Each device has a unique 8-character ASCII ID printed on a label/barcode (e.g. `2JHL2MVN`).
 3. **Sensor Device Key Derivation:**
-   - The device's individual AES key is calculated deterministically by running AES-128-ECB encryption over a 16-byte derivation vector:
-     - Byte 0..7: Device ID (8 bytes ASCII).
-     - Byte 8..15: Mirrored / inverted Device ID (e.g. with XOR `0x55` or padding).
-   - The resulting 16-byte ciphertext forms the sensor's `DEVICE_AES_KEY`.
+   - The device's individual AES key is one AES-128-ECB encryption with the Master Key:
+     `DeviceKey = AES-128-ECB(MasterKey, ID[8 ASCII bytes] followed by 8 zero bytes)`.
+   - The resulting 16-byte ciphertext forms the sensor's `DEVICE_AES_KEY` (see `868Receiver/src/crypto.cpp`, `cryptoDeriveDeviceKey()`).
    - This allows the gateway, with a single Master Key, to decrypt and authenticate any paired device by reading the device's plaintext ID in the packet header.
 
 ---
@@ -57,13 +56,7 @@ The sensor's packet consists of 24 bytes of fixed length (+ 2 bytes RF status/CR
 | `8 .. 23` | **Ciphertext (AES-128)** | 16 bytes of payload encrypted with the sensor's device key. |
 
 ### Decrypted Payload (16 Bytes):
-* **Byte 0..1:** 16-bit rolling sequence counter (Anti-replay protection).
-* **Byte 2:** Status bitmask (`0x01` Reed open, `0x02` Vibration/Shock, `0x04` Tamper/Sabotage, `0x08` Power-On Reset, `0x10` Low battery voltage).
-* **Byte 3:** Battery percentage (`0..100%`).
-* **Byte 4..5:** Battery voltage in millivolts (16-bit Big-Endian, e.g. `3367` mV).
-* **Byte 6..9:** Device ID Echo (the first 4 characters of the Device ID for anti-spoofing).
-* **Byte 10..11:** Magic signature bytes `"VS"` (`0x56`, `0x53`) for authenticity validation.
-* **Byte 12..15:** Hardware diagnostics (GPIO port states and reset cause).
+The payload layout (sequence counter, status flags, battery, ID echo, `"VS"` signature) is described in [documentation/cryptography_and_protocol.md](../documentation/cryptography_and_protocol.md). Note that the door sensor's packet counter is now 32 bits: with flag `0x20` set, its high half is in bytes 14..15.
 
 ---
 

@@ -28,7 +28,7 @@ If you have unused sensors, you can contribute by:
 
 ### 3. Documentation & Schematics
 * Clean vector schematics and breadboard wiring diagrams
-* Translations and troubleshooting guides
+* Troubleshooting guides (everything in the repository is written in English)
 
 ---
 
@@ -39,8 +39,8 @@ If you have unused sensors, you can contribute by:
   `sdcc -mmcs51 --model-small`
 * **Memory Constraints:** The CC1110F32 has 32 KB Flash and 4 KB XRAM. Always allocate buffers in `__xdata` and constant lookups in `__code`.
 * **Hardware Register Safety:**
-  * **FSCAL0:** Never write `0xC2` to `0xDF26` (FSCAL0). Keep at `0x1F`.
-  * **PA_TABLE0:** Write transmit power (`0xC2`) to `0xDF2E` (PA_TABLE0).
+  * **Radio registers:** use the SDCC `cc1110.h` names (`FSCAL0` = 0xDF1F, `PA_TABLE0` = 0xDF2E).
+    The CC1110's XDATA radio map is not the CC1101 SPI offset + 0xDF00 (0xDF26 is reserved).
 * **Power Management:** Code should favor low power consumption, sleep modes, and rapid burst transmissions.
 
 ### 2. Gateway Firmware (ESP32-S2)
@@ -62,8 +62,9 @@ If you have unused sensors, you can contribute by:
    git checkout -b feature/support-smoke-detector
    ```
 3. **Test Thoroughly:**
-   * Verify that `VerisureDoorSensor` compiles with SDCC.
-   * Verify that `868Receiver` builds with PlatformIO.
+   * Verify that the door sensor compiles: `python VerisureDoorSensor/build_and_flash.py --compile-only`.
+   * Verify that the camera firmware compiles (SDCC, `MD_CAM/build_and_flash_md_cam.py`).
+   * Verify that `868Receiver` builds with PlatformIO (`pio run -d 868Receiver`).
    * Verify live reception and MQTT discovery.
 4. **Commit with Clear Messages:**
    ```bash

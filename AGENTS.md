@@ -77,7 +77,7 @@ To save tokens and prevent mistakes, the following strict rules apply:
 
 ## 4. Long-Term Memory & Knowledge Bank (`.agents/memory.md`)
 
-To preserve knowledge and avoid recurring mistakes across sessions, the team uses a shared memory bank: [memory.md](file:///.agents/memory.md).
+To preserve knowledge and avoid recurring mistakes across sessions, the team uses a shared memory bank: [memory.md](.agents/memory.md).
 
 ### Rules for memory management:
 1. **Read before starting:** Before a subagent starts a task involving hardware, protocols or the build system, the relevant sections of `.agents/memory.md` must be consulted.

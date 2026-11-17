@@ -9,7 +9,7 @@ In the dark it takes grayscale pictures lit by its infrared flash.
 
 | Part | Role |
 | :--- | :--- |
-| **TI CC1110F32** | Radio (868.950 MHz), PIR input, power switching, alarm logic. Programmed through its debug header like the door sensor. |
+| **TI CC1110F32** | Radio (868.950 MHz), PIR input, power switching, alarm logic. Programmed through its debug header J6 like the door sensor (wiring: [hardware_cc_flasher.md](../documentation/hardware_cc_flasher.md)). |
 | **ADI Blackfin BF512** | Image processing: captures from the sensor, JPEG encoding, deltas, IR flash. Boots from an EN25F20 SPI flash; programmed over JTAG (J5). |
 | **OmniVision OV7955** | VGA camera sensor (TWI address 0x40), parallel data into the Blackfin PPI. |
 | **IS42S16800F** | 16 MB SDRAM on the Blackfin: whole frames, delta reference, send buffer. |
@@ -51,7 +51,7 @@ camera's device ID in `build_and_flash_md_cam.py` (`DEVICE_ID`); the device key 
 the master key in `868Receiver/src/secrets.h` and written to `firmware/config.h` (git-ignored).
 
 ```bash
-python MD_CAM/build_and_flash_md_cam.py --serial COM12
+python MD_CAM/build_and_flash_md_cam.py --serial <flasher port>
 ```
 
 The script prints the master key's check value (KCV) so it can be compared with the gateway's
@@ -102,6 +102,21 @@ python MD_CAM/test_resend.py 7 D1 D2           # gateway drops every 7th chunk; 
 | `build_and_flash_md_cam.py` | Build and flash the CC1110 firmware |
 | `dump_cc1110.py` | Read out (back up) the CC1110 flash without erasing it |
 | `test_camera_e2e.py` | End-to-end test through the gateway and MQTT |
+| `test_resend.py` | Resend test: the gateway drops every Nth chunk and the camera must resend it |
+| `firmware/config.h.example` | Template for the generated, git-ignored `firmware/config.h` |
 | `docs/` | Protocol, measurements and reverse-engineering notes and images |
+
+## Docs
+
+* [docs/Camera_protocol.md](docs/Camera_protocol.md): the CC1110–Blackfin link and the radio protocol (current).
+* [docs/Hardware_pinout_and_measurements.md](docs/Hardware_pinout_and_measurements.md): CC1110 pinout, debug header J6, LED board and flasher wiring.
+* [docs/Measurements_PIR_header.md](docs/Measurements_PIR_header.md): the PIR board header and the idle current fix (2026-11-16).
+* [docs/Blackfin_boot_and_JTAG.md](docs/Blackfin_boot_and_JTAG.md): historical log: Blackfin boot mode, JTAG, boot flash and standalone boot.
+* [docs/Camera_J1_measurement_plan.md](docs/Camera_J1_measurement_plan.md): historical log: camera module J1, sensor ID and the first pictures.
+* [docs/Measurements_phase2_power_and_buses.md](docs/Measurements_phase2_power_and_buses.md): historical log: early power-enable and bus measurements.
+
+Photos are in [docs/images/](docs/images/): the main board is in `camera_board_front.jpg`,
+`camera_board_back.jpg` and `camera_board_front_marked.jpg`; picture samples from the camera are
+`camera_*_320x240.*`.
 
 Open work, including what needs someone at the bench, is listed in [TODO.md](../TODO.md).

@@ -13,7 +13,9 @@ This project handles wireless alarm hardware and radio transmissions. While we i
 * Save this key in `secrets.h` on the gateway and use it when generating device keys with `derive_key.py`.
 
 ### 2. Keep Credentials Local
-* `VerisureDoorSensor/config.h` and `868Receiver/src/secrets.h` are git-ignored.
+* `VerisureDoorSensor/config.h`, `MD_CAM/firmware/config.h` and `868Receiver/src/secrets.h` are git-ignored.
+* Photos committed to the repository must have their metadata removed first (phone photos carry
+  the GPS position in EXIF).
 * **Never force-add or commit these files to a public repository!**
 
 ### 3. Network Isolation

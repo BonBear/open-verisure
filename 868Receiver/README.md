@@ -26,7 +26,7 @@ reassembles camera pictures.
 
 ```bash
 cp 868Receiver/src/secrets.h.example 868Receiver/src/secrets.h   # master key, Wi-Fi, MQTT (git-ignored)
-pio run -d 868Receiver -t upload --upload-port COM9
+pio run -d 868Receiver -t upload --upload-port <gateway port>
 ```
 
 Settings can also be changed later in the web portal (stored in NVS).
@@ -38,7 +38,11 @@ Settings can also be changed later in the web portal (stored in NVS).
   JPEG), after 24 bytes a normal device packet. The FIFO is read in pieces while a frame comes in,
   and RX is not flushed between packets, so back-to-back picture packets are not lost.
 * **Security:** per-device key derived from the master key, AES-128 decryption, `VS` magic and
-  device ID echo, 16-bit sequence replay filter.
+  device ID echo, and a replay filter: the door sensor sends a 32-bit counter that never goes
+  back (kept in its flash), which must increase with no exception for resets or tamper; its last
+  value is kept in NVS (`replay`) across gateway restarts. The camera still uses a 16-bit seq that
+  restarts after a reset (accepted with the power-on flag). Details:
+  [cryptography & protocol](../documentation/cryptography_and_protocol.md).
 * **Home Assistant:** MQTT auto-discovery per device (door sensor entities; camera entity, motion
   and buttons "Take 640x480 picture" and "Take flash picture" for the camera), an alarm switch, and
   availability (LWT).
@@ -68,11 +72,12 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
 ## Web portal and serial console
 
 * **Web portal** (port 80, captive portal on first start): status, Wi-Fi/MQTT/key settings, sensor
-  list. API: `/api/status`, `/api/radio`, `/api/scan`, `/api/save`, `/api/reboot`, `/api/reset`,
+  list. API: `/api/status`, `/api/replay?id=<ID>` (a sensor's last accepted counter), `/api/radio`, `/api/scan`, `/api/save`, `/api/reboot`, `/api/reset`,
   `/api/camera.jpg` (newest 320x240 picture, colour or flash), `/api/camera_large.jpg` (640x480),
   `/api/camera_test` (publishes a small test JPEG to MQTT).
-* **Serial console** (USB, 115200): `help`, `status`, `scan`, `alarm`, `testspi`, `reboot`, `reset`,
-  `drop <n>` (test: drop every n-th picture chunk to exercise the resend).
+* **Serial console** (USB, 115200): `help`, `status`, `scan`, `alarm [on|off]`, `testspi`, `reboot`,
+  `reset`, `drop <n>` (test: drop every n-th picture chunk to exercise the resend),
+  `replay reset <ID>` (forget a sensor's counter, e.g. after it was flashed without the gateway).
   The master key is never printed, only its check value.
 
 ## Source files
@@ -86,3 +91,4 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
 | `mqtt_manager.cpp/h`, `ha_discovery.cpp/h` | MQTT client, discovery, commands |
 | `web_portal.cpp/h`, `serial_cli.cpp/h` | Web portal and serial console |
 | `config_manager.cpp/h`, `sensor_registry.cpp/h` | NVS settings, device cache |
+| `hardware_pins.h` | CC1101 SPI pins |

@@ -4,7 +4,7 @@ Goal: find where the camera's idle floor (~1.16 mA in PM2; solved 2026-11-16, se
 the PIR board has a supply line the CC1110 could switch off.
 
 The PIR board is soldered to the main board through a 10-pin header (the row of pins just below
-J5, above the lens; see `images/crops/PXL_20261022_194026345_thumb.jpg`). It cannot be unplugged,
+J5, above the lens; see `images/camera_pir_header_j5_crop.jpg`). It cannot be unplugged,
 so its current cannot be measured directly. Above the header are four test pads: three unlabeled
 and `ALARM` (CC1110 P1_7).
 

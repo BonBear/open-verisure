@@ -6,15 +6,27 @@ Open-source firmware for the Verisure **GW-MC-SHOCK** door/window sensor (TI CC1
 
 ## Features
 
-* **Fast events (< 2 ms):** door open/close (reed switch P1_7), shock/vibration (P1_2) and
-  tamper (P0_1) are read every millisecond and sent right away; a heartbeat once an hour.
-* **Power:** the CC1110 currently polls its inputs in a busy loop and does not sleep, which
-  limits battery life; PM2 sleep with port interrupts (as in the camera) is on the
-  [TODO list](../TODO.md).
-* **Encrypted packets:** 24 bytes, device ID + AES-128-ECB with the device key, magic `VS`,
-  device ID echo and a rolling sequence number.
+* **Event driven, sleeping in PM2:** the CC1110 sleeps in PM2 and wakes on port interrupts from
+  the reed switch (P1_7, door open/close), the shock sensor (P1_2) and the tamper switch (P0_1),
+  and on a 0.5 s sleep-timer tick. Idle current is about 17 uA. A heartbeat goes out every
+  3600 s, and a ~1 s watchdog resets the chip if it ever hangs.
+* **Encrypted packets:** 24 bytes, the 8-byte plaintext device ID followed by one AES-128-ECB
+  block encrypted with the device key. The block carries a 32-bit persistent packet counter
+  (low 16 bits in bytes 0..1, high 16 bits in bytes 14..15, flag 0x20), flags (0x01 reed open,
+  0x02 shock, 0x04 tamper, 0x08 first packet after power-on, 0x10 low battery below 2400 mV,
+  bits 7:6 the reset cause: 0 power-on, 1 RESET_N, 2 watchdog, 3 clock loss), the battery level
+  and a `VS` magic. Full format:
+  [cryptography_and_protocol.md](../documentation/cryptography_and_protocol.md).
+* **Replay-safe counter:** the upper 24 counter bits are logged in flash pages 30-31
+  (0x7800-0x7FFF), so the counter never goes back, not even after a reset or battery change;
+  code is therefore linked with `--code-size 0x7800`.
+* **Boot battery guard:** below 2.3 V the sensor neither logs nor sends; it sleeps and measures
+  again about every minute.
 * **Home Assistant entities** (created by the gateway): door contact, vibration, tamper,
   battery %, battery voltage (mV), signal strength.
+
+**Status:** PM2 sleep, idle current, the heartbeat and boot are verified on the bench; the event
+tests (reed open/close, shock, tamper) are still pending, see [TODO.md](../TODO.md).
 
 ## Hardware
 
@@ -54,18 +66,70 @@ your network (default `http://cc.local`). Generate the master key and set up the
    ```bash
    python VerisureDoorSensor/build_and_flash.py
    ```
-   The script compiles `main.c` with SDCC, uploads it to the flasher over HTTP, programs and
-   restarts the CC1110, and watches the gateway's serial log until the sensor's first packet is
+   The script compiles `main.c` with SDCC, uploads it to the flasher over HTTP (`POST /cc_init`,
+   `POST /edit`, `POST /flash_cc?file=main.bin`, polls `/get_status`, `POST /cc_exit_dbg`),
+   restarts the CC1110 and watches the gateway's serial log until the sensor's first packet is
    authenticated.
+
+   Before compiling, it reads the gateway's last accepted counter for the sensor
+   (`GET <gateway>/api/replay?id=<ID>`) and builds with `-DCTR_SEED`, so a reflashed sensor's
+   counter continues above it (flashing erases the counter log). If the gateway cannot be
+   reached, the counter restarts at block 1: run `replay reset <ID>` on the gateway's serial
+   console after flashing, or the gateway drops the sensor's packets as replays.
+
+   | Option | Effect |
+   | :--- | :--- |
+   | `--serial <port>` | Flash over the flasher's USB serial port instead of Wi-Fi (no monitor) |
+   | `--compile-only` | Only build `build/main.bin` |
+   | `--erase` | Full chip erase first (unlocks a protected or factory CC1110) |
+   | `--gateway <url>` | Gateway HTTP address for the counter seed (env `GATEWAY_HTTP`) |
+
+   `python VerisureDoorSensor/build_and_flash.py --help` lists the rest (flasher host, gateway
+   serial port, monitor duration).
 3. **Home Assistant:** the sensor appears as `Verisure Sensor <ID>` under the MQTT integration.
 
 ## Files
 
 | Path | Content |
 | :--- | :--- |
-| `main.c` | Sensor firmware: GPIO, PM2 sleep, AES, radio |
+| `main.c` | Sensor firmware: GPIO, PM2 sleep, persistent counter, AES, radio |
+| `build_and_flash.py` | Build with SDCC, seed the counter from the gateway, flash and verify |
 | `config.h.example` | Template for the device ID and derived key |
-| `docs/` | Reverse-engineering notes and board photos: [door sensor guide](docs/verisure_door_sensor_guide.md), [hardware mapping](docs/hardware_mapping.md), [CC1110 quirks, DMA & SDCC](docs/cc1110_quirks_dma_toolchain.md), [radio registers](docs/radio_registers_reference.md), [early project overview](docs/project_overview.md) |
 
-More: [sensor PCB mapping](../documentation/verisure_sensor_hardware.md),
+## Docs and photos
+
+Notes in [docs/](docs/):
+
+* [verisure_door_sensor_guide.md](docs/verisure_door_sensor_guide.md): board walkthrough, pinout,
+  `SW1`, reed switch, `J2` and the radio pitfalls.
+* [cc1110_quirks_dma_toolchain.md](docs/cc1110_quirks_dma_toolchain.md): CC1110 vs CC1101
+  differences, DMA trigger 19, SDCC flags and the flasher's HTTP flow.
+
+Photos in `docs/`:
+
+* [pcb_bottom_mapped.png](docs/pcb_bottom_mapped.png): bottom side with `J2`, U1, battery
+  connections and sensors marked.
+* [fig_j2_connector_detail.jpg](docs/fig_j2_connector_detail.jpg): the `J2` flashing header (pin 1
+  square pad).
+* [fig_top_sensors_sw1.jpg](docs/fig_top_sensors_sw1.jpg): top side with battery clip, button
+  `SW1` and reed switch.
+* [fig_cc1110_rf_crystal.jpg](docs/fig_cc1110_rf_crystal.jpg): the CC1110, the 27.000 MHz crystal
+  `X1`, balun and RF path.
+* [door_board_top.jpg](docs/door_board_top.jpg),
+  [door_board_bottom_1.jpg](docs/door_board_bottom_1.jpg),
+  [door_board_bottom_2.jpg](docs/door_board_bottom_2.jpg): full board photos, top and bottom.
+* [door_board_top_reed_antenna.jpg](docs/door_board_top_reed_antenna.jpg): top side with the reed
+  switch and the antenna.
+* [door_board_top_shock_sensor.jpg](docs/door_board_top_shock_sensor.jpg): top side with the
+  shock sensor.
+* [door_crystal_x1_closeup.jpg](docs/door_crystal_x1_closeup.jpg),
+  [door_crystal_x1_area.jpg](docs/door_crystal_x1_area.jpg),
+  [door_crystal_x1_crop.jpg](docs/door_crystal_x1_crop.jpg): the crystal `X1` and its marking
+  "27.000".
+* [door_saw_filter_u2_1.jpeg](docs/door_saw_filter_u2_1.jpeg),
+  [door_saw_filter_u2_2.jpeg](docs/door_saw_filter_u2_2.jpeg): microscope images of the balun and
+  the SAW filter `U2` (EPCOS B3716, 868-870 MHz).
+* [door_cc1110_chip.jpeg](docs/door_cc1110_chip.jpeg): microscope image of the CC1110F32.
+
+More: [sensor PCB mapping, J2 and radio registers](../documentation/verisure_sensor_hardware.md),
 [protocol & cryptography](../documentation/cryptography_and_protocol.md).

@@ -1,5 +1,9 @@
 # Camera module (J1) – status and measurement plan
 
+> Historical log (status as of 2026-11-14); the current state is in [MD_CAM/README.md](../README.md).
+
+The test programs `twi_scan.S`, `twi_read.S` and `ppi_snap.c` used below no longer exist.
+
 Board #1 (2NCEKS3T). Compiled 2026-11-11. Measured 2026-11-12 (CC1110 in BF_JTAG_HOLD, Blackfin out of reset, 99 mA).
 
 ## What we know
@@ -8,7 +12,7 @@ Board #1 (2NCEKS3T). Compiled 2026-11-11. Measured 2026-11-12 (CC1110 in BF_JTAG
 - The board is marked "SECUR.PCAM.BLACKFIN".
 - **U4 = ISSI IS42S16800F** (SDRAM, 16 MB). It can be used as an image buffer via the Blackfin's EBIU.
 - The sensor type is not confirmed. A similar 24-pin Sunny module (8806Z) is sold with an OmniVision OV7725, so it is probably OmniVision.
-- A TWI scan from the Blackfin (`blackfin/twi_scan.S`) finds only **0x40** (unknown) and **0x5C** (probably a BH1750-type light sensor). No OmniVision address (0x21 or 0x30) responds. So the sensor probably lacks supply or XCLK, or is held in PWDN.
+- A TWI scan from the Blackfin (`blackfin/twi_scan.S`, removed) finds only **0x40** (unknown) and **0x5C** (probably a BH1750-type light sensor). No OmniVision address (0x21 or 0x30) responds. So the sensor probably lacks supply or XCLK, or is held in PWDN.
 - PF0..PF9 (probably PPI data from the camera) are floating.
 - Never write "register pointers" to unknown TWI devices. Command-driven chips interpret them as commands.
 
@@ -83,27 +87,29 @@ The "Usual function" column applies if the module follows the usual 24-pin OmniV
 
 ![First image](images/snap_left_covered_160x120.png)
 
-- Taken with `blackfin/ppi_snap.c` (160x120 grayscale, loaded via JTAG). A piece of card covered half the lens.
+- Taken with `blackfin/ppi_snap.c` (removed; 160x120 grayscale, loaded via JTAG). A piece of card covered half the lens.
 - The PPI configuration is copied from the original program (disassembled from L1): PPI_CONTROL 0x3E0D, PPI_COUNT 1279, PORTG_FER 0x0460, PORTG_MUX 0x0480. VSYNC is waited for in software on PG7.
 - The stream after VSYNC is contiguous, with a line length of 335 stored samples. Pixel = (sample >> 2) & 0xFF.
 - DMA: with MDMA the source must be enabled before the destination. DMA_DONE requires DI_EN.
 
 ## Image via RF to the gateway (2026-11-13)
 
-![320x240 via RF](images/camera_rf_320x240.png)
+![320x240 via RF](images/camera_rf_first_320x240.png)
 
-- Chain: camera -> Blackfin (`blackfin/snap_link.c`, loaded via JTAG) -> software SPI -> CC1110 (`BF_IMG_LINK`) -> RF 868 MHz -> gateway -> `/api/camera.bmp` and MQTT.
-- RF packets of type 0x81: chunk number + 8 pixels. The gateway places the chunks by number, so a lost packet only becomes a gap that is filled on the next pass.
-- ~150 bytes/s, one pass (320x240, 9600 chunks) ~8.5 min. Fetch with `python MD_CAM/blackfin/image_collect.py`.
+**Obsolete:** this first chain is gone. `BF_IMG_LINK`, the 0x81 packets, `/api/camera.bmp` and `image_collect.py` no longer exist; pictures are now JPEG, see [Camera_protocol.md](Camera_protocol.md).
+
+- Chain: camera -> Blackfin (`blackfin/snap_link.c`, loaded via JTAG) -> software SPI -> CC1110 (`BF_IMG_LINK`, obsolete) -> RF 868 MHz -> gateway -> `/api/camera.bmp` (obsolete) and MQTT.
+- RF packets of type 0x81 (obsolete): chunk number + 8 pixels. The gateway placed the chunks by number, so a lost packet only became a gap that was filled on the next pass.
+- ~150 bytes/s, one pass (320x240, 9600 chunks) ~8.5 min. Fetched with `python MD_CAM/blackfin/image_collect.py` (obsolete).
 - Close gdbproxy immediately after loading `snap_link`, otherwise gdbproxy may reset the Blackfin on an intermittent JTAG connection.
 
 ## Next steps (status 2026-11-13)
 
-1. **Restart the chain:** PSU 3.0 V, the CC1110 runs `BF_IMG_LINK`. Load `snap_link.elf` via JTAG after the reset release (~70 s after start, before ~125 s), then close gdbproxy. Fetch the image with `python MD_CAM/blackfin/image_collect.py`.
+1. ~~**Restart the chain:** PSU 3.0 V, the CC1110 runs `BF_IMG_LINK`. Load `snap_link.elf` via JTAG after the reset release (~70 s after start, before ~125 s), then close gdbproxy. Fetch the image with `python MD_CAM/blackfin/image_collect.py`.~~ Obsolete (`BF_IMG_LINK` and `image_collect.py` no longer exist).
 2. **Standalone Blackfin:** the program is still loaded via JTAG. Back up the original program from the Blackfin's SPI0 boot flash (probably U7, PG11..PG15, CS PG15) before anything is written there.
 3. **Better image:** full horizontal resolution (without SKIP_EN ~670 samples per line), exposure and sensor settings via TWI (OV7955, address 0x40, 16-bit registers).
 4. **Faster/more reliable RF:** measure the loss, let the CC1110 resend only missing chunks (the gateway knows which ones), possibly compression.
-5. **Security:** the gateway's `/api/status` shows the master key in plain text. This is to be fixed separately.
+5. ~~**Security:** the gateway's `/api/status` shows the master key in plain text.~~ Fixed: `/api/status` now returns only `master_key_set`.
 
 ## Solved: the pixel clock ran 1.5 times too fast with our init (2026-11-14)
 
@@ -117,14 +123,14 @@ The "Usual function" column applies if the module follows the usual 24-pin OmniV
 
 **Works from cold start without JTAG:** the selector in sector 0 starts `snap_link` (0x8000), which sets up the PLL and SDRAM like the original, initializes the sensor and takes images on request from the CC1110:
 - `0xD1`/`0xD3`: 320×240 color JPEG, full image (~8 KB) or delta with only changed 16×16 blocks (7 bytes when nothing has changed). The gateway patches in the deltas (`868Receiver/src/jpeg_splice.cpp`) and shows `/api/camera.jpg`.
-- `0xD2`: 640×480 color (~17–20 KB, ~2.5 min via RF), shown at `/api/camera_large.jpg`.
-- The CC1110 sets the pace using the PIR (P1_7): motion ON/OFF to Home Assistant; on motion a delta + 640×480 + deltas every ~5 s, at rest a delta every 5 minutes and a full image about once an hour.
+- `0xD2`: 640×480 color (~17–20 KB, ~2.5 min via RF at the time; now ~12 s), shown at `/api/camera_large.jpg`.
+- The CC1110 sets the pace using the PIR (P1_7): motion ON/OFF to Home Assistant; on motion a delta + 640×480 + deltas every ~5 s, at rest a delta every 5 minutes and a full image about once an hour (obsolete: now one picture per 30 min while armed).
 
 **Next steps:**
 1. **The flash board:** map the pins (measure first, drive nothing unknown) and control the flash on motion/image.
 2. **640×480 on request from Home Assistant:** requires the CC1110 to listen for commands from the gateway (RF downlink).
 3. **White balance:** the image is slightly bluish (the sensor's AWB registers or correction in software).
 4. **Camera placement:** currently the camera only sees objects right in front of the lens.
-5. **Security (separate):** the gateway's `/api/status` shows the master key in plain text.
+5. ~~**Security (separate):** the gateway's `/api/status` shows the master key in plain text.~~ Fixed: `/api/status` now returns only `master_key_set`.
 
 **Practical:** the bench power supply's OVP often trips when the CC1110 is flashed (the programmer probably back-feeds ~3.3 V); if so, switch it back on. JTAG reading 0xFFFFFFFF even though the board draws current is fixed by power cycling.

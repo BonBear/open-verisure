@@ -17,10 +17,10 @@ if REPO_DIR not in sys.path:
 
 import derive_key
 
-CC_HOST = os.environ.get("CC_HOST", "http://192.168.0.80")
+CC_HOST = os.environ.get("CC_HOST", "http://cc.local")
 CC_USER = "admin"
 CC_PASS = "admin"
-GATEWAY_HTTP = os.environ.get("GATEWAY_HTTP", "http://192.168.0.142")
+GATEWAY_HTTP = os.environ.get("GATEWAY_HTTP", "http://verisure-gateway.local")   # the gateway's mDNS name
 DEVICE_ID = "2NCEKS3T"
 
 FW_DIR = os.path.join(BASE_DIR, "firmware")
