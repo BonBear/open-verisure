@@ -65,9 +65,49 @@ DEFAULT_CC_HOST = os.environ.get("CC_HOST", "http://cc.local")
 CC_USER = "admin"
 CC_PASS = "admin"
 RECEIVER_BAUD = 115200
+GATEWAY_HTTP = os.environ.get("GATEWAY_HTTP", "http://verisure-gateway.local")   # the gateway's mDNS name
+CONFIG_H = os.path.join(VERISURE_DIR, "config.h")
 
 
-def compile_firmware() -> bool:
+def counter_seed(gateway: str, no_seed: bool = False) -> int:
+    """First counter block for a freshly flashed sensor (main.c CTR_SEED).
+
+    Flashing erases the sensor's counter log, which would restart its packet counter at block 1,
+    below what the gateway last accepted, so the gateway would drop it until 'replay reset <ID>'.
+    Instead the gateway's last accepted counter (GET /api/replay?id=...) is read and the sensor
+    starts two blocks above it (the old firmware may enter the next block before it is flashed).
+    Returns 1 if the gateway does not know the sensor. Without the gateway the script stops (a
+    counter that restarts reuses values); --no-seed flashes anyway.
+    """
+    if no_seed:
+        print("[!] --no-seed: counter starts at block 1; run 'replay reset <ID>' on the gateway")
+        return 1
+    m = None
+    try:
+        with open(CONFIG_H, encoding="utf-8") as f:
+            m = re.search(r'#define\s+DEVICE_ID\s+"([A-Za-z0-9]{8})"', f.read())
+    except OSError:
+        pass
+    if not m:
+        print("[!] No DEVICE_ID in config.h: counter starts at block 1")
+        return 1
+    dev = m.group(1)
+    try:
+        r = requests.get(f"{gateway}/api/replay", params={"id": dev}, timeout=5)
+        data = r.json()
+    except Exception as e:
+        print(f"[-] Gateway {gateway} not reachable ({e}): no counter seed.")
+        print("    Use --gateway / GATEWAY_HTTP, or --no-seed (counter restarts at block 1, needs 'replay reset').")
+        sys.exit(1)
+    if not data.get("known"):
+        print(f"[+] Gateway has no counter for {dev} yet: counter starts at block 1")
+        return 1
+    seed = (int(data["counter"]) >> 8) + 2
+    print(f"[+] Gateway's last counter for {dev}: {data['counter']}; sensor starts at block {seed}")
+    return seed
+
+
+def compile_firmware(ctr_seed: int = 1) -> bool:
     """
     Compile Verisure Door Sensor C code to binary using Small Device C Compiler (SDCC).
 
@@ -83,8 +123,9 @@ def compile_firmware() -> bool:
     # 1. Compile C -> REL (Small memory model, 32KB flash limit, XRAM at 0xF000)
     cmd_compile = [
         "sdcc", "-mmcs51", "--model-small",
-        "--code-size", "0x8000",
+        "--code-size", "0x7800",   # 0x7800-0x7FFF: packet counter log (main.c)
         "--xram-loc", "0xF000", "--xram-size", "0x0E00",
+        f"-DCTR_SEED={ctr_seed}UL",
         "-c", "main.c", "-o", "build/"
     ]
     print(f"[*] Running: {' '.join(cmd_compile)}")
@@ -96,7 +137,7 @@ def compile_firmware() -> bool:
     # 2. Link REL -> IHX
     cmd_link = [
         "sdcc", "-mmcs51", "--model-small",
-        "--code-size", "0x8000",
+        "--code-size", "0x7800",   # 0x7800-0x7FFF: packet counter log (main.c)
         "--xram-loc", "0xF000", "--xram-size", "0x0E00",
         "build/main.rel", "-o", "build/main.ihx"
     ]
@@ -229,8 +270,8 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
         if "0104" not in init_text and "01" not in init_text:
             print(f"\n[-] ERROR: No valid CC1110 chip communication ({init_text})!")
             print("    All bits returned 1s (FFFF) or 0s (0000). This means:")
-            print("    - Debug Clock (DC / Pad 4 -> GPIO 19) is not pulsing the chip, OR")
-            print("    - Debug Data (DD / Pad 5 -> GPIO 23) is disconnected/floating, OR")
+            print("    - Debug Data (DD / Pad 4 -> GPIO 23) is disconnected/floating, OR")
+            print("    - Debug Clock (DC / Pad 5 -> GPIO 19) is not pulsing the chip, OR")
             print("    - Ground (GND / Pad 7 -> GND) reference is missing.")
             print("    Please check the physical wire contact on Pad 4 and Pad 5.\n")
             return None
@@ -378,6 +419,10 @@ def parse_arguments():
                         help="Wait in real-time until physical electrical contact with CC1110 is detected, then flash instantly.")
     parser.add_argument("--serial", default=None,
                         help="Flash over the flasher's USB serial port instead of Wi-Fi (e.g. COM12); no monitor.")
+    parser.add_argument("--gateway", default=GATEWAY_HTTP,
+                        help=f"Gateway HTTP address for the counter seed (default: {GATEWAY_HTTP}, env GATEWAY_HTTP).")
+    parser.add_argument("--no-seed", action="store_true",
+                        help="Flash without the gateway's counter seed (counter restarts; needs 'replay reset <ID>').")
     parser.add_argument("--duration", "-d", type=int, default=30,
                         help="Monitoring verification duration in seconds (default: 30).")
 
@@ -387,8 +432,9 @@ def parse_arguments():
 def main():
     args = parse_arguments()
 
-    # 1. Compile firmware
-    if not compile_firmware():
+    # 1. Compile firmware (a flashed build starts its packet counter above the gateway's)
+    seed = 1 if args.compile_only else counter_seed(args.gateway, args.no_seed)
+    if not compile_firmware(seed):
         sys.exit(1)
 
     if args.compile_only:

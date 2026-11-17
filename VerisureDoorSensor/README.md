@@ -25,8 +25,10 @@ Open-source firmware for the Verisure **GW-MC-SHOCK** door/window sensor (TI CC1
 * **Home Assistant entities** (created by the gateway): door contact, vibration, tamper,
   battery %, battery voltage (mV), signal strength.
 
-**Status:** PM2 sleep, idle current, the heartbeat and boot are verified on the bench; the event
-tests (reed open/close, shock, tamper) are still pending, see [TODO.md](../TODO.md).
+**Status:** verified on the bench (2026-11-17): PM2 sleep (idle ~17 µA), heartbeat, boot, and the
+events: reed open/close (a packet per change, ~0.33 s apart when toggled fast), shock and tamper
+(pressed/released), each sent at once; the gateway logs a frequency error of +3.2 kHz. Idle current
+with the lid on is not measured yet.
 
 ## Hardware
 
