@@ -58,8 +58,7 @@ flowchart LR
     FRST ===|Green wire| J6
 ```
 
-### 🖼️ Illustrated Wiring Diagram
-![ESP32 Flasher to Verisure J2 Header](images/wiring_cc_flasher_j2.jpg)
+The pins are set in the flasher firmware (`ESP_CC_Flasher/src/main.h`: ESP32 DevKit DC = GPIO 19, DD = GPIO 23, RESET = GPIO 33; ESP32-C3 DC = GPIO 3, DD = GPIO 4, RESET = GPIO 1). An older wiring picture showed GPIO 18/19/23 and was wrong; it was removed. Connect the flasher's GND to J2-7 in any case; its 3V3 to J2-3 only if the board is not powered otherwise.
 
 ---
 
