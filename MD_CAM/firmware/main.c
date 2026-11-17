@@ -4,13 +4,12 @@
  *
  * 868.950 MHz AES-128 telemetry with PM2 Deep Sleep:
  *  - PIR Motion (P1_7, active LOW) wakes the CPU instantly via Port 1 interrupt.
- *  - Sleep Timer wakes the CPU every 0.5 s to sample the rear tamper switch SW3
- *    (dual pull-up/pull-down scan of P0_7/P0_6/P0_0/P1_6/P2_0 compared with the
- *    boot baseline) and to count down the periodic heartbeat.
+ *  - Sleep Timer wakes the CPU every 0.5 s to sample the rear tamper switch SW3 on P1_6
+ *    (tamper_read) and to count down the poll interval.
  *  - 27 MHz XOSC + radio are only powered while transmitting.
  *
- * Tamper polarity (wall mount): batteries are ALWAYS inserted while the unit is off the
- * wall, so the boot state = SW3 released = TAMPER. SW3 pressed against the wall = CLEAR.
+ * Tamper: SW3 closes P1_6 to VBAT when the camera is pressed against the wall (secure);
+ * released = cover off the wall = tamper (flag bit 2, event 0xB5 on every change).
  *
  * Pin map: see docs/Hardware_pinout_and_measurements.md (J6: DD=P2_1, DC=P2_2, RESET_N).
  */
@@ -142,19 +141,77 @@ void aes_encrypt_block(const uint8_t *in, uint8_t *out) {
  * Battery (VDD/3)
  * ============================================================================ */
 
+/* VDD/3 against the internal 1.25 V reference. The first conversion is thrown away. */
 uint16_t read_battery_mv(void) {
-    ADCCON3 = 0x3F; // Internal 1.25V ref, 12-bit, VDD/3
-    uint16_t timeout = 5000;
-    while (!(ADCCON1 & 0x80) && --timeout);
+    uint8_t n;
+    uint16_t timeout;
+    for (n = 0; n < 2; n++) {
+        ADCCON3 = 0x3F; // Internal 1.25V ref, 12-bit, VDD/3
+        timeout = 5000;
+        while (!(ADCCON1 & 0x80) && --timeout);
+        if (n == 0)
+            (void)ADCL, (void)ADCH;   // reading ADCH clears EOC for the next conversion
+    }
 
     uint16_t adc = ((uint16_t)ADCL >> 4) | ((uint16_t)ADCH << 4);
     return (uint16_t)(((uint32_t)adc * 3750UL) / 2047UL);
 }
 
+/* After PM2 the reading is ~110 mV low for several ms (2026-11-17, Otii at 3.0 V: 2861 mV
+ * ~3 ms after waking, 2969 mV after ~11 ms more, 2976 mV at boot), presumably while the
+ * reference settles; two conversions in a row did not help. So a reading right after PM2
+ * waits ~11 ms first (~1 uA on average at one poll per 2 minutes). */
+uint16_t read_battery_idle_mv(void) {
+    delay_ms(4);   // delay_ms runs ~2.75x slow: ~11 ms
+    return read_battery_mv();
+}
+
+/* The camera runs on CR123A lithium cells (3.0 V nominal), whose idle voltage stays flat until
+ * near the end, while a worn cell sags under load. The Blackfin needs at least ~2.4 V at VBAT
+ * (Otii 2026-11-17: pictures work from 3.0 V down to 2.4 V; it draws 170-190 mA with peaks of
+ * 0.3-0.54 A), so the voltage measured while the Blackfin is powered is the better indicator.
+ * s_bat_load_mv is the lowest VBAT seen while it was powered last time (0 = no picture since
+ * boot). The percentage is the lower of the idle and the load estimate, both linear: an
+ * estimate, not a coulomb count. */
+#define BAT_IDLE_EMPTY_MV 2600   // idle: 0 %
+#define BAT_IDLE_FULL_MV  3000   // idle: 100 %
+#define BAT_LOAD_EMPTY_MV 2450   // Blackfin powered: 0 % (pictures stop at ~2.4 V)
+#define BAT_LOAD_FULL_MV  2850   // Blackfin powered: 100 %
+#define BAT_LOW_IDLE_MV   2700   // low-battery flag below this idle voltage
+#define BAT_LOW_LOAD_MV   2600   // or below this voltage under load (~0.2 V above the limit)
+
+static __xdata uint16_t s_bat_load_mv;   // lowest VBAT while the Blackfin was last powered
+static __xdata uint16_t s_bat_load_min;  // lowest VBAT of the current power-on
+static __xdata uint16_t s_bat_idle_mv;   // last VBAT with the Blackfin off (0 = none yet)
+static bool s_bf_powered;                // set by bf_power_on/off: transmit() reads under load
+
+static uint8_t bat_scale(uint16_t mv, uint16_t empty, uint16_t full) {
+    if (mv >= full) return 100;
+    if (mv <= empty) return 0;
+    return (uint8_t)(((uint32_t)(mv - empty) * 100UL) / (full - empty));
+}
+
 uint8_t calculate_battery_pct(uint16_t mv) {
-    if (mv >= 3000) return 100;
-    if (mv <= 2200) return 0;
-    return (uint8_t)(((uint32_t)(mv - 2200) * 100UL) / 800UL);
+    uint8_t pct = bat_scale(mv, BAT_IDLE_EMPTY_MV, BAT_IDLE_FULL_MV);
+    if (s_bat_load_mv) {
+        uint8_t load = bat_scale(s_bat_load_mv, BAT_LOAD_EMPTY_MV, BAT_LOAD_FULL_MV);
+        if (load < pct) pct = load;
+    }
+    return pct;
+}
+
+static bool battery_low(uint16_t mv) {
+    return mv < BAT_LOW_IDLE_MV || (s_bat_load_mv && s_bat_load_mv < BAT_LOW_LOAD_MV);
+}
+
+/** @brief Load voltage for the poll state bits 7:3: 0 = unknown, else 2275 + 25 * code mV
+ *  (1 = 2300 mV or less, 31 = 3050 mV or more). */
+static uint8_t bat_load_code(void) {
+    uint16_t c;
+    if (!s_bat_load_mv) return 0;
+    if (s_bat_load_mv <= 2300) return 1;
+    c = (s_bat_load_mv - 2275) / 25;
+    return c > 31 ? 31 : (uint8_t)c;
 }
 
 /* ============================================================================
@@ -230,6 +287,33 @@ void setup_gpio(void) {
     P1INP &= ~0xC0; // Enable pull
     P2INP &= ~0x40; // Port 1 pull-UP (the PIR on P1_7 needs it)
 }
+
+/**
+ * @brief Read the tamper switch SW3. @return true = tamper (switch released, cover off the wall).
+ *
+ * SW3 closes P1_6 to VBAT, so with the port's pull-up (which the PIR on P1_7 needs) the pin
+ * reads 1 either way. For the read Port 1 pulls down for ~45 us: P1_6 then reads 0 with the
+ * switch open. P1_7 is tri-stated meanwhile, so it keeps its level and no PIR edge comes from
+ * the pull-down (a pull-down left on gives false PIR alarms, see .agents/memory.md). The pull-up
+ * is idle-safe: no current flows through SW3 either way.
+ */
+static bool tamper_read(void) {
+    uint8_t d;
+    bool open;
+
+    P1INP |= 0x80;          // P1_7 tri-state
+    P2INP |= 0x40;          // Port 1 pull-down (P1_6 still has its pull enabled)
+    for (d = 0; d < 120; d++) {   // ~45 us, far longer than the pin's RC with ~20 kOhm
+        __asm nop __endasm;
+    }
+    open = P1_6 == 0;
+    P2INP &= ~0x40;         // pull-up again
+    P1INP &= ~0x80;         // P1_7 pulled up again
+    return open;
+}
+
+static bool s_tamper;       // reported in flags bit 2
+#define TAMPER_MIN_GAP (2 * BF_TICKS_PER_S)   // at least ~2 s between two 0xB5 packets
 
 /* ============================================================================
  * Radio (868.950 MHz @ 27.000 MHz crystal Y1)
@@ -607,15 +691,27 @@ static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t ar
     radio_init();
     aes_load_key(DEVICE_AES_KEY);
 
-    batt_mv = read_battery_mv();
+    batt_mv = s_bf_powered ? read_battery_mv() : read_battery_idle_mv();
+    // with the Blackfin on this is a reading under load (also the radio's TX current): it
+    // counts for the load minimum, and the packet reports the last idle reading instead, so
+    // the idle thresholds and battery mV do not jump on every picture
+    if (s_bf_powered) {
+        if (batt_mv < s_bat_load_min)
+            s_bat_load_min = batt_mv;
+        if (s_bat_idle_mv)
+            batt_mv = s_bat_idle_mv;
+    } else {
+        s_bat_idle_mv = batt_mv;
+    }
 
     for (uint8_t i = 0; i < 8; i++) {
         tx_buf[i] = (uint8_t)DEVICE_ID[i];
     }
 
     if (is_motion) flags |= 0x01;           // Bit 0: Motion
+    if (s_tamper)  flags |= 0x04;           // Bit 2: Tamper (SW3 released)
     if (is_por)    flags |= 0x08;           // Bit 3: Power-on reset
-    if (batt_mv < 2400) flags |= 0x10;      // Bit 4: Low battery
+    if (battery_low(batt_mv)) flags |= 0x10; // Bit 4: Low battery (idle or under load)
     flags |= 0x20;                          // Bit 5: persistent counter format
     flags |= s_rst_cause << 6;              // Bits 7:6: reset cause (SLEEP.RST)
 
@@ -713,7 +809,11 @@ static void transmit_big_chunk(uint8_t type, uint16_t chunk_idx, uint8_t chunk_l
 #define BF_IMG_PAUSE_TICKS (5 * BF_TICKS_PER_S)   // pause between pictures during motion (~5 s)
 #define BF_IMG_PIC_TICKS (7 * BF_TICKS_PER_S)     // the PIR hold time one picture counts for
 #define BF_ARMED_AT_BOOT 1       // alarm state until the gateway has answered a poll (armed: fail safe)
-#define BF_POLL_S 30             // poll the gateway (alarm state, picture requests) this often
+#define BF_POLL_S 30             // poll the gateway (alarm state, picture requests) this often while
+                                 // armed, in a motion event or with the Blackfin powered
+#define BF_POLL_DISARMED_S 120   // otherwise (disarmed and idle) this often; a PIR event still polls
+                                 // at once, so motion always gets a fresh alarm state
+#define BF_POLL_NOW 0xF000       // poll counter value that makes the loop poll right away
 #define BF_RX_WINDOW 40          // listen window after a poll, in delay_ms(1) steps (~2.75 ms each: ~110 ms)
 #define BF_BOOT_MIN_MS 50        // after /RESET release P1_2 stays 1 this long (~140 ms) so the boot
                                  // selector sees PH0 low and starts snap_link, not the factory firmware
@@ -863,9 +963,10 @@ static bool bf_send_picture(uint8_t cmd, bool motion) {
  * 640x480) until BF_PIR_HOLD_S after the last PIR activity, and it is switched off again when the motion event ends. A picture requested from Home
  * Assistant is taken in either state.
  *
- * Every BF_POLL_S the camera sends a poll (telemetry packet, plain[12] = 0xBA, [13] = state:
- * bit 0 armed, bit 1 Blackfin powered, bit 2 a command arrived and the gateway has not seen
- * this yet) and listens BF_RX_WINDOW for the gateway's answer (868Receiver/src/downlink.h):
+ * Every BF_POLL_S (disarmed and idle: BF_POLL_DISARMED_S) the camera sends a poll (telemetry
+ * packet, plain[12] = 0xBA, [13] = state: bit 0 armed, bit 1 Blackfin powered, bit 2 a command
+ * arrived and the gateway has not seen this yet, bits 7:3 battery under load, see
+ * bat_load_code) and listens BF_RX_WINDOW for the gateway's answer (868Receiver/src/downlink.h):
  * 8 bytes device ID + AES(device key, 'D' 'L' counter[4] armed cmd first[2] map[4] 'V' 'S').
  * The answer must echo the poll's 32-bit counter, which never repeats (persistent counter),
  * so a recorded answer never fits a later poll.
@@ -954,6 +1055,7 @@ static bool cam_poll(bool motion, bool bf_on) {
     if (s_armed) state |= 0x01;
     if (bf_on) state |= 0x02;
     if (s_cmd_ack) state |= 0x04;
+    state |= bat_load_code() << 3;   // bits 7:3: battery voltage under load
     s_poll_ctr = transmit(motion, false, 0xBA, state);
     if (!radio_receive_dma(BF_RX_WINDOW))
         return false;
@@ -1020,6 +1122,7 @@ static void bf_resend(uint16_t first, uint32_t map) {
 static uint8_t s_boot_tries;    // pings until snap_link answered (BF_IMG_TIMING reports it)
 
 static void bf_power_on(void) {
+    s_bf_powered = true;
     P0DIR |= 0x85;   // P0_0, P0_2 (1.2V), P0_7 (aux) = outputs
     P0_0 = 0;
     P0_7 = 0;        // high while off (bf_power_off); low first so the sequence below is unchanged
@@ -1068,6 +1171,7 @@ static void bf_power_on(void) {
 // P2_0 is driven HIGH as well: it is pulled up too (not "unconnected" as the pinout table says),
 // and low it sank the remaining ~0.30 mA (floor 0.30 mA -> 3 uA).
 static void bf_power_off(void) {
+    s_bf_powered = false;
     s_pic_len = 0;   // the picture in snap_link's buffer is gone
     P0_0 = 0;
     P0_7 = 0;
@@ -1101,7 +1205,7 @@ static uint16_t cam_sleep(void) {
 #endif
 
 static void cam_alarm_loop(void) {
-    uint16_t poll = BF_POLL_S * BF_TICKS_PER_S;   // first poll right away
+    uint16_t poll = BF_POLL_NOW;   // first poll right away
     uint16_t hold = 0, keep = 0, gap = 0, ack_left = 0;
     uint32_t idle = 0;
     uint8_t ev_pic = 0, cmd;
@@ -1112,6 +1216,8 @@ static void cam_alarm_loop(void) {
     // copy) powered. In an alarm sequence the next picture used to start right after the first
     // resend round and replaced the picture the gateway was still completing (2026-11-16).
     bool pic_open = false;
+    uint8_t tamper_cnt = 0;
+    uint16_t tamper_gap = 0;
 
     bf_power_off();
 #if BF_SLEEP_IDLE
@@ -1119,6 +1225,26 @@ static void cam_alarm_loop(void) {
 #endif
     WDCTL = 0x08;                   // watchdog on, ~1 s (32768 periods of 32 kHz); cannot be stopped
     for (;;) {
+        // tamper: a change counts after two equal samples in a row (0.5 s apart with the
+        // Blackfin off), and at most one 0xB5 per TAMPER_MIN_GAP ticks, so a bouncing or
+        // marginal contact cannot start a TX storm; every packet carries the state (flags bit 2)
+        if (tamper_read() != s_tamper) {
+            if (tamper_cnt < 2)
+                tamper_cnt++;
+        } else {
+            tamper_cnt = 0;
+        }
+        if (tamper_cnt >= 2 && !tamper_gap) {
+            s_tamper = !s_tamper;
+            tamper_cnt = 0;
+            tamper_gap = TAMPER_MIN_GAP;
+            transmit(active, false, 0xB5, s_tamper);
+        }
+        if (bf_on) {
+            uint16_t mv = read_battery_mv();
+            if (mv < s_bat_load_min)
+                s_bat_load_min = mv;
+        }
         if (P1_7 == 0) {
             if (!active) {
                 active = true;
@@ -1131,7 +1257,9 @@ static void cam_alarm_loop(void) {
             }
             hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
         }
-        if (poll >= (pic_open ? BF_ACK_POLL_TICKS : BF_POLL_S * BF_TICKS_PER_S)) {
+        if (poll >= (pic_open ? BF_ACK_POLL_TICKS :
+                     (s_armed || active || bf_on) ? BF_POLL_S * BF_TICKS_PER_S :
+                     BF_POLL_DISARMED_S * BF_TICKS_PER_S)) {
             poll = 0;
             if (cam_poll(active, bf_on) && !s_rs_map)
                 pic_open = false;   // answered without a resend request: the picture is done
@@ -1140,7 +1268,7 @@ static void cam_alarm_loop(void) {
             if (bf_on) {
                 bf_resend(s_rs_first, s_rs_map);
                 keep = BF_KEEP_ON_S * BF_TICKS_PER_S;
-                poll = BF_POLL_S * BF_TICKS_PER_S;   // poll again right away for the next request
+                poll = BF_POLL_NOW;   // poll again right away for the next request
             }
             s_rs_map = 0;
         }
@@ -1180,6 +1308,7 @@ static void cam_alarm_loop(void) {
             if (!bf_on) {
                 bf_power_on();
                 bf_on = true;
+                s_bat_load_min = read_battery_mv();
             }
             keep = BF_HOLD_S * BF_TICKS_PER_S;
         } else if (cmd) {
@@ -1189,6 +1318,7 @@ static void cam_alarm_loop(void) {
                 transmit(false, false, 0xB6, s_boot_tries);
 #endif
                 bf_on = true;
+                s_bat_load_min = read_battery_mv();   // the Blackfin has booted: ~0.1 A
             }
             // keep it powered only after a good picture: a hung Blackfin gets power-cycled
             if (bf_send_picture(cmd, active)) {
@@ -1201,7 +1331,7 @@ static void cam_alarm_loop(void) {
             idle = 0;
             // poll right after every picture: it carries the resend request or the
             // acknowledgement (a picture takes seconds over RF, so a disarm waits less too)
-            poll = BF_POLL_S * BF_TICKS_PER_S;
+            poll = BF_POLL_NOW;
             hold = hold > BF_IMG_PIC_TICKS ? hold - BF_IMG_PIC_TICKS : 0;
             gap = BF_IMG_PAUSE_TICKS;   // at least ~5 s to the next alarm picture
         } else {
@@ -1216,6 +1346,7 @@ static void cam_alarm_loop(void) {
             idle += n;
             keep = keep > n ? keep - n : 0;
             gap = gap > n ? gap - n : 0;
+            tamper_gap = tamper_gap > n ? tamper_gap - n : 0;
             if (pic_open) {
                 ack_left = ack_left > n ? ack_left - n : 0;
                 if (!ack_left)
@@ -1232,6 +1363,7 @@ static void cam_alarm_loop(void) {
         if (bf_on && !s_dl_cmd && !keep && !pic_open && (!active || !s_armed)) {
             bf_power_off();
             bf_on = false;
+            s_bat_load_mv = s_bat_load_min;   // from now on in the battery % and the low flag
         }
     }
 }
@@ -1241,12 +1373,12 @@ static void cam_alarm_loop(void) {
  * that resets the chip on a current peak could reboot every few seconds and wear the two log
  * pages out (and write them at a marginal supply). So below BOOT_MIN_MV the camera neither logs
  * nor sends: it sleeps in PM2 and measures again about every BOOT_RECHECK_S. */
-#define BOOT_MIN_MV      2300             // the low-battery flag is set below 2400 mV
+#define BOOT_MIN_MV      2300             // the low-battery flag is set below BAT_LOW_IDLE_MV
 #define BOOT_RECHECK_S   60
 
 static void battery_guard(void) {
     uint8_t i;
-    while (read_battery_mv() < BOOT_MIN_MV) {
+    while (read_battery_idle_mv() < BOOT_MIN_MV) {
         for (i = 0; i < 2 * BOOT_RECHECK_S; i++)
             cam_sleep();             // 0.5 s sleep-timer ticks (or a PIR edge)
     }
@@ -1269,7 +1401,8 @@ void main(void) {
     delay_ms(50);
 
     // Announce packet: the first of this boot (counter low byte 0), with the power-on flag
-    // only after a power-on reset
+    // only after a power-on reset, and the tamper state
+    s_tamper = tamper_read();
     transmit(false, s_rst_cause == 0, 0, 0);
     delay_ms(100);
 

@@ -396,8 +396,16 @@ void loop() {
             } else if (crcAt(frame, VERISURE_PACKET_LEN)) {
                 VerisureTelemetry telem;
                 if (cryptoProcessPacket(frame, packetRssi, rawLqi & 0x7F, activeMasterKey, &telem)) {
-                    if (telem.rawP0 == DOWNLINK_POLL_MARKER && haIsMotionCameraSensor(telem.deviceId)) {
-                        answerCameraPoll(telem);
+                    if (haIsMotionCameraSensor(telem.deviceId)) {
+                        if (telem.rawP0 == DOWNLINK_POLL_MARKER) {
+                            answerCameraPoll(telem);
+                            // a poll always counts, also 0 = unknown (the camera restarted)
+                            telem.batteryLoadMv = downlinkLoadMv(telem.rawP1);
+                        } else {
+                            // other packets keep the last value the camera reported
+                            const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
+                            if (prev) telem.batteryLoadMv = prev->lastTelem.batteryLoadMv;
+                        }
                     }
                     packetCount++;
                     sensorRegistryUpdate(telem); // Cache in memory
@@ -408,7 +416,9 @@ void loop() {
                     Serial.printf("    Magnet  : %s\n", telem.isOpen ? "OPEN [ALARM!]" : "CLOSED (Secure)");
                     Serial.printf("    Shock   : %s\n", telem.isShock ? "SHOCK / VIBRATION DETECTED!" : "Clear");
                     Serial.printf("    Tamper  : %s\n", telem.isButton ? "TAMPER (Cover removed!)" : "Secure (Cover closed)");
-                    Serial.printf("    Battery : %u mV (%u%%)%s\n", telem.batteryMv, telem.batteryPct, telem.isLowBatt ? " [LOW BATTERY!]" : "");
+                    Serial.printf("    Battery : %u mV (%u%%)%s", telem.batteryMv, telem.batteryPct, telem.isLowBatt ? " [LOW BATTERY!]" : "");
+                    if (telem.batteryLoadMv) Serial.printf(" | under load %u mV", telem.batteryLoadMv);
+                    Serial.println();
                     Serial.printf("    Signal  : RSSI %d dBm | LQI %u | Freq. error %+.1f kHz | CRC: OK\n",
                                   telem.rssi, telem.lqi, freqErrKhz);
                     Serial.printf("    Pins    : P0=0x%02X P1=0x%02X P2=0x%02X (P2_0=%d) RST_CAUSE=%u\n\n",

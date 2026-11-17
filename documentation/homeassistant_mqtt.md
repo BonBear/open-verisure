@@ -73,13 +73,15 @@ all others are door/window sensors.
 | **Battery Voltage** | `sensor` | `voltage` | `mV` | `{{ value_json.battery_mv }}` | Accurate battery terminal voltage in millivolts |
 | **Signal Strength** | `sensor` | `signal_strength` | `dBm` | `{{ value_json.rssi }}` | RF reception signal strength from sensor to gateway |
 
-### Motion camera (8 entities)
+### Motion camera (10 entities)
 
 | Entity | Platform | Device Class / Topic | Description |
 | :--- | :---: | :---: | :--- |
 | **Motion** | `binary_sensor` | `motion` | PIR motion (`contact` field: `OPEN` = motion) |
-| **Tamper** | `binary_sensor` | `tamper` | Tamper switch (`button` field) |
-| **Battery**, **Battery Voltage**, **Signal Strength** | `sensor` | as for the door sensor | |
+| **Tamper** | `binary_sensor` | `tamper` | Tamper switch SW3 (`button` field: `ON` = camera off the wall) |
+| **Battery**, **Battery Voltage**, **Signal Strength** | `sensor` | as for the door sensor | Battery % also takes the voltage under load into account |
+| **Battery Voltage Under Load** | `sensor` | `voltage` (mV) | Lowest VBAT while the Blackfin was last on (`battery_load_mv`, only in camera states once known) |
+| **Low Battery** | `binary_sensor` | `battery` | Low-battery flag (`low_battery`): idle < 2.7 V or under load < 2.6 V |
 | **Camera** | `camera` | `verisure/<id>/image` | Latest picture (alarm picture or on request) |
 | **Take 640x480 picture** | `button` | `picture/set` = `D2` | Picture on request, sent with the camera's next poll |
 | **Take flash picture** | `button` | `picture/set` = `D4` | Grayscale picture lit by the IR flash |

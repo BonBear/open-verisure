@@ -58,18 +58,32 @@ counter (bytes 0..1 big endian and 14..15 little endian, flag 0x20) is persisten
 24 bits are logged in the CC1110's last two flash pages (0x7800–0x7FFF) before they are used,
 at every boot and every 256 packets, as in the door sensor, so it never goes back, not even
 after a reset ([cryptography_and_protocol.md](../../documentation/cryptography_and_protocol.md)).
-Flags: 0x01 motion, 0x08 power-on (first packet after a power-on reset), 0x10 low battery, 0x20
-counter format, bits 7:6 reset cause. Byte 12 is the type:
+Flags: 0x01 motion, 0x04 tamper (SW3 released, camera off the wall), 0x08 power-on (first packet
+after a power-on reset), 0x10 low battery, 0x20 counter format, bits 7:6 reset cause. Byte 12 is
+the type:
 
 | type | Meaning |
 |---|---|
 | `0x00` | announce, the first packet after a boot (counter low byte 0) |
 | `0xB2` | picture start, sent before every picture: arg = picture command; its counter tags the picture's chunks |
-| `0xBA` | poll: arg = state (0x01 armed, 0x02 Blackfin on, 0x04 acknowledgement) |
+| `0xBA` | poll: arg = state (0x01 armed, 0x02 Blackfin on, 0x04 acknowledgement, bits 7:3 battery under load: 0 unknown, else 2275 + 25 × value mV) |
 | `0xB9` | motion: arg = 1 start, 0 end |
+| `0xB5` | tamper changed: arg = 1 tamper (SW3 released), 0 secure |
 | `0xB8` | picture failed (no answer from the Blackfin within ~50 s): arg = its last status |
 | `0xB3` | picture failed (implausible length): arg = length high byte |
 | `0xB7`, `0xB4`, `0xB6` | test (only with `BF_IMG_TIMING 1`): time per picture packet for the RF send and the SPI read, boot pings |
+
+**Tamper:** SW3 closes P1_6 to VBAT while the camera is pressed against the wall. Port 1 keeps
+its pull-up (the PIR on P1_7 needs it), so every 0.5 s tick the camera switches the port to
+pull-down for ~45 µs, with P1_7 tri-stated, and reads P1_6: 0 = released = tamper.
+
+**Battery:** the CR123A cells hold their idle voltage until near the end, so the camera also
+measures VBAT while the Blackfin is powered (~0.1–0.2 A) and keeps the lowest value of the last
+time it was on. Battery % is the lower of two linear estimates: idle 2600–3000 mV and under load
+2450–2850 mV (pictures stop at ~2.4 V, Otii 2026-11-17). Low-battery flag: idle below 2700 mV or
+under load below 2600 mV. The value under load goes out in every poll (Home Assistant: "Battery
+Voltage Under Load", unknown until the first picture after a restart of the gateway or the camera).
+An idle reading right after PM2 waits ~11 ms first: without it the ADC read ~110 mV low.
 
 Below 2.3 V at boot the camera neither logs a counter block nor sends; it sleeps and measures
 again about every minute. The build script reads the counter seed from the gateway and
@@ -142,7 +156,11 @@ Home Assistant gets the buttons "Take 640x480 picture" (D2) and "Take flash pict
 ## 6. The camera's states (cam_alarm_loop)
 
 - Blackfin off: the CC1110 sleeps in PM2 (0.5 s sleep timer or a PIR edge), watchdog ~1 s.
-- Poll every ~30 s (`BF_POLL_S`) and right after every picture or resend.
+- Poll every ~30 s (`BF_POLL_S`) while armed, during motion or with the Blackfin on; every
+  ~120 s (`BF_POLL_DISARMED_S`) when disarmed and idle; and right after every picture or resend.
+  Motion always polls first, so it gets a fresh alarm state; a picture requested from Home
+  Assistant while disarmed waits up to ~2 minutes for the next poll.
+- Tamper: a change is sent at once (0xB5); every packet carries the state.
 - Armed and motion: first picture 0xD5, second 0xD6, then 0xD5 every ~5 s while the motion lasts
   (`BF_PIR_HOLD_S` 30 s). Armed without motion: 0xD5 every 30 minutes.
 - The Blackfin stays on for 15 s after a good picture (`BF_KEEP_ON_S`), so a delta can be taken

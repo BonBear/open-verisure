@@ -58,9 +58,11 @@ struct VerisureTelemetry {
     bool isShock;           /**< Vibration/Shock sensor state: true = Shock/Tamper detected */
     bool isButton;          /**< Sabotage/Tamper switch state: true = Cover removed (Alarm) */
     bool isPowerOn;         /**< Power-On Reset indicator: true = Battery recently replaced */
-    bool isLowBatt;         /**< Low battery threshold flag: true = Battery < 2.4V */
+    bool isLowBatt;         /**< Low battery flag, set by the device (its own thresholds) */
     uint8_t batteryPct;     /**< Estimated battery level (0 - 100%) */
     uint16_t batteryMv;     /**< Battery supply voltage in millivolts (e.g. 3367 mV) */
+    uint16_t batteryLoadMv; /**< Camera: lowest VBAT while the Blackfin was last powered (poll
+                                 state bits 7:3, see downlink.h); 0 = unknown */
     int rssi;               /**< Received Signal Strength Indicator in dBm */
     uint8_t lqi;            /**< Link Quality Indicator (0 - 255) */
     uint8_t rawP0;          /**< Diagnostic: Port 0 raw input states from CC1110 */

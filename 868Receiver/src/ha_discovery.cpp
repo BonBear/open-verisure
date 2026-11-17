@@ -137,6 +137,31 @@ static const HaEntityDef S_MOTION_SENSOR_ENTITIES[] = {
         "diagnostic"
     },
     {
+        "battery_load",
+        "sensor",
+        "Battery Voltage Under Load",
+        "voltage",
+        "measurement",
+        "mV",
+        // 0 until the camera has reported a value (after its first picture since a restart)
+        "{{ value_json.battery_load_mv if value_json.battery_load_mv | default(0) > 0 else None }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "low_battery",
+        "binary_sensor",
+        "Low Battery",
+        "battery",
+        nullptr,
+        nullptr,
+        "{{ value_json.low_battery }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
         "rssi",
         "sensor",
         "Signal Strength",
@@ -315,6 +340,7 @@ String haStateBuildPayload(const VerisureTelemetry& telem) {
     p += "\"battery_pct\":" + String(telem.batteryPct) + ",";
     p += "\"battery_mv\":" + String(telem.batteryMv) + ",";
     p += "\"low_battery\":\"" + String(telem.isLowBatt ? "ON" : "OFF") + "\",";
+    if (telem.batteryLoadMv) p += "\"battery_load_mv\":" + String(telem.batteryLoadMv) + ",";
     p += "\"rssi\":" + String(telem.rssi) + ",";
     p += "\"lqi\":" + String(telem.lqi) + ",";
     p += "\"seq\":" + String(telem.counter);

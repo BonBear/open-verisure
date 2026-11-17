@@ -334,7 +334,8 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     outTelem->isLowBatt  = isLow;
     outTelem->batteryPct = bPct;
     outTelem->batteryMv  = bMv;
-    outTelem->rawP0      = plain[12];
+    outTelem->batteryLoadMv = 0;            // camera polls: filled in by the caller
+    outTelem->rawP0     = plain[12];
     outTelem->rawP1      = plain[13];
     outTelem->rawP2      = hasCtr ? 0 : plain[14];
     outTelem->rawRst     = hasCtr ? (flags >> 6) : plain[15];   // with the counter: reset cause in flags[7:6]

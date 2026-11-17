@@ -2,10 +2,11 @@
  * @file downlink.h
  * @brief Gateway -> camera downlink: alarm state, picture requests and resend requests.
  *
- * The camera (MD_CAM CC1110, cam_alarm_loop) sends a poll packet every ~30 s: an ordinary
- * telemetry packet in the persistent-counter format (flag 0x20) with plain[12] = 0xBA and
- * plain[13] = camera state (bit 0 armed, bit 1 Blackfin powered, bit 2 a downlink command
- * arrived). After the poll it listens for ~0.1 s.
+ * The camera (MD_CAM CC1110, cam_alarm_loop) sends a poll packet every ~30 s (disarmed and
+ * idle: every ~120 s): an ordinary telemetry packet in the persistent-counter format (flag
+ * 0x20) with plain[12] = 0xBA and plain[13] = camera state (bit 0 armed, bit 1 Blackfin
+ * powered, bit 2 a downlink command arrived, bits 7:3 battery voltage under load: 0 unknown,
+ * else 2275 + 25 * value mV). After the poll it listens for ~0.1 s.
  *
  * The gateway answers only a poll that passed authentication and the replay filter, with a
  * 24-byte packet: 8 bytes device ID (plain) + AES-128-ECB(device key, plaintext):
@@ -24,6 +25,13 @@
 #define DOWNLINK_STATE_ARMED  0x01
 #define DOWNLINK_STATE_BF_ON  0x02
 #define DOWNLINK_STATE_ACK    0x04
+#define DOWNLINK_STATE_LOAD_SHIFT 3   // bits 7:3: battery under load, see above
+
+/** Battery voltage under load from a poll's state byte, in mV (0 = unknown). */
+static inline uint16_t downlinkLoadMv(uint8_t state) {
+    uint8_t v = state >> DOWNLINK_STATE_LOAD_SHIFT;
+    return v ? 2275 + 25 * v : 0;
+}
 
 /** Load the stored alarm state from NVS. */
 void downlinkInit();
