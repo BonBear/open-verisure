@@ -147,6 +147,11 @@ static void radioTransmit(const uint8_t* pkt) {
  *        picture command. Called right after the poll was authenticated, because the
  *        camera only listens for ~0.1 s.
  */
+/** Gateway frequency correction in FSCTRL0 steps of 1.587 kHz (see initRadioRegisters). */
+#ifndef RX_FREQ_OFFSET
+#define RX_FREQ_OFFSET 38
+#endif
+
 static void answerCameraPoll(const VerisureTelemetry& t) {
     uint8_t key[16], plain[16], pkt[VERISURE_PACKET_LEN];
     uint8_t state = t.rawP1;             // plain[13] of the poll
@@ -189,7 +194,12 @@ void initRadioRegisters() {
 
     // Intermediate Frequency (IF)
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCTRL1,  0x06);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCTRL0,  0x00);
+    // Frequency offset (FSCTRL0, f_xosc / 2^14 = 1.587 kHz per step, RX and TX): this CC1101
+    // module's crystal runs low, the sensors arrived ~+60 kHz above the channel (FREQEST, logged
+    // as "Freq. error" per packet). That is beyond the frequency loop's +-50 kHz (FOCCFG
+    // FOC_LIMIT BW/4), so weak packets failed their CRC (2026-11-17). Re-measure for another
+    // module: the logged error should stay near 0.
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCTRL0,  (byte)RX_FREQ_OFFSET);
 
     // RF Frequency: 868.950 MHz (with 26.000 MHz crystal on standard CC1101 modules)
     // Formula: FREQ = (868.950 * 2^16) / 26.0 = 2190289 = 0x216BD1
@@ -346,6 +356,7 @@ void loop() {
     static byte frame[RX_FRAME_LEN];
     static byte frameLen = 0;
     static unsigned long partialStart = 0;
+    static int8_t frameFreqEst = 0;   // FREQEST at the start of the frame (see below)
 
     // Check for RX FIFO overflow (Bit 7 = 1)
     if (rxBytesStatus & 0x80) {
@@ -359,6 +370,9 @@ void loop() {
         // comes in; the last byte is left in the FIFO until the frame is complete (errata).
         byte take = bytesInFifo >= need ? need : (bytesInFifo > 1 ? bytesInFifo - 1 : 0);
         if (take) {
+            // FREQEST is read while the first bytes come in: the frame is 58 bytes, so after a
+            // 24-byte packet the frequency loop tracks noise for ~7 ms and drifts off
+            if (frameLen == 0) frameFreqEst = (int8_t)readStatusSafe(CC1101_FREQEST);
             ELECHOUSE_cc1101.SpiReadBurstReg(CC1101_RXFIFO, frame + frameLen, take);
             frameLen += take;
             partialStart = now;
@@ -369,6 +383,9 @@ void loop() {
             partialStart = 0;
             byte rawRssi = frame[RX_PKT_LEN];
             byte rawLqi  = frame[RX_PKT_LEN + 1];
+            // Frequency offset the CC1101 estimated for this packet (FREQEST, two's complement,
+            // f_xosc / 2^14 = 1.587 kHz per step), read at the start of the frame
+            float freqErrKhz = frameFreqEst * (26000.0f / 16384.0f);
 
             // Convert raw RSSI byte to dBm (CC1101 datasheet section 17.3)
             int packetRssi = (rawRssi >= 128) ? ((rawRssi - 256) / 2) - 74 : (rawRssi / 2) - 74;
@@ -392,7 +409,8 @@ void loop() {
                     Serial.printf("    Shock   : %s\n", telem.isShock ? "SHOCK / VIBRATION DETECTED!" : "Clear");
                     Serial.printf("    Tamper  : %s\n", telem.isButton ? "TAMPER (Cover removed!)" : "Secure (Cover closed)");
                     Serial.printf("    Battery : %u mV (%u%%)%s\n", telem.batteryMv, telem.batteryPct, telem.isLowBatt ? " [LOW BATTERY!]" : "");
-                    Serial.printf("    Signal  : RSSI %d dBm | LQI %u | CRC: OK\n", telem.rssi, telem.lqi);
+                    Serial.printf("    Signal  : RSSI %d dBm | LQI %u | Freq. error %+.1f kHz | CRC: OK\n",
+                                  telem.rssi, telem.lqi, freqErrKhz);
                     Serial.printf("    Pins    : P0=0x%02X P1=0x%02X P2=0x%02X (P2_0=%d) RST_CAUSE=%u\n\n",
                                   telem.rawP0, telem.rawP1, telem.rawP2, telem.rawP2 & 0x01, telem.rawRst);
                 } else {
@@ -401,7 +419,8 @@ void loop() {
                 }
             } else {
                 printTimestamp(now);
-                Serial.println("[Radio] Packet received with invalid CRC (dropped).");
+                Serial.printf("[Radio] Packet received with invalid CRC (dropped): RSSI %d dBm, freq. error %+.1f kHz\n",
+                              packetRssi, freqErrKhz);
             }
             // RXOFF_MODE = RX (MCSM1 0x3C): the radio is already receiving the next packet.
             // A flush here cut it off; with picture chunks back to back that lost a third of
