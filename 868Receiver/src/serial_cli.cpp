@@ -35,6 +35,7 @@ static void printHelp() {
     Serial.println("  setmqtt <host> <port> [user] [pass] [topic] - Configure MQTT broker");
     Serial.println("  alarm [on|off]             - Show or set the alarm state sent to cameras");
     Serial.println("  drop <n>                   - Test: drop every n-th camera picture chunk (0 = off)");
+    Serial.println("  replay reset <ID>          - Forget a sensor's replay counter (after reflashing it)");
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
@@ -251,6 +252,10 @@ static void processCommand(char* cmd) {
         unsigned long n = strtoul(cmd + 5, nullptr, 10);
         imageReceiverSetDrop((uint32_t)n);
         Serial.printf("[CLI] Dropping every %lu-th picture chunk%s\n", n, n ? "" : " (off)");
+    } else if (strncmp(cmd, "replay reset ", 13) == 0) {
+        const char* id = cmd + 13;
+        bool had = cryptoReplayReset(id);
+        Serial.printf("[CLI] Replay state for \"%s\" %s\n", id, had ? "cleared" : "not found");
     } else if (strcmp(cmd, "alarm") == 0) {
         Serial.printf("[CLI] Alarm is %s\n", downlinkArmed() ? "ARMED" : "DISARMED");
     } else if (strcmp(cmd, "reset") == 0) {

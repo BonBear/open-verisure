@@ -377,8 +377,8 @@ void loop() {
                     sensorRegistryUpdate(telem); // Cache in memory
                     mqttPublishTelemetry(telem); // Publish to Home Assistant MQTT
                     printTimestamp(now);
-                    Serial.printf(">>> [#%04lu] [AUTHENTICATED] Device: \"%s\" | Seq: #%u <<<\n",
-                                  packetCount, telem.deviceId, telem.sequence);
+                    Serial.printf(">>> [#%04lu] [AUTHENTICATED] Device: \"%s\" | Seq: #%lu <<<\n",
+                                  packetCount, telem.deviceId, (unsigned long)telem.counter);
                     Serial.printf("    Magnet  : %s\n", telem.isOpen ? "OPEN [ALARM!]" : "CLOSED (Secure)");
                     Serial.printf("    Shock   : %s\n", telem.isShock ? "SHOCK / VIBRATION DETECTED!" : "Clear");
                     Serial.printf("    Tamper  : %s\n", telem.isButton ? "TAMPER (Cover removed!)" : "Secure (Cover closed)");

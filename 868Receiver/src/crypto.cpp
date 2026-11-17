@@ -8,6 +8,7 @@
 #include "image_receiver.h"
 #include <ctype.h>
 #include <string.h>
+#include <Preferences.h>
 
 /** @brief Maximum number of distinct sensor nodes tracked simultaneously in RAM. */
 #define MAX_TRACKED_DEVICES 32
@@ -20,6 +21,10 @@ struct DeviceSession {
     char deviceId[9];       /**< 8-character device ID */
     uint16_t lastSeq;       /**< Last accepted 16-bit sequence counter */
     bool hasLastSeq;        /**< True if at least one packet has been validated */
+    bool ctrMode;           /**< Device sends a 32-bit counter that survives its resets (flag 0x20) */
+    uint32_t lastCtr;       /**< Last accepted 32-bit counter (ctrMode) */
+    bool needBoot;          /**< After 'replay reset': accept only a boot packet (low byte 0) */
+    unsigned long lastStore;/**< millis() of the last NVS write of lastCtr */
     unsigned long lastSeen; /**< Timestamp (millis) when last authenticated packet arrived */
 };
 
@@ -90,6 +95,32 @@ bool cryptoDecryptPayload(const uint8_t deviceKey[16], const uint8_t inCipher[16
     return true;
 }
 
+/* ---- Persistent replay floor (NVS) ----------------------------------------------------------
+ * Devices that set flag 0x20 send a 32-bit counter (seq in plain[0..1], high half in plain[14..15])
+ * whose upper 24 bits (the "block") the device keeps in flash, so it never goes back, not even
+ * after a reset. The gateway keeps the last accepted counter in NVS, written for every accepted
+ * packet but at most every 2 s (a door sensor sends a few packets an hour; the limit only matters
+ * if one floods), so after a gateway restart only packets newer than that are accepted. Only
+ * packets accepted less than 2 s before the restart can be replayed. */
+#define CTR_STORE_MIN_MS 2000
+static Preferences s_replayPrefs;
+static bool s_replayPrefsOpen = false;
+
+static bool replayPrefsOpen() {
+    if (!s_replayPrefsOpen) s_replayPrefsOpen = s_replayPrefs.begin("replay", false);
+    return s_replayPrefsOpen;
+}
+
+static bool ctrLoad(const char* devId, uint32_t* floor) {
+    if (!replayPrefsOpen() || !s_replayPrefs.isKey(devId)) return false;
+    *floor = s_replayPrefs.getULong(devId, 0);
+    return true;
+}
+
+static void ctrStore(const char* devId, uint32_t ctr) {
+    if (replayPrefsOpen()) s_replayPrefs.putULong(devId, ctr);
+}
+
 /**
  * @brief Find an existing session or allocate a new session record for a device.
  * @param deviceId Sensor node identifier.
@@ -107,7 +138,18 @@ static DeviceSession* getOrCreateSession(const char* deviceId) {
         s->deviceId[8] = '\0';
         s->lastSeq = 0;
         s->hasLastSeq = false;
+        s->ctrMode = false;
+        s->lastCtr = 0;
+        s->needBoot = false;
+        s->lastStore = 0;
         s->lastSeen = 0;
+        // A device that has sent the persistent counter keeps its floor across gateway restarts
+        uint32_t floor;
+        if (ctrLoad(s->deviceId, &floor)) {
+            s->ctrMode = true;
+            s->lastCtr = floor;
+            s->hasLastSeq = true;
+        }
         return s;
     }
     return nullptr; // Session table full
@@ -226,15 +268,54 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     uint8_t bPct = plain[3];
     uint16_t bMv = ((uint16_t)plain[4] << 8) | plain[5];
 
-    // 7. Replay Attack Protection with 16-bit sequence window
+    // 7. Replay Attack Protection
+    bool hasCtr = (flags & 0x20) != 0;
+    uint32_t ctr = ((uint32_t)plain[15] << 24) | ((uint32_t)plain[14] << 16) | seq;
     DeviceSession* sess = getOrCreateSession(devId);
-    if (sess) {
-        if (sess->hasLastSeq && !isBtn && !isPor) {
-            // Handle 16-bit modular sequence wraparound:
-            // Reject duplicate or stale packets (diff <= 0)
-            int32_t diff = (int32_t)seq - (int32_t)sess->lastSeq;
-            if (diff <= 0 && diff > -32768) {
-                return false; // Stale or replayed packet!
+    if (!sess) {
+        Serial.printf("[Replay] Dropped \"%s\": session table full\n", devId);
+        return false;   // no replay state to check against
+    }
+    {
+        if (hasCtr) {
+            // persistent counter: strictly increasing, no exceptions (not for a reset or tamper)
+            if (sess->hasLastSeq && sess->ctrMode && ctr <= sess->lastCtr) {
+                Serial.printf("[Replay] Dropped \"%s\": counter %lu <= last %lu "
+                              "(reflashed sensor? 'replay reset %s')\n",
+                              devId, (unsigned long)ctr, (unsigned long)sess->lastCtr, devId);
+                return false;
+            }
+            // after 'replay reset' (the sensor was reflashed, its counter restarted) only a boot
+            // packet is taken, not any recorded packet with a higher counter from before
+            if (sess->needBoot && (ctr & 0xFF) != 0) {
+                Serial.printf("[Replay] Dropped \"%s\": waiting for a boot packet after 'replay reset'\n", devId);
+                return false;
+            }
+            bool store = !sess->ctrMode || sess->needBoot || (ctr >> 8) != (sess->lastCtr >> 8) ||
+                         millis() - sess->lastStore >= CTR_STORE_MIN_MS;
+            sess->ctrMode = true;
+            sess->needBoot = false;
+            sess->lastCtr = ctr;
+            if (store) {
+                ctrStore(devId, ctr);
+                sess->lastStore = millis();
+            }
+        } else {
+            // a device that has sent the persistent counter never falls back to the old format
+            // (a recorded old-format packet would otherwise pass with its reset flag)
+            if (sess->ctrMode || sess->needBoot) {
+                Serial.printf("[Replay] Dropped \"%s\": packet without the persistent counter\n", devId);
+                return false;
+            }
+            // Old format (camera, older door firmware): 16-bit seq that restarts at 0 after a
+            // reset, so the power-on flag must let it through. Tamper gets no exception.
+            if (sess->hasLastSeq && !isPor) {
+                // Handle 16-bit modular sequence wraparound:
+                // Reject duplicate or stale packets (diff <= 0)
+                int32_t diff = (int32_t)seq - (int32_t)sess->lastSeq;
+                if (diff <= 0 && diff > -32768) {
+                    return false; // Stale or replayed packet!
+                }
             }
         }
         sess->lastSeq = seq;
@@ -254,11 +335,34 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     outTelem->batteryMv  = bMv;
     outTelem->rawP0      = plain[12];
     outTelem->rawP1      = plain[13];
-    outTelem->rawP2      = plain[14];
-    outTelem->rawRst     = plain[15];
+    outTelem->rawP2      = hasCtr ? 0 : plain[14];
+    outTelem->rawRst     = hasCtr ? (flags >> 6) : plain[15];   // with the counter: reset cause in flags[7:6]
+    outTelem->counter    = hasCtr ? ctr : seq;
     outTelem->rssi       = rssi;
     outTelem->lqi        = lqi;
     outTelem->valid      = true;
 
     return true;
+}
+
+bool cryptoReplayReset(const char* deviceId) {
+    bool found = false;
+    if (strlen(deviceId) != 8) return false;
+    for (size_t i = 0; i < s_deviceCount; i++) {
+        if (strcmp(s_devices[i].deviceId, deviceId) == 0) found = true;
+    }
+    if (replayPrefsOpen() && s_replayPrefs.isKey(deviceId)) {
+        s_replayPrefs.remove(deviceId);
+        found = true;
+    }
+    // The next packet must be a boot packet in the counter format (see cryptoProcessPacket).
+    // Kept in RAM only: if the gateway restarts before it arrives, the device starts afresh.
+    DeviceSession* s = getOrCreateSession(deviceId);
+    if (s) {
+        s->hasLastSeq = true;
+        s->ctrMode = true;
+        s->lastCtr = 0;
+        s->needBoot = true;
+    }
+    return found;
 }

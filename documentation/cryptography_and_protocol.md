@@ -42,7 +42,7 @@ Decrypted by the gateway into the following 16-byte telemetry fields:
 
 | Byte Index | Field | Data Type | Description |
 | :---: | :--- | :---: | :--- |
-| **`0..1`** | **Sequence Number** | `uint16_t` (Big-Endian) | Rolling counter (`0` to `65535`), increments with each transmission. |
+| **`0..1`** | **Sequence Number** | `uint16_t` (Big-Endian) | Low 16 bits of the packet counter, increments with each transmission. |
 | **`2`** | **Sensor Flags** | `uint8_t` (Bitmask) | Real-time sensor state flags (see table below). |
 | **`3`** | **Battery Percentage**| `uint8_t` | Approximate capacity `0`–`100%`. |
 | **`4..5`** | **Battery Voltage** | `uint16_t` (Big-Endian) | Measured supply voltage in millivolts (e.g. `3370 mV` for 3.37 V). |
@@ -50,17 +50,17 @@ Decrypted by the gateway into the following 16-byte telemetry fields:
 | **`10..11`**| **Magic Bytes** | `char[2]` | Fixed signature: `'V'`, `'S'` (Verisure Sensor). |
 | **`12`** | **Port 0 Diagnostics**| `uint8_t` | Raw state of CC1110 `P0` (P0_1 Tamper, P0_2/P0_4 LEDs). |
 | **`13`** | **Port 1 Diagnostics**| `uint8_t` | Raw state of CC1110 `P1` (P1_7 Reed switch, P1_2 Shock). |
-| **`14`** | **Port 2 Diagnostics**| `uint8_t` | Raw state of CC1110 `P2` (P2_0, P2_1 DD, P2_2 DC). |
-| **`15`** | **Reset Cause** | `uint8_t` | `SLEEP.RST[1:0]` (0=Power-On, 1=External Pin Reset). |
+| **`14..15`** | **Counter, high half** | `uint16_t` (Little-Endian) | With flag bit 5: bits 16..31 of the persistent packet counter. Without it (camera, older door firmware): `P2` and the reset cause. |
 
 ### Flag Bits (Byte 2)
 ```text
 Bit 0 (0x01): Magnet Reed Switch (1 = Open / Alarm, 0 = Closed / Secure)
 Bit 1 (0x02): Shock / Vibration Sensor (1 = Shock detected, 0 = Clear)
 Bit 2 (0x04): Tamper Switch (1 = Cover removed / Alarm, 0 = Cover secured)
-Bit 3 (0x08): Power-On Reset (1 = Fresh battery inserted, active for first 3 packets)
+Bit 3 (0x08): Power-On Reset (1 = first packet after a power-on reset)
 Bit 4 (0x10): Low Battery Warning (1 = Voltage below 2400 mV)
-Bit 5..7:     Reserved (0)
+Bit 5 (0x20): Persistent counter in bytes 14..15 (door sensor firmware since 2026-11-17)
+Bit 6..7:     With bit 5: reset cause SLEEP.RST[1:0] (0 = power-on, 1 = RESET_N, 2 = watchdog)
 ```
 
 ---
@@ -70,8 +70,24 @@ Bit 5..7:     Reserved (0)
 The gateway applies a multi-stage authentication filter:
 1. **Hardware CRC16 Verification:** The packet is discarded immediately unless the CC1101 internal CRC check passes (Bit 7 of LQI status byte = 1).
 2. **Cryptographic Integrity Check:** The payload is decrypted using the derived device key. If the magic bytes are not `'V'`, `'S'`, or if the Device ID Echo does not match the header, the frame is rejected as spoofed or corrupted.
-3. **Sequence Window Replay Protection:**
-   * The gateway maintains session records tracking the highest verified sequence counter per device.
-   * Incoming packets must satisfy `seq > last_seq` within a standard 16-bit sliding window.
-   * Replayed or duplicated frames captured over the air are dropped before reaching Home Assistant.
-   * **Exception Handling:** If a sequence reset occurs alongside a verified Power-On Reset flag (`isPowerOn`), the counter is resynchronized gracefully.
+3. **Replay Protection with a persistent counter (flag bit 5, door sensor):**
+   * The packet counter is 32 bits: bytes 0..1 and 14..15. Its upper 24 bits (a block of 256
+     packets) are logged in the sensor's last two flash pages before they are used, at every boot
+     and every 256 packets, so the counter never goes back, not even after a reset.
+   * The gateway accepts a packet only if its counter is greater than the last accepted one.
+     There is no exception for resets or tamper.
+   * The log entries carry a check byte, are read back after writing and are skipped when a
+     power loss cut a write or an erase short; the two pages are used in turn, so an erase never
+     loses the newest entry.
+   * The gateway keeps the last accepted counter per device in NVS (namespace `replay`), written
+     for every accepted packet but at most every 2 s, so the floor survives a gateway restart.
+     Only packets accepted less than 2 s before a gateway restart can be replayed after it.
+   * Once a device has sent the new format, packets from it in the old format are dropped.
+   * Reflashing a sensor erases its log, so its counter starts again at 256. The gateway then logs
+     `[Replay] Dropped ... 'replay reset <ID>'`. That command on the gateway's serial console clears
+     the device's floor; the gateway then accepts only a boot packet (counter low byte 0) in the
+     new format from it, so a recorded packet from before the reflash cannot take its place.
+4. **Old format (camera, older door firmware):**
+   * 16-bit `seq` that restarts at 0 after a reset; the gateway requires `seq > last_seq` within a
+     16-bit window. A packet with the power-on flag is accepted anyway, so a recorded power-on
+     packet can be replayed; the camera still needs the persistent counter.

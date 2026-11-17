@@ -317,7 +317,7 @@ String haStateBuildPayload(const VerisureTelemetry& telem) {
     p += "\"low_battery\":\"" + String(telem.isLowBatt ? "ON" : "OFF") + "\",";
     p += "\"rssi\":" + String(telem.rssi) + ",";
     p += "\"lqi\":" + String(telem.lqi) + ",";
-    p += "\"seq\":" + String(telem.sequence);
+    p += "\"seq\":" + String(telem.counter);
     p += "}";
     return p;
 }

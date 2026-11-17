@@ -24,7 +24,11 @@
  *
  * 4. Replay Attack Protection:
  *    - A dynamic table tracks the last seen sequence numbers per sensor node.
- *    - Reject duplicate or older sequence numbers unless flagged as hardware resets.
+ *    - Devices with flag 0x20 send a 32-bit counter that never goes back (its upper part is kept
+ *      in the device's flash); it must increase, also after a device reset, and its floor is
+ *      kept in NVS across gateway restarts.
+ *    - Old format (16-bit seq restarting at 0): reject duplicate or older sequence numbers
+ *      unless flagged as a power-on reset.
  * ============================================================================
  */
 
@@ -63,6 +67,7 @@ struct VerisureTelemetry {
     uint8_t rawP1;          /**< Diagnostic: Port 1 raw input states from CC1110 */
     uint8_t rawP2;          /**< Diagnostic: Port 2 raw input states from CC1110 */
     uint8_t rawRst;         /**< Diagnostic: Microcontroller reset reason from SLEEP register */
+    uint32_t counter;       /**< 32-bit persistent counter (flag 0x20), else the 16-bit seq */
     bool valid;             /**< True if packet passed authentication, decryption and replay check */
 };
 
@@ -121,3 +126,10 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
 /** True if the last packet given to cryptoProcessPacket() was a camera image packet (type
  * 0x80/0x82), which is handled there and returns false without being a rejection. */
 bool cryptoLastPacketWasImage(void);
+
+/**
+ * @brief Forget a device's replay state (RAM and NVS), e.g. after reflashing erased its flash,
+ *        which restarts its persistent counter.
+ * @return True if the device had replay state.
+ */
+bool cryptoReplayReset(const char* deviceId);

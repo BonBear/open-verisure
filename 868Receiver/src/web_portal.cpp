@@ -437,7 +437,7 @@ static void handleApiStatus() {
         unsigned long ageSec = (now >= rec->lastSeenMs) ? (now - rec->lastSeenMs) / 1000 : 0;
         json += "{";
         json += "\"id\":\"" + String(rec->lastTelem.deviceId) + "\",";
-        json += "\"seq\":" + String(rec->lastTelem.sequence) + ",";
+        json += "\"seq\":" + String(rec->lastTelem.counter) + ",";
         json += "\"magnet\":" + String(rec->lastTelem.isOpen ? "true" : "false") + ",";
         json += "\"shock\":" + String(rec->lastTelem.isShock ? "true" : "false") + ",";
         json += "\"button\":" + String(rec->lastTelem.isButton ? "true" : "false") + ",";
