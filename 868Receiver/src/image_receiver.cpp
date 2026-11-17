@@ -365,7 +365,9 @@ void imageReceiverLoop(void) {
     // a JPEG/delta whose last chunk was lost: finish it after a pause instead of dropping it
     // when the next picture comes more than 15 s later (stale)
     if (s_lastIdx >= 0 && now - s_lastChunkTime > JPEG_QUIET_MS) jpegFinish(s_imgEnd, false);
-    if (s_rsActive && now - s_rsTime > RS_TIMEOUT_MS) {
+    // millis() again: jpegFinish() above may just have started a resend (s_rsTime > now), and
+    // now - s_rsTime would wrap and give it up at once (seen when a picture's end was lost)
+    if (s_rsActive && millis() - s_rsTime > RS_TIMEOUT_MS) {
         Serial.printf("[ImageReceiver] Resend for %s given up (no answer)\n", s_rsDevice);
         s_rsActive = false;
     }

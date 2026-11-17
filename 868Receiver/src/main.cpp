@@ -223,7 +223,7 @@ void initRadioRegisters() {
     // Automatic Gain Control (AGC)
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_AGCCTRL2, 0x43);
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_AGCCTRL1, 0x40);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_AGCCTRL0, 0x91);
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_AGCCTRL0, 0x95);
 
     // Front-End configuration
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_FREND1,   0x56);
