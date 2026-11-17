@@ -830,7 +830,8 @@ static void transmit_big_chunk(uint8_t type, uint16_t chunk_idx, uint8_t chunk_l
                                  // selector sees PH0 low and starts snap_link, not the factory firmware
 #define BF_BOOT_MAX_TRIES 200    // then ping (0xE5 -> 0xA5) every ~30 ms until snap_link answers,
                                  // at most ~6 s (it used to be a fixed wait of ~3 s)
-#define BF_ARMED_IDLE_S 1800     // armed without motion: one picture this often (0 = never)
+#define BF_ARMED_IDLE_S 21600    // armed without motion: one picture this often (0 = never); 6 h: a
+                                 // picture costs ~0.9 mAh, every 30 min was ~43 mAh/day (Otii 2026-11-17)
 #define BF_SLEEP_IDLE 1          // 1: with the Blackfin off, wait in PM2 (0.5 s timer / PIR edge) instead of
                                  // busy-waiting: idle below 1 mA (PSU resolution) instead of ~3 mA. A first
                                  // try (2026-11-16) never woke from the sleep timer and needed a power

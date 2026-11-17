@@ -124,7 +124,7 @@ The "Usual function" column applies if the module follows the usual 24-pin OmniV
 **Works from cold start without JTAG:** the selector in sector 0 starts `snap_link` (0x8000), which sets up the PLL and SDRAM like the original, initializes the sensor and takes images on request from the CC1110:
 - `0xD1`/`0xD3`: 320×240 color JPEG, full image (~8 KB) or delta with only changed 16×16 blocks (7 bytes when nothing has changed). The gateway patches in the deltas (`868Receiver/src/jpeg_splice.cpp`) and shows `/api/camera.jpg`.
 - `0xD2`: 640×480 color (~17–20 KB, ~2.5 min via RF at the time; now ~12 s), shown at `/api/camera_large.jpg`.
-- The CC1110 sets the pace using the PIR (P1_7): motion ON/OFF to Home Assistant; on motion a delta + 640×480 + deltas every ~5 s, at rest a delta every 5 minutes and a full image about once an hour (obsolete: now one picture per 30 min while armed).
+- The CC1110 sets the pace using the PIR (P1_7): motion ON/OFF to Home Assistant; on motion a delta + 640×480 + deltas every ~5 s, at rest a delta every 5 minutes and a full image about once an hour (obsolete: now one picture per 6 hours while armed).
 
 **Next steps:**
 1. **The flash board:** map the pins (measure first, drive nothing unknown) and control the flash on motion/image.

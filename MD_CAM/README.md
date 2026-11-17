@@ -19,7 +19,7 @@ In the dark it takes grayscale pictures lit by its infrared flash.
 ## What it does
 
 * **Alarm pictures:** armed + motion → a 320x240 picture every ~5 s while motion lasts (the 2nd one
-  640x480), plus one every 30 min while armed. In the dark (scene mean below 40) each picture is a
+  640x480), plus one every 6 hours while armed. In the dark (scene mean below 40) each picture is a
   grayscale IR flash picture instead.
 * **Deltas:** while the Blackfin is on, a picture is sent as only the 16x16 blocks that changed;
   the gateway splices them into its copy of the last full picture.

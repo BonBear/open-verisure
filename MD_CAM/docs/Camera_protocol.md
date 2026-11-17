@@ -166,6 +166,7 @@ Home Assistant gets the buttons "Take 640x480 picture" (D2) and "Take flash pict
 - Battery under load: sampled every loop pass with the Blackfin on and during every radio TX
   (the deepest sag: TX current on top of the Blackfin's).
 - Armed and motion: first picture 0xD5, second 0xD6, then 0xD5 every ~5 s while the motion lasts
-  (`BF_PIR_HOLD_S` 30 s). Armed without motion: 0xD5 every 30 minutes.
+  (`BF_PIR_HOLD_S` 30 s). Armed without motion: 0xD5 every 6 hours
+  (`BF_ARMED_IDLE_S`; every 30 minutes until 2026-11-17 cost ~43 mAh/day).
 - The Blackfin stays on for 15 s after a good picture (`BF_KEEP_ON_S`), so a delta can be taken
   against the reference in SDRAM; HOLD keeps it on for ~10 minutes.
