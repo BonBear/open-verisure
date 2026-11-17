@@ -60,12 +60,12 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 
 ```text
 ├── 868Receiver/          Gateway firmware (PlatformIO, ESP32-S2)          → 868Receiver/README.md
-├── VerisureDoorSensor/   Door/window sensor firmware (SDCC, CC1110) + docs → VerisureDoorSensor/README.md
+├── VerisureDoorSensor/   Door/window sensor firmware (SDCC, CC1110),
+│                         build_and_flash.py, docs                         → VerisureDoorSensor/README.md
 ├── MD_CAM/               Motion camera: CC1110 firmware, Blackfin program,
 │                         JTAG tools, e2e test, docs                       → MD_CAM/README.md
 ├── SIREN/                Siren research photos                            → SIREN/README.md
 ├── documentation/        Shared docs: protocol & crypto, CC flasher, gateway hardware, HA/MQTT
-├── build_and_flash.py    Build + flash + verify the door sensor (via ESP_CC_Flasher)
 ├── derive_key.py         Master key generation and per-device key derivation (KDF)
 ├── monitor.py            Gateway serial monitor
 ├── port_selector.py      COM-port discovery used by the scripts

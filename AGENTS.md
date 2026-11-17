@@ -50,7 +50,7 @@ flowchart TD
 
 ### Phase 3: Verification (QA & Test Runner)
 - Firmware must build without warnings or errors (`pio run` for ESP32, SDCC for CC1110).
-- Scripts (`build_and_flash.py`, `derive_key.py`, `monitor.py`) are verified for syntax and runtime.
+- Scripts (`VerisureDoorSensor/build_and_flash.py`, `MD_CAM/build_and_flash_md_cam.py`, `derive_key.py`, `monitor.py`) are verified for syntax and runtime.
 - Edge cases are tested (e.g. rolling sequence counter, packet overflow, interrupted serial communication).
 
 ### Phase 4: Security Review (Security Reviewer)

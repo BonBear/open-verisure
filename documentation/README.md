@@ -99,6 +99,6 @@ gateway, and the gateway's answer carries the alarm state and picture commands.
 
 4. **Build, Flash & Verify the Devices:**
    ```powershell
-   python build_and_flash.py                            # door sensor
+   python VerisureDoorSensor/build_and_flash.py            # door sensor
    python MD_CAM/build_and_flash_md_cam.py --serial COM12   # motion camera
    ```

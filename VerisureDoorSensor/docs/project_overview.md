@@ -25,7 +25,7 @@ This document is the main index for the project. To save context window, the tec
     - **Red LED (`P0_2`):** Lights red as long as the magnet is open (`P1_7 == 1`, alarm state) or during a shock/vibration event (held on for 1000 ms). Off when the door is closed and things are quiet.
     - **Green LED (`P0_4`):** Gives a short 40 ms pulse on every active radio transmission.
     - **Button (`SW1` on Pin 31 / `RESET_N`):** Hardware reset button; reports `'B'` during the first 5 packets after a button press.
-  - **HIL CLI loop:** Automated with `python build_and_flash.py` (compiles with SDCC, uploads and flashes via ESP_CC_Flasher at `http://192.168.0.80`, and monitors `COM11`).
+  - **HIL CLI loop:** Automated with `python VerisureDoorSensor/build_and_flash.py` (compiles with SDCC, uploads and flashes via ESP_CC_Flasher at `http://192.168.0.80`, and monitors `COM11`).
 
 ---
 

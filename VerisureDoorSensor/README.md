@@ -52,7 +52,7 @@ your network (default `http://cc.local`). Generate the master key and set up the
    `VerisureDoorSensor/config.h` (git-ignored; template: `config.h.example`).
 2. **Build, flash and verify:**
    ```bash
-   python build_and_flash.py
+   python VerisureDoorSensor/build_and_flash.py
    ```
    The script compiles `main.c` with SDCC, uploads it to the flasher over HTTP, programs and
    restarts the CC1110, and watches the gateway's serial log until the sensor's first packet is

@@ -123,7 +123,7 @@ RESET_N low, so give the flasher USB power before connecting it to a running dev
 
 ## 💻 Automated Build and Flashing Process
 
-Compilation and flashing are automated by [`build_and_flash.py`](../build_and_flash.py) for the door sensor and [`MD_CAM/build_and_flash_md_cam.py`](../MD_CAM/build_and_flash_md_cam.py) for the camera. Both can flash over Wi-Fi (HTTP API, below) or over the flasher's USB serial port (`--serial COM12`, faster).
+Compilation and flashing are automated by [`VerisureDoorSensor/build_and_flash.py`](../VerisureDoorSensor/build_and_flash.py) for the door sensor and [`MD_CAM/build_and_flash_md_cam.py`](../MD_CAM/build_and_flash_md_cam.py) for the camera. Both can flash over Wi-Fi (HTTP API, below) or over the flasher's USB serial port (`--serial COM12`, faster).
 
 ### Step-by-Step Flow (HTTP API, door sensor):
 1. **Compilation with SDCC:**

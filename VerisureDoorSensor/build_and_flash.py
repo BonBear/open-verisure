@@ -24,16 +24,16 @@ Pipeline Stages:
 
 Usage Examples:
     # 1. Automatic build, flash, and interactive port selection:
-    python build_and_flash.py
+    python VerisureDoorSensor/build_and_flash.py
 
     # 2. Specify receiver port directly:
-    python build_and_flash.py --port COM9
+    python VerisureDoorSensor/build_and_flash.py --port COM9
 
     # 3. Compile only without flashing:
-    python build_and_flash.py --compile-only
+    python VerisureDoorSensor/build_and_flash.py --compile-only
 
     # 4. Flash without opening receiver monitor:
-    python build_and_flash.py --skip-monitor
+    python VerisureDoorSensor/build_and_flash.py --skip-monitor
 """
 
 import sys
@@ -46,11 +46,14 @@ from typing import Optional
 import serial
 import requests
 from requests.auth import HTTPBasicAuth
+VERISURE_DIR = os.path.dirname(os.path.abspath(__file__))
+WORKSPACE = os.path.dirname(VERISURE_DIR)
+if WORKSPACE not in sys.path:
+    sys.path.insert(0, WORKSPACE)   # port_selector.py is shared and lives in the repo root
+
 from port_selector import select_com_port
 
 # Workspace paths
-WORKSPACE = os.path.dirname(os.path.abspath(__file__))
-VERISURE_DIR = os.path.join(WORKSPACE, "VerisureDoorSensor")
 BUILD_DIR = os.path.join(VERISURE_DIR, "build")
 MAIN_C = os.path.join(VERISURE_DIR, "main.c")
 IHX_FILE = os.path.join(BUILD_DIR, "main.ihx")
@@ -373,6 +376,8 @@ def parse_arguments():
                         help="Perform full chip erase to unlock protected/factory CC1110 before flashing.")
     parser.add_argument("--wait-contact", "-w", action="store_true",
                         help="Wait in real-time until physical electrical contact with CC1110 is detected, then flash instantly.")
+    parser.add_argument("--serial", default=None,
+                        help="Flash over the flasher's USB serial port instead of Wi-Fi (e.g. COM12); no monitor.")
     parser.add_argument("--duration", "-d", type=int, default=30,
                         help="Monitoring verification duration in seconds (default: 30).")
 
@@ -388,6 +393,14 @@ def main():
 
     if args.compile_only:
         print("[+] Compilation complete (--compile-only specified). Exiting.")
+        return
+
+    if args.serial:
+        # same serial protocol as the camera (ESP_CC_Flasher src/serial_cmd.cpp)
+        sys.path.insert(0, os.path.join(WORKSPACE, "MD_CAM"))
+        import build_and_flash_md_cam as cam
+        cam.BIN_PATH = BIN_FILE
+        cam.flash_serial(args.serial)
         return
 
     # 2. Select receiver serial port if monitoring is enabled

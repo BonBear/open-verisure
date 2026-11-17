@@ -113,7 +113,7 @@ Direct multimeter continuity measurements between the J2 header and the CC1110 /
 ### 4.2 Flashing via ESP32 CC-Flasher
 The target is flashed using an ESP32 running CC-Debugger firmware reachable over Wi-Fi (`http://cc.local` or `http://192.168.0.80`). 
 
-A fully automated Python script (`build_and_flash.py` / `flash_cc1110.py`) handles the workflow:
+A fully automated Python script (`VerisureDoorSensor/build_and_flash.py`) handles the workflow:
 1. Compiles the C source with **SDCC** (`sdcc -mmcs51 --model-small`).
 2. Converts the Intel Hex output to binary using `makebin -p`.
 3. Posts the binary to `http://cc.local/upload` and commands `POST /flash_cc?file=main.bin`.
