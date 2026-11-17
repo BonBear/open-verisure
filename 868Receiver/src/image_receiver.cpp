@@ -11,23 +11,21 @@
 #include "downlink.h"
 
 /* --------------------------- JPEG chunks (type 0x82) ---------------------------
- * Chunk n carries bytes 40n .. 40n+len-1 of the JPEG (40-byte chunks in 56-byte packets; the
- * 8-byte chunk size is from the old 24-byte type 0x80, which crypto.cpp no longer accepts), the last one shorter. Chunks are placed by number, so a lost packet only leaves an 8-byte
+ * Chunk n carries bytes 40n .. 40n+len-1 of the JPEG (40-byte chunks in 56-byte packets), the
+ * last one shorter. Chunks are placed by number, so a lost packet only leaves an 8-byte
  * hole (zeros); the sender puts a restart marker after every MCU (or MCU row), so a hole
  * only damages that part. A blob is finished by its last chunk, or by the first chunk of
  * the next blob. Full 320x240 pictures (COM id) become the base that later delta blobs
  * (only the changed MCUs, see jpeg_splice.h) are spliced into; the current picture is
  * published on MQTT and served on /api/camera.jpg. Pictures wider than 320 (640x480) are
  * kept apart for /api/camera_large.jpg. */
-#define JPEG_CHUNK 8         // smallest chunk (packet type 0x80); 0x82 packets carry 40 bytes
-#define JPEG_CHUNK_MAX 40
-#define JPEG_MAX_CHUNKS (MAX_IMAGE_SIZE / JPEG_CHUNK)
+#define JPEG_CHUNK 40        // data bytes per picture packet (type 0x82/0x83)
+#define JPEG_MAX_CHUNKS ((MAX_IMAGE_SIZE + JPEG_CHUNK - 1) / JPEG_CHUNK)
 #define JPEG_QUIET_MS 5000   // the camera sends chunks back to back: a pause this long ends a blob
 
 static uint8_t* s_imgBuf = nullptr;          // picture being received
 static uint8_t* s_jpg = nullptr;             // last finished picture
-static uint8_t s_have[JPEG_MAX_CHUNKS / 8];  // bit per chunk received
-static uint8_t s_chunkSize = JPEG_CHUNK;     // bytes per chunk of the blob being received
+static uint8_t s_have[(JPEG_MAX_CHUNKS + 7) / 8];  // bit per chunk received
 static size_t s_imgEnd = 0;                  // bytes up to the highest chunk seen
 static uint16_t s_haveCount = 0;
 static int32_t s_lastIdx = -1;
@@ -60,7 +58,7 @@ static unsigned long s_rsStart;
 static size_t s_rsLen;               // data length known so far (without an added EOI)
 static bool s_rsEndSeen;
 static uint16_t s_rsChunks;          // chunks of the data known so far
-static uint8_t s_rsHave[JPEG_MAX_CHUNKS / 8];
+static uint8_t s_rsHave[(JPEG_MAX_CHUNKS + 7) / 8];
 static uint8_t s_rsRounds;
 static uint16_t s_rsReqEnd;          // last chunk of the current request
 static unsigned long s_rsTime;
@@ -145,7 +143,6 @@ static void rsRequestNext(void) {
         s_rsActive = false;
         if (s_lastIdx >= 0) return;      // a new picture is coming in (cannot happen: it cancels)
         memcpy(s_imgBuf, s_rsImg, s_rsLen);
-        s_chunkSize = JPEG_CHUNK_MAX;
         s_haveCount = s_rsChunks;
         strncpy(s_activeDeviceId, s_rsDevice, 9);
         s_noResend = true;
@@ -172,8 +169,8 @@ static void rsRequestNext(void) {
 void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen, bool isLast,
                                 const uint8_t* data) {
     if (!s_rsActive || !deviceId || !data || strcmp(deviceId, s_rsDevice) != 0 || chunkLen == 0 ||
-        chunkLen > JPEG_CHUNK_MAX || chunkIdx >= JPEG_MAX_CHUNKS) return;
-    size_t off = (size_t)chunkIdx * JPEG_CHUNK_MAX;
+        chunkLen > JPEG_CHUNK || chunkIdx >= JPEG_MAX_CHUNKS) return;
+    size_t off = (size_t)chunkIdx * JPEG_CHUNK;
     if (off + chunkLen > MAX_IMAGE_SIZE) return;
     memcpy(s_rsImg + off, data, chunkLen);
     s_rsHave[chunkIdx >> 3] |= (uint8_t)(1 << (chunkIdx & 7));
@@ -199,7 +196,7 @@ static void jpegFinish(size_t len, bool endSeen) {
         jpegReset();
         return;
     }
-    uint16_t chunks = (len + s_chunkSize - 1) / s_chunkSize;
+    uint16_t chunks = (len + JPEG_CHUNK - 1) / JPEG_CHUNK;
     uint16_t missing = chunks > s_haveCount ? chunks - s_haveCount : 0;
     const char* endNote = endSeen ? "" : " (end lost)";
     size_t dataLen = len;
@@ -265,10 +262,10 @@ static void jpegFinish(size_t len, bool endSeen) {
                   (unsigned int)len, w, jpegCommentId(s_imgBuf, len), missing, chunks, soi ? "" : " (no SOI)", endNote);
     if (!mqttPublishCameraImage(s_activeDeviceId, s_imgBuf, len))
         Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
-    if (!s_noResend && s_chunkSize == JPEG_CHUNK_MAX && (missing || !endSeen)) {
+    if (!s_noResend && (missing || !endSeen)) {
         if (!s_rsImg) s_rsImg = allocBig(MAX_IMAGE_SIZE);
     }
-    if (s_rsImg && !s_noResend && s_chunkSize == JPEG_CHUNK_MAX && (missing || !endSeen)) {
+    if (s_rsImg && !s_noResend && (missing || !endSeen)) {
         s_rsActive = true;
         strncpy(s_rsDevice, s_activeDeviceId, 9);
         s_rsDevice[9] = '\0';
@@ -276,7 +273,7 @@ static void jpegFinish(size_t len, bool endSeen) {
         s_rsStart = millis();
         s_rsLen = dataLen;
         s_rsEndSeen = endSeen;
-        s_rsChunks = (dataLen + JPEG_CHUNK_MAX - 1) / JPEG_CHUNK_MAX;
+        s_rsChunks = (dataLen + JPEG_CHUNK - 1) / JPEG_CHUNK;
         memcpy(s_rsHave, s_have, sizeof(s_rsHave));
         s_rsRounds = 0;
         rsRequestNext();
@@ -302,12 +299,11 @@ void imageReceiverInit(void) {
 }
 
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
-                               bool isFirst, bool isLast, const uint8_t* data, uint8_t chunkSize) {
-    if (!deviceId || !data || chunkSize == 0 || chunkSize > JPEG_CHUNK_MAX || chunkLen == 0 ||
-        chunkLen > chunkSize || chunkIdx >= JPEG_MAX_CHUNKS ||
-        (size_t)chunkIdx * chunkSize + chunkLen > MAX_IMAGE_SIZE) return;
+                               bool isFirst, bool isLast, const uint8_t* data) {
+    if (!deviceId || !data || chunkLen == 0 || chunkLen > JPEG_CHUNK || chunkIdx >= JPEG_MAX_CHUNKS ||
+        (size_t)chunkIdx * JPEG_CHUNK + chunkLen > MAX_IMAGE_SIZE) return;
     if (s_rsActive) s_rsActive = false;   // a new picture: the stored one may change (deltas)
-    if (s_dropEvery && chunkSize == JPEG_CHUNK_MAX && ++s_dropCount % s_dropEvery == 0) return;   // test
+    if (s_dropEvery && ++s_dropCount % s_dropEvery == 0) return;   // test
     if (!s_imgBuf) {
         s_imgBuf = allocBig(MAX_IMAGE_SIZE);
         s_jpg = allocBig(MAX_IMAGE_SIZE);
@@ -321,22 +317,20 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
     bool otherDevice = strcmp(s_activeDeviceId, deviceId) != 0;
     bool stale = s_lastIdx >= 0 && now - s_lastChunkTime > 15000;
     bool wrapped = s_lastIdx >= 0 && (int32_t)chunkIdx < s_lastIdx;   // next picture, first chunk lost
-    bool resized = s_lastIdx >= 0 && chunkSize != s_chunkSize;     // other packet type: other blob
     if (otherDevice || stale) {
         jpegReset();
-    } else if ((isFirst || wrapped || resized) && s_lastIdx >= 0) {
+    } else if ((isFirst || wrapped) && s_lastIdx >= 0) {
         s_noResend = true;              // the camera's buffer already holds the next picture
         jpegFinish(s_imgEnd, false);    // previous picture lost its last chunk
         s_noResend = false;
     }
-    s_chunkSize = chunkSize;
     if (otherDevice) {
         strncpy(s_activeDeviceId, deviceId, 9);
         s_activeDeviceId[9] = '\0';
     }
     s_lastChunkTime = now;
 
-    size_t off = (size_t)chunkIdx * chunkSize;
+    size_t off = (size_t)chunkIdx * JPEG_CHUNK;
     memcpy(s_imgBuf + off, data, chunkLen);
     uint8_t bit = 1 << (chunkIdx & 7);
     if (!(s_have[chunkIdx >> 3] & bit)) {

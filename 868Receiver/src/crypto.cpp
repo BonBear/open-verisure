@@ -212,7 +212,7 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
     if (resent)       // a chunk resent on request: patched into the last picture
         imageReceiverProcessResend(devId, idx, len, (plain[5] & 0x40) != 0, &plain[6]);
     else
-        imageReceiverProcessChunk(devId, idx, len, (plain[5] & 0x80) != 0, (plain[5] & 0x40) != 0, &plain[6], 40);
+        imageReceiverProcessChunk(devId, idx, len, (plain[5] & 0x80) != 0, (plain[5] & 0x40) != 0, &plain[6]);
     return true;
 }
 
