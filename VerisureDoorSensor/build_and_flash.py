@@ -407,7 +407,7 @@ def parse_arguments():
         epilog=__doc__
     )
     parser.add_argument("--port", "-p", default=None,
-                        help="Gateway receiver serial port (e.g. COM9). If omitted, interactive selector is shown.")
+                        help="Gateway receiver serial port (e.g. COM9, /dev/ttyACM0 on Linux). If omitted, interactive selector is shown.")
     parser.add_argument("--host", default=DEFAULT_CC_HOST,
                         help=f"ESP_CC_Flasher HTTP host (default: {DEFAULT_CC_HOST}).")
     parser.add_argument("--compile-only", "-c", action="store_true",
@@ -419,7 +419,7 @@ def parse_arguments():
     parser.add_argument("--wait-contact", "-w", action="store_true",
                         help="Wait in real-time until physical electrical contact with CC1110 is detected, then flash instantly.")
     parser.add_argument("--serial", default=None,
-                        help="Flash over the flasher's USB serial port instead of Wi-Fi (e.g. COM12); no monitor.")
+                        help="Flash over the flasher's USB serial port instead of Wi-Fi (e.g. COM12, /dev/ttyUSB0 on Linux); no monitor.")
     parser.add_argument("--gateway", default=GATEWAY_HTTP,
                         help=f"Gateway HTTP address for the counter seed (default: {GATEWAY_HTTP}, env GATEWAY_HTTP).")
     parser.add_argument("--no-seed", action="store_true",

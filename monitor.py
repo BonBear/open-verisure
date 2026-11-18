@@ -39,7 +39,7 @@ def parse_arguments():
         epilog=__doc__
     )
     parser.add_argument("--port", "-p", default=None,
-                        help="Serial COM port (e.g. COM9). If omitted, interactive selector is shown.")
+                        help="Serial COM port (e.g. COM9, /dev/ttyACM0 on Linux). If omitted, interactive selector is shown.")
     parser.add_argument("--duration", "-d", type=int, default=None,
                         help="Monitoring duration in seconds (default: 0 = continuous until Ctrl+C).")
     parser.add_argument("--baud", "-b", type=int, default=BAUD,

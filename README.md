@@ -68,7 +68,8 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 ├── documentation/        Shared docs: protocol & crypto, CC flasher, gateway hardware, HA/MQTT
 ├── derive_key.py         Master key generation and per-device key derivation (KDF)
 ├── monitor.py            Gateway serial monitor
-├── port_selector.py      COM-port discovery used by the scripts
+├── port_selector.py      Serial port discovery used by the scripts (COMx / /dev/tty*)
+├── requirements.txt      Python packages for the scripts
 ├── TODO.md               Open work: what can be done unattended and what needs someone at the bench
 └── AGENTS.md             Roles and quality gates for the AI agents working on the project
 ```
@@ -77,10 +78,11 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 
 ## Quick start
 
-1. **Toolchains:** Python 3.8+ (`pip install pyserial requests cryptography paho-mqtt`),
-   [SDCC](https://sdcc.sourceforge.net/) for the CC1110 devices, [PlatformIO](https://platformio.org/)
-   for the gateway, and an ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)
-   to program the CC1110 boards.
+1. **Toolchains:** Python 3.8+ (`pip install -r requirements.txt`, which includes
+   [PlatformIO](https://platformio.org/) for the gateway), [SDCC](https://sdcc.sourceforge.net/) for
+   the CC1110 devices, and an ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)
+   to program the CC1110 boards. The scripts run on Windows and Linux; see
+   [Linux setup](#linux-setup).
 2. **Master key and secrets:**
    ```bash
    python derive_key.py --generate-master
@@ -94,6 +96,30 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
    [MD_CAM/README.md](MD_CAM/README.md).
 5. **Home Assistant:** devices appear under *Settings → Devices & services → MQTT* on their first
    packet (MQTT auto-discovery, no YAML).
+
+---
+
+## Linux setup
+
+The scripts and builds work on Linux as well as Windows (verified in WSL2 Ubuntu 26.04 with SDCC
+4.5 and PlatformIO 6.2 on 2026-11-18; a native Linux laptop is TODO B9):
+
+```bash
+sudo apt install sdcc python3-venv
+python3 -m venv ~/vs-venv && ~/vs-venv/bin/pip install -r requirements.txt
+source ~/vs-venv/bin/activate
+sudo usermod -aG dialout $USER     # serial port access; log out and in again
+```
+
+* Serial ports are `/dev/ttyACM0` (the gateway, ESP32-S2 native USB) and `/dev/ttyUSB0` (the
+  CP210x on the flasher) instead of `COM9`/`COM12`. The camera tests find the gateway by its USB
+  ID; the other scripts take `--port`/`--serial` or show a port list.
+* In WSL2, attach the boards from Windows with
+  [usbipd-win](https://github.com/dorssel/usbipd-win): `usbipd attach --wsl --busid <id> --auto-attach`.
+  An attached board is not available to Windows at the same time.
+* The Blackfin tools (`MD_CAM/blackfin/`) are only needed to change the camera's image program.
+  `build_ldr.py` finds `bfin-elf-gcc` through `BFIN_TOOLCHAIN` or `PATH`; the JTAG scripts are
+  written for Git Bash on Windows with the JTAG proxy in WSL.
 
 ---
 

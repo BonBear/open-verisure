@@ -3,7 +3,7 @@
 test_camera_e2e.py - End-to-end check of the MD CAM through the gateway (RF downlink, pictures,
 alarm), driven over MQTT and observed on the gateway's USB serial log.
 
-Needs: the camera powered and flashed, the gateway on USB (default COM9) and on MQTT.
+Needs: the camera powered and flashed, the gateway on USB (found by its USB ID, or --port) and on MQTT.
 The broker address, credentials and base topic are read from 868Receiver/src/secrets.h and are
 never printed. Lines on the gateway log that could show a key (32 hex digits) are masked.
 
@@ -36,6 +36,8 @@ import time
 
 import serial
 import paho.mqtt.client as mqtt
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from port_selector import GATEWAY_USB, find_usb_port
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SECRETS = os.path.join(HERE, "..", "868Receiver", "src", "secrets.h")
@@ -113,10 +115,15 @@ class GatewayLog:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
-    ap.add_argument("--port", default="COM9", help="gateway USB serial port")
+    ap.add_argument("--port", default=None,
+                    help="gateway USB serial port (default: found by USB ID, e.g. COM9 or /dev/ttyACM0)")
     ap.add_argument("--device", default="2NCEKS3T", help="camera device id")
     ap.add_argument("--gateway-restart", action="store_true", help="also test the base picture after a restart")
     args = ap.parse_args()
+    args.port = args.port or os.environ.get("RECEIVER_PORT") or find_usb_port(GATEWAY_USB)
+    if not args.port:
+        print("[-] Gateway not found on USB; pass --port")
+        return 2
 
     base = secret("DEFAULT_MQTT_TOPIC", "verisure")
     dev = args.device

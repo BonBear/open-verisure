@@ -64,7 +64,8 @@ camera's device ID in `build_and_flash_md_cam.py` (`DEVICE_ID`); the device key 
 the master key in `868Receiver/src/secrets.h` and written to `firmware/config.h` (git-ignored).
 
 ```bash
-python MD_CAM/build_and_flash_md_cam.py --serial <flasher port>
+python MD_CAM/build_and_flash_md_cam.py --serial <flasher port>   # COM12, /dev/ttyUSB0 on Linux
+python MD_CAM/build_and_flash_md_cam.py --compile-only           # build check only, never flash it
 ```
 
 The script prints the master key's check value (KCV) so it can be compared with the gateway's

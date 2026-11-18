@@ -9,7 +9,8 @@ USB chips (Espressif ESP32 native USB, Silicon Labs CP210x, WCH CH340, FTDI).
 Usage:
     # As a module:
     from port_selector import select_com_port
-    port = select_com_port(preferred_port="COM9", hint="ESP32-S2")
+    port = select_com_port(preferred_port="COM9", hint_keyword="Gateway")   # or "/dev/ttyACM0"
+    port = find_usb_port(GATEWAY_USB)                                      # by USB ID, any OS
 
     # Standalone CLI test:
     python port_selector.py
@@ -69,6 +70,21 @@ def get_device_hint(port: ListPortInfo) -> str:
 
     # Fallback to standard description
     return desc if desc else "Serial Port"
+
+
+GATEWAY_USB = (0x303A, 0x80C2)   # ESP32-S2 native USB (the gateway)
+FLASHER_USB = (0x10C4, 0xEA60)   # CP210x on the ESP32 CC flasher board
+
+
+def find_usb_port(vid_pid) -> Optional[str]:
+    """
+    Return the first serial port with this USB VID/PID, on any OS (e.g. 'COM9' on Windows,
+    '/dev/ttyACM0' on Linux), or None if none is connected.
+    """
+    for p in get_available_ports():
+        if (p.vid, p.pid) == tuple(vid_pid):
+            return p.device
+    return None
 
 
 def select_com_port(

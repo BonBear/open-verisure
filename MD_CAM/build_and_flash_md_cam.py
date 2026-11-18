@@ -200,6 +200,16 @@ def flash_serial(port: str) -> None:
 
 
 def main():
+    if "--compile-only" in sys.argv:
+        # build check only (no gateway, no flasher): counter seed 1, so never flash this build
+        if not os.path.exists(CONFIG_H):
+            mk_hex = derive_key.get_master_key_from_secrets()
+            if not mk_hex:
+                sys.exit("[-] No config.h and no master key in secrets.h")
+            derive_key.write_config_header(DEVICE_ID, derive_key.derive_device_key(bytes.fromhex(mk_hex), DEVICE_ID), CONFIG_H)
+        compile_firmware(1)
+        print("[!] --compile-only: unseeded build (counter block 1), do not flash it")
+        return
     sync_key_from_gateway()
     # a flashed build starts its packet counter above the gateway's last accepted one
     compile_firmware(counter_seed())

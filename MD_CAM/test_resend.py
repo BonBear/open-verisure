@@ -6,18 +6,31 @@ gateway log shows the resend rounds, and the last published picture of each requ
 for zero-filled holes. Credentials are read from 868Receiver/src/secrets.h and never printed.
 
     python MD_CAM/test_resend.py 7 D1 D2      # drop every 7th chunk, request D1 and D2
+    python MD_CAM/test_resend.py --port /dev/ttyACM0 7 D1
 
-Needs the camera powered and the gateway on COM9. "drop 0" is sent at the end.
+Needs the camera powered and the gateway on USB (found by its USB ID, or --port / RECEIVER_PORT).
+"drop 0" is sent at the end.
 """
 import os
 import re, sys, time, threading
 import serial
 import paho.mqtt.client as mqtt
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from port_selector import GATEWAY_USB, find_usb_port
+args = sys.argv[1:]
+port = os.environ.get("RECEIVER_PORT")
+if args[:1] == ["--port"]:
+    port, args = args[1], args[2:]
+port = port or find_usb_port(GATEWAY_USB)
+if not args:
+    sys.exit("usage: test_resend.py [--port PORT] <n> <cmd>...")
+if not port:
+    sys.exit("[-] Gateway not found on USB; pass --port or set RECEIVER_PORT")
 SECRETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "868Receiver", "src", "secrets.h")
 txt = open(SECRETS, encoding="utf-8").read()
 sec = lambda n, d="": (re.search(r'#define\s+%s\s+"([^"]*)"' % n, txt) or [None, d])[1]
 lines, images = [], []
-ser = serial.Serial("COM9", 115200, timeout=0.3)
+ser = serial.Serial(port, 115200, timeout=0.3)
 def rd():
     while True:
         l = ser.readline()
@@ -38,9 +51,9 @@ def wait(rx, t, since):
                 return i
         time.sleep(0.1)
     return None
-n = sys.argv[1]
+n = args[0]
 ser.write(f"drop {n}\n".encode()); time.sleep(1)
-for cmd in sys.argv[2:]:
+for cmd in args[1:]:
     m = len(lines); k = len(images)
     c.publish("verisure/2NCEKS3T/picture/set", cmd)
     p = wait(r"ImageReceiver\] JPEG from", 120, m)

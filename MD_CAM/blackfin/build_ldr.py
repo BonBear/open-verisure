@@ -17,9 +17,11 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOOLCHAIN = os.environ.get("BFIN_TOOLCHAIN", r"C:\Tools\adi-blackfin\elf\bin")
-GCC = os.path.join(TOOLCHAIN, "bfin-elf-gcc.exe")
-LDR = os.path.join(TOOLCHAIN, "bfin-elf-ldr.exe")
+# Windows: the ADI toolchain in C:\Tools; elsewhere BFIN_TOOLCHAIN, or bfin-elf-* on PATH.
+EXE = ".exe" if os.name == "nt" else ""
+TOOLCHAIN = os.environ.get("BFIN_TOOLCHAIN", r"C:\Tools\adi-blackfin\elf\bin" if os.name == "nt" else "")
+GCC = os.path.join(TOOLCHAIN, "bfin-elf-gcc" + EXE)
+LDR = os.path.join(TOOLCHAIN, "bfin-elf-ldr" + EXE)
 BUILD = os.path.join(HERE, "build")
 HEADER = os.path.join(HERE, "..", "firmware", "bf_ldr.h")
 
