@@ -74,10 +74,12 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
 * **Web portal** (port 80, captive portal on first start): status, Wi-Fi/MQTT/key settings, sensor
   list. API: `/api/status`, `/api/replay?id=<ID>` (a sensor's last accepted counter), `/api/radio`, `/api/scan`, `/api/save`, `/api/reboot`, `/api/reset`,
   `/api/camera.jpg` (newest 320x240 picture, colour or flash), `/api/camera_large.jpg` (640x480),
-  `/api/camera_test` (publishes a small test JPEG to MQTT).
+  `/api/camera_test?id=<ID>` (publishes a small test JPEG to MQTT).
 * **Serial console** (USB, 115200): `help`, `status`, `scan`, `alarm [on|off]`, `testspi`, `reboot`,
   `reset`, `drop <n>` (test: drop every n-th picture chunk to exercise the resend),
-  `replay reset <ID>` (forget a sensor's counter, e.g. after it was flashed without the gateway).
+  `replay reset <ID>` (forget a sensor's counter, e.g. after it was flashed without the gateway),
+  `freqoffset [n]` (CC1101 frequency correction in 1.587 kHz steps, default 0; see
+  [hardware_gateway_esp32s2.md](../documentation/hardware_gateway_esp32s2.md)).
   The master key is never printed, only its check value.
 
 ## Source files

@@ -30,6 +30,7 @@ struct GatewayConfig {
     char mqttTopic[33];     /**< Base MQTT topic prefix (default "verisure") */
     uint8_t masterKey[16];  /**< 16-byte Master AES Key for device key derivation */
     char masterKeyHex[33];  /**< Hex-encoded representation of Master Key (32 hex chars + null) */
+    int8_t freqOffset;      /**< CC1101 FSCTRL0 frequency correction, 1.587 kHz per step (0 = none) */
 };
 
 /**
@@ -75,8 +76,14 @@ public:
      * @param pass Password.
      * @param topic Base topic.
      */
-    /** @return false if the topic was rejected (the other fields are still applied). */
+    /** @return false if the topic was rejected (nothing is changed then). A null pass keeps the stored one. */
     static bool setMqtt(const char* host, uint16_t port, const char* user, const char* pass, const char* topic);
+
+    /**
+     * @brief Set the CC1101 frequency correction (FSCTRL0) in memory; save() stores it.
+     * @param steps Signed offset in 1.587 kHz steps (-128..127).
+     */
+    static void setFreqOffset(int8_t steps);
 
     /**
      * @brief Update Master AES Key from a 32-character hexadecimal string.

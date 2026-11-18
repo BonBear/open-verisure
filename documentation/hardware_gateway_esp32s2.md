@@ -66,9 +66,10 @@ flowchart LR
   other way, turns the wire into a simple dipole.
 * **Frequency offset:** this module's 26 MHz crystal runs ~69 ppm low, so the sensors arrived
   ~+60 kHz off channel, beyond the frequency loop's +-50 kHz; weak packets then failed their CRC.
-  `RX_FREQ_OFFSET` in `868Receiver/src/main.cpp` (FSCTRL0, 1.587 kHz per step, RX and TX) corrects
-  it. Each received packet logs its `Freq. error`; with another module, adjust the offset until it
-  stays near 0.
+  A frequency offset of 38 (FSCTRL0, 1.587 kHz per step, RX and TX) corrects it. The offset is a
+  gateway setting (default 0, stored in NVS): `freqoffset <n>` on the serial console, or
+  `DEFAULT_FREQ_OFFSET` in `secrets.h`. Each received packet logs its `Freq. error`; with another
+  module, adjust the offset until it stays near 0.
 * **Result at the camera's mounting place, on batteries:** every poll received; 320x240 and
   640x480 pictures complete with no missing chunks; with every 7th chunk dropped on purpose the
   resend completed them in 8 and 18 rounds (1.2 s and 2.8 s).

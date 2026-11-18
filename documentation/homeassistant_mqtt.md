@@ -131,8 +131,8 @@ The gateway hosts an embedded web server on port 80 (`http://<gateway-ip>`). It 
 * **`GET /api/replay?id=<ID>`:** The last accepted persistent packet counter of a sensor (`{"id","known","counter"}`); the door sensor's build script starts a reflashed sensor above it.
 * **`GET /api/radio`:** CC1101 chip version, part number and MARCSTATE (radio check).
 * **`GET /api/camera.jpg`, `GET /api/camera_large.jpg`:** The last camera picture (320x240) and the last 640x480 picture; 404 until one has arrived.
-* **`GET|POST /api/camera_test?id=<ID>`:** Publishes a tiny test JPEG on the camera's MQTT image topic (checks the Home Assistant camera entity without the camera).
-* **`GET /api/scan`:** Performs an asynchronous Wi-Fi scan and returns available networks with RSSI and encryption flags.
-* **`POST /api/save`:** Persists Wi-Fi SSID, password, MQTT broker host, port, credentials, topic prefix, and Master Key into ESP32-S2 NVS (Non-Volatile Storage).
+* **`GET|POST /api/camera_test?id=<ID>`:** (`id` required) Publishes a tiny test JPEG on the camera's MQTT image topic (checks the Home Assistant camera entity without the camera).
+* **`GET /api/scan`:** Scans for Wi-Fi networks (blocks the gateway for ~2-3 s, used from the setup page) and returns available networks with RSSI and encryption flags.
+* **`POST /api/save`:** Persists Wi-Fi SSID, password, MQTT broker host, port, credentials, topic prefix, and Master Key into ESP32-S2 NVS (Non-Volatile Storage). An empty password or key field keeps the saved value (they are never sent to the browser); a new SSID with an empty password is an open network.
 * **`POST /api/reboot`:** Triggers a software restart of the gateway.
 * **`POST /api/reset`:** Resets NVS parameters to compiled defaults.

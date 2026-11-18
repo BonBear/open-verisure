@@ -41,6 +41,13 @@
 #define DEFAULT_MQTT_TOPIC "verisure"
 #endif
 
+// CC1101 frequency correction (FSCTRL0 steps of 1.587 kHz). 0 for a module with a normal
+// crystal; set it in secrets.h or with the CLI command "freqoffset <n>" when the received
+// packets log a large "Freq. error" (see documentation/hardware_gateway_esp32s2.md).
+#ifndef DEFAULT_FREQ_OFFSET
+#define DEFAULT_FREQ_OFFSET 0
+#endif
+
 #if defined(MASTER_KEY_HEX)
 #define ACTIVE_MASTER_KEY_HEX MASTER_KEY_HEX
 #elif defined(MASTER_AES_KEY_HEX)
@@ -130,7 +137,10 @@ void ConfigManager::begin() {
         s_config.mqttTopic[sizeof(s_config.mqttTopic) - 1] = '\0';
     }
 
-    // 3. Master Key (16 bytes)
+    // 3. Radio frequency correction
+    s_config.freqOffset = s_prefs.getChar("freq_offset", DEFAULT_FREQ_OFFSET);
+
+    // 4. Master Key (16 bytes)
     // If the firmware was recompiled with a new MASTER_KEY_HEX in secrets.h, automatically adopt it!
     String lastCompiledKey = s_prefs.getString("compiled_key", "");
     String currentCompiledKey = String(ACTIVE_MASTER_KEY_HEX);
@@ -156,6 +166,7 @@ void ConfigManager::begin() {
     Serial.printf("         MQTT Broker : %s:%d (Topic: %s)\n",
                   s_config.mqttHost[0] ? s_config.mqttHost : "(not configured)",
                   s_config.mqttPort, s_config.mqttTopic);
+    Serial.printf("         Freq. offset: %d (FSCTRL0, x 1.587 kHz)\n", s_config.freqOffset);
     char kcv[7];
     cryptoKeyCheckValue(s_config.masterKey, kcv);
     Serial.printf("         Master Key  : set (check value %s)\n", kcv);   // never print the key
@@ -174,6 +185,7 @@ bool ConfigManager::save() {
     s_prefs.putString("mqtt_pass", s_config.mqttPass);
     s_prefs.putString("mqtt_topic", s_config.mqttTopic);
     s_prefs.putBytes("master_key", s_config.masterKey, 16);
+    s_prefs.putChar("freq_offset", s_config.freqOffset);
     Serial.println("[Config] Configuration saved to NVS!");
     return true;
 }
@@ -187,6 +199,7 @@ void ConfigManager::resetToDefaults() {
     strncpy(s_config.mqttUser, DEFAULT_MQTT_USER, sizeof(s_config.mqttUser) - 1);
     strncpy(s_config.mqttPass, DEFAULT_MQTT_PASS, sizeof(s_config.mqttPass) - 1);
     strncpy(s_config.mqttTopic, DEFAULT_MQTT_TOPIC, sizeof(s_config.mqttTopic) - 1);
+    s_config.freqOffset = DEFAULT_FREQ_OFFSET;
     hexToBytes(ACTIVE_MASTER_KEY_HEX, s_config.masterKey, 16);
     bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
     s_prefs.putString("compiled_key", ACTIVE_MASTER_KEY_HEX);
@@ -226,6 +239,10 @@ bool ConfigManager::setMqtt(const char* host, uint16_t port, const char* user, c
     }
     if (topic && topic[0]) strcpy(s_config.mqttTopic, topic);
     return true;
+}
+
+void ConfigManager::setFreqOffset(int8_t steps) {
+    s_config.freqOffset = steps;
 }
 
 bool ConfigManager::setMasterKeyHex(const char* hexStr) {

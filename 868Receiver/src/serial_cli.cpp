@@ -17,6 +17,8 @@
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 #include "esp_wifi.h"
 
+void initRadioRegisters();   // main.cpp: the full CC1101 register set, then RX
+
 static char s_cmdBuf[128];
 static int s_cmdLen = 0;
 
@@ -36,6 +38,7 @@ static void printHelp() {
     Serial.println("  alarm [on|off]             - Show or set the alarm state sent to cameras");
     Serial.println("  drop <n>                   - Test: drop every n-th camera picture chunk (0 = off)");
     Serial.println("  replay reset <ID>          - Forget a sensor's replay counter (after reflashing it)");
+    Serial.println("  freqoffset [n]             - Show or set the CC1101 frequency correction (FSCTRL0 steps)");
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
@@ -109,6 +112,9 @@ static void runTestSpi() {
     } else {
         Serial.println("[-] ERROR: CC1101 did not respond correctly over SPI.\n");
     }
+    // SRES put every register back to its reset value (433 MHz, IDLE): restore the radio
+    initRadioRegisters();
+    Serial.println("[+] Radio registers restored, back in RX.\n");
 }
 
 static void printStatus() {
@@ -124,6 +130,7 @@ static void printStatus() {
     char kcv[7];
     cryptoKeyCheckValue(cfg.masterKey, kcv);
     Serial.printf("  Master Key   : set (check value %s)\n", kcv);   // never print the key
+    Serial.printf("  Freq. offset : %d (FSCTRL0, x 1.587 kHz)\n", cfg.freqOffset);
     Serial.printf("  Sensors      : %d registered\n", sensorRegistryGetCount());
 
     int count = sensorRegistryGetCount();
@@ -258,6 +265,21 @@ static void processCommand(char* cmd) {
         Serial.printf("[CLI] Replay state for \"%s\" %s\n", id, had ? "cleared" : "not found");
     } else if (strcmp(cmd, "alarm") == 0) {
         Serial.printf("[CLI] Alarm is %s\n", downlinkArmed() ? "ARMED" : "DISARMED");
+    } else if (strcmp(cmd, "freqoffset") == 0 || strncmp(cmd, "freqoffset ", 11) == 0) {
+        if (cmd[10] == '\0') {
+            Serial.printf("[CLI] Frequency offset: %d (x 1.587 kHz)\n", ConfigManager::get().freqOffset);
+        } else {
+            char* end;
+            long n = strtol(cmd + 11, &end, 10);
+            if (end == cmd + 11 || *end != '\0' || n < -128 || n > 127) {
+                Serial.println("[CLI] Error: freqoffset takes a number from -128 to 127.");
+            } else {
+                ConfigManager::setFreqOffset((int8_t)n);
+                ConfigManager::save();
+                initRadioRegisters();
+                Serial.printf("[CLI] Frequency offset set to %ld (%+.1f kHz) and saved.\n", n, n * 1.587);
+            }
+        }
     } else if (strcmp(cmd, "reset") == 0) {
         ConfigManager::resetToDefaults();
         Serial.println("[CLI] Reset all settings to factory defaults.");

@@ -287,18 +287,6 @@ static void checkMqttConnection() {
         // Publish Gateway Online Status (Retained)
         s_mqttClient.publish(statusTopic.c_str(), "online", true);
 
-        // Clean up the accidental test ID 2NCEKT3X (Board #2's ID used during initial test) from HA discovery
-        const char* staleKeys[] = {"contact", "vibration", "motion", "button"};
-        for (int k = 0; k < 4; k++) {
-            String t = "homeassistant/binary_sensor/verisure_2NCEKT3X_" + String(staleKeys[k]) + "/config";
-            s_mqttClient.publish(t.c_str(), "", true);
-        }
-        const char* staleSensors[] = {"battery", "voltage", "rssi"};
-        for (int k = 0; k < 3; k++) {
-            String t = "homeassistant/sensor/verisure_2NCEKT3X_" + String(staleSensors[k]) + "/config";
-            s_mqttClient.publish(t.c_str(), "", true);
-        }
-
         // Immediately publish gateway discovery and announce all known sensors
         publishGatewayDiscovery(cfg.mqttTopic);
         publishAlarmDiscovery(cfg.mqttTopic);

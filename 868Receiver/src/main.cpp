@@ -147,11 +147,6 @@ static void radioTransmit(const uint8_t* pkt) {
  *        picture command. Called right after the poll was authenticated, because the
  *        camera only listens for ~0.1 s.
  */
-/** Gateway frequency correction in FSCTRL0 steps of 1.587 kHz (see initRadioRegisters). */
-#ifndef RX_FREQ_OFFSET
-#define RX_FREQ_OFFSET 38
-#endif
-
 static void answerCameraPoll(const VerisureTelemetry& t) {
     uint8_t key[16], plain[16], pkt[VERISURE_PACKET_LEN];
     uint8_t state = t.rawP1;             // plain[13] of the poll
@@ -194,12 +189,13 @@ void initRadioRegisters() {
 
     // Intermediate Frequency (IF)
     ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCTRL1,  0x06);
-    // Frequency offset (FSCTRL0, f_xosc / 2^14 = 1.587 kHz per step, RX and TX): this CC1101
-    // module's crystal runs low, the sensors arrived ~+60 kHz above the channel (FREQEST, logged
-    // as "Freq. error" per packet). That is beyond the frequency loop's +-50 kHz (FOCCFG
-    // FOC_LIMIT BW/4), so weak packets failed their CRC (2026-11-17). Re-measure for another
-    // module: the logged error should stay near 0.
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCTRL0,  (byte)RX_FREQ_OFFSET);
+    // Frequency offset (FSCTRL0, f_xosc / 2^14 = 1.587 kHz per step, RX and TX), stored in NVS
+    // (CLI "freqoffset <n>", default DEFAULT_FREQ_OFFSET = 0). A module whose crystal runs low
+    // receives the sensors above the channel (FREQEST, logged as "Freq. error" per packet); the
+    // first test module needed 38 (~+60 kHz, beyond the frequency loop's +-50 kHz FOCCFG
+    // FOC_LIMIT BW/4, so weak packets failed their CRC, 2026-11-17). The logged error should
+    // stay near 0.
+    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCTRL0,  (byte)ConfigManager::get().freqOffset);
 
     // RF Frequency: 868.950 MHz (with 26.000 MHz crystal on standard CC1101 modules)
     // Formula: FREQ = (868.950 * 2^16) / 26.0 = 2190289 = 0x216BD1

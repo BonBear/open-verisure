@@ -161,7 +161,7 @@ button.danger:hover { background: #b91c1c; }
       <div class="form-group full">
         <label>Wi-Fi Password</label>
         <div class="input-row">
-          <input type="password" id="wifi_pass" name="wifi_pass" placeholder="Leave blank if open network">
+          <input type="password" id="wifi_pass" name="wifi_pass" placeholder="Leave blank to keep the saved one (or for an open network)">
           <button type="button" class="secondary" onclick="togglePass('wifi_pass')">&#128065;</button>
         </div>
       </div>
@@ -184,7 +184,7 @@ button.danger:hover { background: #b91c1c; }
       <div class="form-group">
         <label>MQTT Password</label>
         <div class="input-row">
-          <input type="password" id="mqtt_pass" name="mqtt_pass" placeholder="Optional">
+          <input type="password" id="mqtt_pass" name="mqtt_pass" placeholder="Optional; leave blank to keep the saved one">
           <button type="button" class="secondary" onclick="togglePass('mqtt_pass')">&#128065;</button>
         </div>
       </div>
@@ -311,14 +311,24 @@ async function scanWifi() {
       box.innerHTML = '<div style="padding:10px; color:var(--text-muted); font-size:13px;">No networks found.</div>';
       return;
     }
-    let html = '';
+    // SSIDs come from anyone nearby: insert them as text, never as HTML
+    box.innerHTML = '';
     list.forEach(n => {
-      html += `<div class="scan-item" onclick="selectWifi('${n.ssid.replace(/'/g, "\\'")}')">
-        <span><strong>${n.ssid}</strong> ${n.secure ? '&#128274;' : ''}</span>
-        <span style="color:var(--text-muted);">${n.rssi} dBm</span>
-      </div>`;
+      const item = document.createElement('div');
+      item.className = 'scan-item';
+      item.addEventListener('click', () => selectWifi(n.ssid));
+      const name = document.createElement('span');
+      const strong = document.createElement('strong');
+      strong.textContent = n.ssid;
+      name.appendChild(strong);
+      if (n.secure) name.insertAdjacentHTML('beforeend', ' &#128274;');
+      const rssi = document.createElement('span');
+      rssi.style.color = 'var(--text-muted)';
+      rssi.textContent = n.rssi + ' dBm';
+      item.appendChild(name);
+      item.appendChild(rssi);
+      box.appendChild(item);
     });
-    box.innerHTML = html;
   } catch (err) {
     box.innerHTML = '<div style="padding:10px; color:var(--danger); font-size:13px;">Scan failed.</div>';
   }
@@ -390,6 +400,18 @@ static bool isCaptivePortalRequest() {
     return false;
 }
 
+static String jsonEscape(const String& in) {
+    String out;
+    out.reserve(in.length() + 8);
+    for (unsigned i = 0; i < in.length(); i++) {
+        char c = in[i];
+        if (c == '"' || c == '\\') { out += '\\'; out += c; }
+        else if ((unsigned char)c < 0x20) { char b[7]; snprintf(b, sizeof(b), "\\u%04x", c); out += b; }
+        else out += c;
+    }
+    return out;
+}
+
 static void handleRoot() {
     if (isCaptivePortalRequest()) {
         s_server.sendHeader("Location", "http://192.168.4.1/", true);
@@ -438,11 +460,11 @@ static void handleApiStatus() {
     json += "\"status\":\"" + mqttGetStatusString() + "\"},";
 
     json += "\"config\":{";
-    json += "\"wifi_ssid\":\"" + String(cfg.wifiSsid) + "\",";
-    json += "\"mqtt_host\":\"" + String(cfg.mqttHost) + "\",";
+    json += "\"wifi_ssid\":\"" + jsonEscape(cfg.wifiSsid) + "\",";
+    json += "\"mqtt_host\":\"" + jsonEscape(cfg.mqttHost) + "\",";
     json += "\"mqtt_port\":" + String(cfg.mqttPort) + ",";
-    json += "\"mqtt_user\":\"" + String(cfg.mqttUser) + "\",";
-    json += "\"mqtt_topic\":\"" + String(cfg.mqttTopic) + "\",";
+    json += "\"mqtt_user\":\"" + jsonEscape(cfg.mqttUser) + "\",";
+    json += "\"mqtt_topic\":\"" + jsonEscape(cfg.mqttTopic) + "\",";
     // The master key is never sent back to the browser, only whether one is set.
     json += "\"master_key_set\":" + String(cfg.masterKeyHex[0] ? "true" : "false") + "},";
 
@@ -499,7 +521,7 @@ static void handleApiScan() {
     for (int i = 0; i < n; i++) {
         if (i > 0) json += ",";
         json += "{";
-        json += "\"ssid\":\"" + WiFi.SSID(i) + "\",";
+        json += "\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\",";
         json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
         json += "\"secure\":" + String((WiFi.encryptionType(i) != WIFI_AUTH_OPEN) ? "true" : "false");
         json += "}";
@@ -553,12 +575,16 @@ static void handleApiSave() {
     String key  = extractJsonString(body, "master_key");
 
     // MQTT first: a rejected topic must leave every setting untouched
-    if (!ConfigManager::setMqtt(host.c_str(), (uint16_t)port, user.c_str(), mpass.c_str(), topic.length() ? topic.c_str() : "verisure")) {
+    // The passwords are never sent to the browser, so an empty field means "keep the saved one"
+    // (a null pass keeps it). Wi-Fi: a new SSID with an empty field is an open network.
+    if (!ConfigManager::setMqtt(host.c_str(), (uint16_t)port, user.c_str(), mpass.length() ? mpass.c_str() : nullptr,
+                                topic.length() ? topic.c_str() : "verisure")) {
         s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid MQTT topic (allowed: A-Z a-z 0-9 _ - and single '/')\"}");
         return;
     }
     if (ssid.length() > 0) {
-        ConfigManager::setWifi(ssid.c_str(), pass.c_str());
+        bool sameSsid = ssid == ConfigManager::get().wifiSsid;
+        ConfigManager::setWifi(ssid.c_str(), (pass.length() || !sameSsid) ? pass.c_str() : nullptr);
     }
 
     if (key.length() == 32) {
@@ -624,10 +650,11 @@ static void handleApiCameraLargeJpg() {
 }
 
 static void handleApiCameraTest() {
-    String devId = "2NCEKS3T";
-    if (s_server.hasArg("id")) {
-        devId = s_server.arg("id");
+    if (!s_server.hasArg("id")) {
+        s_server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing id (the camera's 8-character ID)\"}");
+        return;
     }
+    String devId = s_server.arg("id");
     // the ID becomes an MQTT topic level: 8 alphanumeric characters only
     bool idOk = devId.length() == 8;
     for (unsigned i = 0; idOk && i < devId.length(); i++) idOk = isalnum((unsigned char)devId[i]);
