@@ -77,26 +77,62 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 
 ---
 
-## Quick start
+## What you need
 
-1. **Toolchains:** Python 3.8+ (`pip install -r requirements.txt`, which includes
-   [PlatformIO](https://platformio.org/) for the gateway), [SDCC](https://sdcc.sourceforge.net/) for
-   the CC1110 devices, and an ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)
-   to program the CC1110 boards. The scripts run on Windows and Linux; see
-   [Linux setup](#linux-setup).
-2. **Master key and secrets:**
+| Part | Used for | Notes |
+| :--- | :--- | :--- |
+| WEMOS LOLIN S2 Mini (ESP32-S2) | Gateway | USB-C, native USB serial |
+| CC1101 868 MHz module | Gateway radio | Wired to GPIO 3/5/7/9 ([868Receiver/README.md](868Receiver/README.md)); a straight ~8 cm wire antenna works much better than the helical spring |
+| ESP32 DevKit (or ESP32-C3 Super Mini) | ESP_CC_Flasher: programs the CC1110 in every sensor | Needed once per sensor; jumper wires or pogo pins for the debug header |
+| FT232H USB board | Camera only: the Blackfin's boot flash over JTAG (header J5) | Needed once per camera |
+| Home Assistant with an MQTT broker (Mosquitto) | Entities, automations | MQTT discovery, no YAML |
+| Verisure GW-MC-SHOCK / GW MD CAM2 | The devices | Their 8-character ID is on the label |
+
+Software: Python 3.8+ (`pip install -r requirements.txt`, which includes
+[PlatformIO](https://platformio.org/)), [SDCC](https://sdcc.sourceforge.net/) 4.5 or newer for the
+CC1110, and for the camera the ADI Blackfin GCC toolchain. The scripts run on Windows and Linux
+([Linux setup](#linux-setup)).
+
+## Setup, step by step
+
+1. **Master key.** One 128-bit key ties the gateway to every device (each device key is derived
+   from it and the device's ID). Generate it and keep it secret:
    ```bash
    python derive_key.py --generate-master
    cp 868Receiver/src/secrets.h.example 868Receiver/src/secrets.h
    ```
-   Put the master key, Wi-Fi and MQTT settings in `868Receiver/src/secrets.h` (git-ignored).
-   Every device key is derived from the master key, so generate it before building any device.
-3. **Gateway:** `pio run -d 868Receiver -t upload`, then open `http://<gateway-ip>`.
-   Details: [868Receiver/README.md](868Receiver/README.md).
-4. **Devices:** follow [VerisureDoorSensor/README.md](VerisureDoorSensor/README.md) and
+   Put the key in `868Receiver/src/secrets.h` as `MASTER_KEY_HEX` (git-ignored), and the Wi-Fi
+   and MQTT settings if you want them built in.
+2. **Gateway.** Wire the CC1101 to the S2 Mini ([868Receiver/README.md](868Receiver/README.md)) and
+   flash it:
+   ```bash
+   pio run -d 868Receiver -t upload
+   ```
+   Without Wi-Fi settings it opens the access point `Verisure-Gateway` (password `12345678`); set Wi-Fi, MQTT and (if
+   not built in) the master key on its page, `http://192.168.4.1`. Afterwards the page is at
+   `http://verisure-gateway.local`. The serial console (`help`) shows the status and the key's
+   check value.
+3. **Flasher.** Build [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher) for the ESP32
+   and wire it to the device's debug header
+   ([documentation/hardware_cc_flasher.md](documentation/hardware_cc_flasher.md)). The scripts use
+   it over Wi-Fi (`http://cc.local`, default) or over its USB serial port (`--serial`), which needs
+   the serial command firmware (`serial_cmd.cpp`; see TODO "ESP_CC_Flasher changes").
+   **Never power the camera from the flasher's 3V3.**
+4. **First door sensor.** With the ID from its label (the key comes from `secrets.h`):
+   ```bash
+   python VerisureDoorSensor/build_and_flash.py --id "2JHL 2MVN"                 # over Wi-Fi
+   python VerisureDoorSensor/build_and_flash.py --id "2JHL 2MVN" --serial COM12  # over USB serial
+   ```
+   The script asks the gateway for the sensor's last packet counter before flashing; if
+   `verisure-gateway.local` does not resolve, add `--gateway http://<gateway-ip>`.
+   Details: [VerisureDoorSensor/README.md](VerisureDoorSensor/README.md).
+5. **Camera (optional).** A factory camera needs its Blackfin boot flash written once over JTAG
+   and then its CC1110 flashed like the door sensor (`MD_CAM/build_and_flash_md_cam.py --id ...`):
    [MD_CAM/README.md](MD_CAM/README.md).
-5. **Home Assistant:** devices appear under *Settings → Devices & services → MQTT* on their first
-   packet (MQTT auto-discovery, no YAML).
+6. **Home Assistant.** Each device appears under *Settings → Devices & services → MQTT* with its
+   first packet (a door sensor: open/close it or press the tamper switch; the camera polls every
+   ~2 minutes). Arm and disarm the cameras with `verisure/alarm/set` (`ON`/`OFF`):
+   [documentation/homeassistant_mqtt.md](documentation/homeassistant_mqtt.md).
 
 ---
 

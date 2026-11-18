@@ -55,9 +55,9 @@ The pins are set in the flasher firmware (`ESP_CC_Flasher/src/main.h`: ESP32 Dev
 
 ## Build and flash
 
-Requires SDCC, Python 3 (`pip install pyserial requests cryptography`) and the ESP_CC_Flasher on
+Requires SDCC, Python 3 (`pip install -r requirements.txt`) and the ESP_CC_Flasher on
 your network (default `http://cc.local`). Generate the master key and set up the gateway first
-(see the [main README](../README.md#quick-start)).
+(see the [main README](../README.md#setup-step-by-step)).
 
 1. **Derive the device key** from the 8-character ID on the sensor's label:
    ```bash
