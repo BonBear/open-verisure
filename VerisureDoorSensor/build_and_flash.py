@@ -34,6 +34,9 @@ Usage Examples:
 
     # 4. Flash without opening receiver monitor:
     python VerisureDoorSensor/build_and_flash.py --skip-monitor
+
+    # 5. A new sensor: write config.h for its ID (label) first, flash over USB serial:
+    python VerisureDoorSensor/build_and_flash.py --id "2JHL 2MVN" --serial COM12
 """
 
 import sys
@@ -52,6 +55,7 @@ if WORKSPACE not in sys.path:
     sys.path.insert(0, WORKSPACE)   # port_selector.py is shared and lives in the repo root
 
 from port_selector import select_com_port
+import cc1110_tools   # shared with the camera's build script (repo root)
 
 # Workspace paths
 BUILD_DIR = os.path.join(VERISURE_DIR, "build")
@@ -70,42 +74,14 @@ CONFIG_H = os.path.join(VERISURE_DIR, "config.h")
 
 
 def counter_seed(gateway: str, no_seed: bool = False) -> int:
-    """First counter block for a freshly flashed sensor (main.c CTR_SEED).
-
-    Flashing erases the sensor's counter log, which would restart its packet counter at block 1,
-    below what the gateway last accepted, so the gateway would drop it until 'replay reset <ID>'.
-    Instead the gateway's last accepted counter (GET /api/replay?id=...) is read and the sensor
-    starts two blocks above it (the old firmware may enter the next block before it is flashed).
-    Returns 1 if the gateway does not know the sensor. Without the gateway the script stops (a
-    counter that restarts reuses values); --no-seed flashes anyway.
-    """
-    if no_seed:
-        print("[!] --no-seed: counter starts at block 1; run 'replay reset <ID>' on the gateway")
-        return 1
-    m = None
-    try:
-        with open(CONFIG_H, encoding="utf-8") as f:
-            m = re.search(r'#define\s+DEVICE_ID\s+"([A-Za-z0-9]{8})"', f.read())
-    except OSError:
-        pass
-    if not m:
+    """First counter block for a freshly flashed sensor (main.c CTR_SEED), from the gateway's last
+    accepted counter for the DEVICE_ID in config.h (see cc1110_tools.counter_seed)."""
+    dev = cc1110_tools.config_device_id(CONFIG_H)
+    if not dev and not no_seed:
         # the firmware would then build with config.h.example's ID and restart its counter
-        print(f"[-] No DEVICE_ID in {CONFIG_H}: no counter seed. Generate config.h first, or use --no-seed.")
+        print(f"[-] No DEVICE_ID in {CONFIG_H}: no counter seed. Use --id <label ID>, or --no-seed.")
         sys.exit(1)
-    dev = m.group(1)
-    try:
-        r = requests.get(f"{gateway}/api/replay", params={"id": dev}, timeout=5)
-        data = r.json()
-    except Exception as e:
-        print(f"[-] Gateway {gateway} not reachable ({e}): no counter seed.")
-        print("    Use --gateway / GATEWAY_HTTP, or --no-seed (counter restarts at block 1, needs 'replay reset').")
-        sys.exit(1)
-    if not data.get("known"):
-        print(f"[+] Gateway has no counter for {dev} yet: counter starts at block 1")
-        return 1
-    seed = (int(data["counter"]) >> 8) + 2
-    print(f"[+] Gateway's last counter for {dev}: {data['counter']}; sensor starts at block {seed}")
-    return seed
+    return cc1110_tools.counter_seed(gateway, dev or "<ID>", no_seed)
 
 
 def compile_firmware(ctr_seed: int = 1) -> bool:
@@ -406,6 +382,8 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
+    parser.add_argument("--id", default=None,
+                        help="Sensor ID from its label (e.g. '2JHL 2MVN'): write config.h for it first (key from secrets.h).")
     parser.add_argument("--port", "-p", default=None,
                         help="Gateway receiver serial port (e.g. COM9, /dev/ttyACM0 on Linux). If omitted, interactive selector is shown.")
     parser.add_argument("--host", default=DEFAULT_CC_HOST,
@@ -432,6 +410,8 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
+    if args.id:
+        cc1110_tools.write_config(args.id, CONFIG_H)
 
     # 1. Compile firmware (a flashed build starts its packet counter above the gateway's)
     seed = 1 if args.compile_only else counter_seed(args.gateway, args.no_seed)
@@ -445,11 +425,8 @@ def main():
         return
 
     if args.serial:
-        # same serial protocol as the camera (ESP_CC_Flasher src/serial_cmd.cpp)
-        sys.path.insert(0, os.path.join(WORKSPACE, "MD_CAM"))
-        import build_and_flash_md_cam as cam
-        cam.BIN_PATH = BIN_FILE
-        cam.flash_serial(args.serial)
+        # ESP_CC_Flasher serial protocol (src/serial_cmd.cpp), shared with the camera
+        cc1110_tools.flash_serial(args.serial, BIN_FILE)
         return
 
     # 2. Select receiver serial port if monitoring is enabled

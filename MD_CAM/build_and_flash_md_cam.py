@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
-build_and_flash_md_cam.py - Sync KDF with Gateway HTTP API, Compile, Flash MD_CAM & Verify Telemetry
+build_and_flash_md_cam.py - Build and flash the motion camera's CC1110 firmware and check that the
+gateway hears it.
+
+    python MD_CAM/build_and_flash_md_cam.py --id "2NCE KS3T" --serial COM12   # first time
+    python MD_CAM/build_and_flash_md_cam.py --serial /dev/ttyUSB0               # ID from config.h
+    python MD_CAM/build_and_flash_md_cam.py --compile-only                     # build check only
+
+The device key is derived from the master key in 868Receiver/src/secrets.h into firmware/config.h
+(git-ignored). Before flashing, the gateway is asked for the camera's last packet counter
+(--gateway, --no-seed). Extra -D defines are passed to SDCC (bench builds).
 """
+import argparse
 import os
 import re
 import sys
@@ -16,12 +26,14 @@ if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
 
 import derive_key
+import cc1110_tools
 
 CC_HOST = os.environ.get("CC_HOST", "http://cc.local")
 CC_USER = "admin"
 CC_PASS = "admin"
 GATEWAY_HTTP = os.environ.get("GATEWAY_HTTP", "http://verisure-gateway.local")   # the gateway's mDNS name
-DEVICE_ID = "2NCEKS3T"
+DEVICE_ID = None          # set in main(): --id, or the ID in firmware/config.h
+EXTRA_DEFINES = []        # -D... arguments passed through to SDCC
 
 FW_DIR = os.path.join(BASE_DIR, "firmware")
 BUILD_DIR = os.path.join(FW_DIR, "build")
@@ -54,48 +66,11 @@ def sync_key_from_gateway() -> bool:
     except Exception as e:
         print(f"[!] Could not query {GATEWAY_HTTP}/api/status ({e}), using secrets.h")
 
-    print(f"[+] Master key check value {key_check_value(bytes.fromhex(mk_hex))} "
+    print(f"[+] Master key check value {cc1110_tools.key_check_value(bytes.fromhex(mk_hex))} "
           "(must match 'Master Key : set (check value ...)' in the gateway's status command)")
     dk = derive_key.derive_device_key(bytes.fromhex(mk_hex), DEVICE_ID)
     derive_key.write_config_header(DEVICE_ID, dk, CONFIG_H)
     return key_changed
-
-
-def key_check_value(key: bytes) -> str:
-    """First 3 bytes of AES(key, 0^16), as the gateway prints it: compares keys without showing them."""
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    enc = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
-    return (enc.update(bytes(16)) + enc.finalize())[:3].hex().upper()
-
-
-def counter_seed() -> int:
-    """First counter block for a freshly flashed camera (main.c CTR_SEED).
-
-    Flashing erases the camera's counter log, which would restart its packet counter at block 1,
-    below what the gateway last accepted, so the gateway would drop it until 'replay reset <ID>'.
-    Instead the gateway's last accepted counter (GET /api/replay?id=...) is read and the camera
-    starts two blocks above it (the old firmware keeps sending until it is flashed and may enter
-    the next block meanwhile). Returns 1 if the gateway does not know the camera.
-
-    Without the gateway the script stops: a camera that restarts at block 1 reuses counters, and
-    the gateway's recorded poll answers for them would fit again. --no-seed flashes anyway.
-    """
-    if "--no-seed" in sys.argv:
-        print(f"[!] --no-seed: counter starts at block 1; run 'replay reset {DEVICE_ID}' on the gateway")
-        return 1
-    try:
-        r = requests.get(f"{GATEWAY_HTTP}/api/replay", params={"id": DEVICE_ID}, timeout=5)
-        data = r.json()
-    except Exception as e:
-        print(f"[-] Gateway {GATEWAY_HTTP} not reachable ({e}): no counter seed.")
-        print("    Set GATEWAY_HTTP, or use --no-seed (counter restarts at block 1, needs 'replay reset').")
-        sys.exit(1)
-    if not data.get("known"):
-        print(f"[+] Gateway has no counter for {DEVICE_ID} yet: counter starts at block 1")
-        return 1
-    seed = (int(data["counter"]) >> 8) + 2
-    print(f"[+] Gateway's last counter for {DEVICE_ID}: {data['counter']}; camera starts at block {seed}")
-    return seed
 
 
 def compile_firmware(ctr_seed: int = 1) -> None:
@@ -105,7 +80,7 @@ def compile_firmware(ctr_seed: int = 1) -> None:
         "--code-size", "0x7800",   # 0x7800-0x7FFF: packet counter log (main.c)
         "--xram-loc", "0xF000", "--xram-size", "0x0E00",
         f"-DCTR_SEED={ctr_seed}UL",
-        *[a for a in sys.argv[1:] if a.startswith("-D")],   # e.g. -DSLEEP_PIN_TEST=1 (bench builds)
+        *EXTRA_DEFINES,   # e.g. -DSLEEP_PIN_TEST=1 (bench builds)
         "-c", "main.c", "-o", "build/"
     ]
     res = subprocess.run(cmd_c, cwd=FW_DIR, capture_output=True, text=True)
@@ -140,81 +115,47 @@ def get_latest_log_id(session: requests.Session, host: str) -> int:
         return 0
 
 
-def flash_serial(port: str) -> None:
-    """Flash over the flasher's USB serial port (ESP_CC_Flasher src/serial_cmd.cpp), no WiFi.
-    DTR/RTS stay low so opening the port does not reset the ESP32."""
-    import zlib
-    import serial
-
-    with open(BIN_PATH, "rb") as f:
-        data = f.read()
-    s = serial.Serial()
-    s.port, s.baudrate, s.timeout = port, 115200, 0.5
-    s.dtr = False
-    s.rts = False
-    s.open()
-
-    def answer(timeout: float) -> str:
-        t0 = time.time()
-        while time.time() - t0 < timeout:
-            line = s.readline().decode("utf-8", "replace").strip()
-            if line.startswith("#"):
-                return line
-            if line:
-                print(f"    {line}")
-        return "#TIMEOUT"
-
-    try:
-        s.reset_input_buffer()
-        s.write(b"PING\n")
-        if answer(3) != "#PONG":
-            print(f"[-] Flasher on {port} does not answer PING (needs the serial command firmware).")
-            sys.exit(1)
-        s.write(b"INIT\n")
-        init = answer(10)
-        print(f"[+] {init}")
-        parts = init.split()
-        if len(parts) != 3 or parts[0] != "#INIT" or parts[1] != "0104":
-            print("[-] Target is not responding with CC1110F32 (0104). Check wires/battery.")
-            sys.exit(1)
-        if int(parts[2], 16) & 0x04:
-            print("[-] Target has DEBUG_LOCKED=1 (locked reference board). Aborting.")
-            sys.exit(1)
-        print(f"[*] Flashing {len(data)} bytes over {port}...")
-        s.write(f"FLASH {len(data)} {zlib.crc32(data) & 0xFFFFFFFF:08x}\n".encode())
-        if answer(5) != "#READY":
-            print("[-] Flasher did not get ready.")
-            sys.exit(1)
-        s.write(data)
-        got = answer(15)
-        if got != "#GOT":
-            print(f"[-] Transfer failed: {got}")
-            sys.exit(1)
-        done = answer(90)
-        if done != "#DONE OK":
-            print(f"[-] Flashing failed: {done}")
-            sys.exit(1)
-        print("[+] FLASHING & VERIFICATION SUCCEEDED! (CC1110 reset and running)")
-    finally:
-        s.close()
-
-
 def main():
-    if "--compile-only" in sys.argv:
+    global DEVICE_ID, GATEWAY_HTTP, CC_HOST, EXTRA_DEFINES
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--id", help="camera ID from its label (default: the ID in firmware/config.h)")
+    ap.add_argument("--serial", help="flash over the flasher's USB serial port (COM12, /dev/ttyUSB0)")
+    ap.add_argument("--host", default=CC_HOST, help=f"ESP_CC_Flasher over Wi-Fi (default {CC_HOST}, env CC_HOST)")
+    ap.add_argument("--gateway", default=GATEWAY_HTTP,
+                    help=f"gateway for the counter seed and the check (default {GATEWAY_HTTP}, env GATEWAY_HTTP)")
+    ap.add_argument("--no-seed", action="store_true",
+                    help="flash without the gateway's counter seed (then 'replay reset <ID>' on the gateway)")
+    ap.add_argument("--compile-only", action="store_true", help="build check only (unseeded, never flash it)")
+    args, extra = ap.parse_known_args()
+    bad = [a for a in extra if not a.startswith("-D")]
+    if bad:
+        ap.error(f"unrecognized arguments: {' '.join(bad)}")
+    EXTRA_DEFINES = extra
+    GATEWAY_HTTP, CC_HOST = args.gateway.rstrip("/"), args.host.rstrip("/")
+
+    if args.id:
+        try:
+            DEVICE_ID = derive_key.clean_device_id(args.id)
+        except ValueError as e:
+            ap.error(str(e))
+    else:
+        DEVICE_ID = cc1110_tools.config_device_id(CONFIG_H)
+        if not DEVICE_ID:
+            ap.error("no firmware/config.h yet: give the camera's ID with --id (from its label)")
+    print(f"[*] Camera {DEVICE_ID}")
+
+    if args.compile_only:
         # build check only (no gateway, no flasher): counter seed 1, so never flash this build
-        if not os.path.exists(CONFIG_H):
-            mk_hex = derive_key.get_master_key_from_secrets()
-            if not mk_hex:
-                sys.exit("[-] No config.h and no master key in secrets.h")
-            derive_key.write_config_header(DEVICE_ID, derive_key.derive_device_key(bytes.fromhex(mk_hex), DEVICE_ID), CONFIG_H)
+        if cc1110_tools.config_device_id(CONFIG_H) != DEVICE_ID:
+            cc1110_tools.write_config(DEVICE_ID, CONFIG_H)
         compile_firmware(1)
         print("[!] --compile-only: unseeded build (counter block 1), do not flash it")
         return
     sync_key_from_gateway()
     # a flashed build starts its packet counter above the gateway's last accepted one
-    compile_firmware(counter_seed())
-    if "--serial" in sys.argv:
-        flash_serial(sys.argv[sys.argv.index("--serial") + 1])
+    compile_firmware(cc1110_tools.counter_seed(GATEWAY_HTTP, DEVICE_ID, args.no_seed))
+    if args.serial:
+        cc1110_tools.flash_serial(args.serial, BIN_PATH)
     else:
         flash_http()
     verify_on_gateway()
@@ -292,7 +233,7 @@ def flash_http():
 
 
 def verify_on_gateway():
-    # 4. Poll Gateway HTTP /api/status to verify 2NCEKT3X registration!
+    # 4. Poll the gateway's /api/status until it has heard the camera
     print(f"[*] Polling {GATEWAY_HTTP}/api/status for sensor {DEVICE_ID} telemetry...")
     for _ in range(10):
         time.sleep(1.5)

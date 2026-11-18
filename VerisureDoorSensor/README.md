@@ -84,6 +84,7 @@ your network (default `http://cc.local`). Generate the master key and set up the
 
    | Option | Effect |
    | :--- | :--- |
+   | `--id <label ID>` | Write `config.h` for this sensor first (key from `secrets.h`) |
    | `--serial <port>` | Flash over the flasher's USB serial port instead of Wi-Fi (no monitor) |
    | `--compile-only` | Only build `build/main.bin` |
    | `--erase` | Full chip erase first (unlocks a protected or factory CC1110) |

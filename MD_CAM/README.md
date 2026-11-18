@@ -71,14 +71,19 @@ The protocol between the parts and over the air is described in
 
 ### CC1110 firmware (`firmware/`)
 
-Needs SDCC, Python 3 and the ESP_CC_Flasher (by USB serial or over Wi-Fi, `CC_HOST`). Set the
-camera's device ID in `build_and_flash_md_cam.py` (`DEVICE_ID`); the device key is derived from
-the master key in `868Receiver/src/secrets.h` and written to `firmware/config.h` (git-ignored).
+Needs SDCC, Python 3 and the ESP_CC_Flasher (by USB serial, or over Wi-Fi with `--host`). Give
+the camera's ID from its label with `--id` the first time; the device key is derived from the
+master key in `868Receiver/src/secrets.h` and written to `firmware/config.h` (git-ignored), and
+later runs take the ID from there.
 
 ```bash
-python MD_CAM/build_and_flash_md_cam.py --serial <flasher port>   # COM12, /dev/ttyUSB0 on Linux
-python MD_CAM/build_and_flash_md_cam.py --compile-only           # build check only, never flash it
+python MD_CAM/build_and_flash_md_cam.py --id "2NCE KS3T" --serial <flasher port>   # COM12, /dev/ttyUSB0 on Linux
+python MD_CAM/build_and_flash_md_cam.py --serial <flasher port>                    # ID from config.h
+python MD_CAM/build_and_flash_md_cam.py --compile-only                            # build check only, never flash it
 ```
+
+`--help` lists the options (`--gateway`, `--no-seed`, `--host`); they are the same as the door
+sensor's script, and both use `cc1110_tools.py` in the repository root.
 
 The script prints the master key's check value (KCV) so it can be compared with the gateway's
 `status` output without showing the key. Like the door sensor's script it asks the gateway for the

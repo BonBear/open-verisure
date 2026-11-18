@@ -67,6 +67,7 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 ├── SIREN/                Siren research photos                            → SIREN/README.md
 ├── documentation/        Shared docs: protocol & crypto, CC flasher, gateway hardware, HA/MQTT
 ├── derive_key.py         Master key generation and per-device key derivation (KDF)
+├── cc1110_tools.py       Shared by the CC1110 flash scripts: config.h, counter seed, serial flashing
 ├── monitor.py            Gateway serial monitor
 ├── port_selector.py      Serial port discovery used by the scripts (COMx / /dev/tty*)
 ├── requirements.txt      Python packages for the scripts
