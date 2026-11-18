@@ -132,7 +132,8 @@ The gateway hosts an embedded web server on port 80 (`http://<gateway-ip>`). It 
 * **`GET /api/radio`:** CC1101 chip version, part number and MARCSTATE (radio check).
 * **`GET /api/camera.jpg`, `GET /api/camera_large.jpg`:** The last camera picture (320x240) and the last 640x480 picture; 404 until one has arrived.
 * **`GET|POST /api/camera_test?id=<ID>`:** (`id` required) Publishes a tiny test JPEG on the camera's MQTT image topic (checks the Home Assistant camera entity without the camera).
-* **`GET /api/scan`:** Scans for Wi-Fi networks (blocks the gateway for ~2-3 s, used from the setup page) and returns available networks with RSSI and encryption flags.
+* **`GET /api/scan`:** Wi-Fi scan in the background: answers `202 {"scanning":true}` until it is done, then the networks with RSSI and encryption flags (ask again until a list comes back).
+* **`POST /api/picture?id=<ID>&cmd=D1..D6`:** Queues a picture request for a camera, like `picture/set` over MQTT (the camera's card on the web page uses it).
 * **`POST /api/save`:** Persists Wi-Fi SSID, password, MQTT broker host, port, credentials, topic prefix, and Master Key into ESP32-S2 NVS (Non-Volatile Storage). An empty password or key field keeps the saved value (they are never sent to the browser); a new SSID with an empty password is an open network.
 * **`POST /api/reboot`:** Triggers a software restart of the gateway.
 * **`POST /api/reset`:** Resets NVS parameters to compiled defaults.

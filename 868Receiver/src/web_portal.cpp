@@ -5,6 +5,8 @@
 #include "hardware_pins.h"
 #include "mqtt_manager.h"
 #include "crypto.h"
+#include "downlink.h"
+#include "ha_discovery.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -12,11 +14,9 @@
 #include <SPI.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 #include "esp_wifi.h"
-#include <WiFiMulti.h>
 
 static WebServer s_server(80);
 static DNSServer s_dnsServer;
-static WiFiMulti s_wifiMulti;
 static bool s_isApMode = false;
 static unsigned long s_rebootAt = 0;
 static int s_cachedRssi = -100;
@@ -129,7 +129,7 @@ button.danger:hover { background: #b91c1c; }
         <thead>
           <tr>
             <th>Device ID</th>
-            <th>Magnet</th>
+            <th>Contact / Motion</th>
             <th>Shock</th>
             <th>Tamper</th>
             <th>Battery</th>
@@ -143,6 +143,20 @@ button.danger:hover { background: #b91c1c; }
         </tbody>
       </table>
     </div>
+  </div>
+
+  <!-- Camera (shown once a camera has been heard) -->
+  <div id="camera-card" class="card" style="display:none;">
+    <h2>&#128247; Camera <span id="cam-id"></span></h2>
+    <img id="cam-img" alt="" style="max-width:100%; border-radius:8px; display:none;"
+         onload="this.style.display='block'; document.getElementById('cam-none').style.display='none';"
+         onerror="this.style.display='none'; document.getElementById('cam-none').style.display='block';">
+    <div id="cam-none" style="color:var(--text-muted); font-size:13px;">No picture since the gateway started.</div>
+    <div id="cam-info" style="color:var(--text-muted); font-size:13px; margin:8px 0;"></div>
+    <div id="cam-msg" style="font-size:13px; margin-bottom:8px;"></div>
+    <button type="button" onclick="takePicture('D1')">Take picture</button>
+    <button type="button" class="secondary" onclick="takePicture('D4')">Flash picture</button>
+    <div style="color:var(--text-muted); font-size:12px; margin-top:6px;">The camera picks the request up with its next poll (every ~30 s armed, ~2 min disarmed).</div>
   </div>
 
   <!-- Gateway Configuration -->
@@ -278,8 +292,11 @@ async function fetchStatus() {
     } else {
       let rows = '';
       data.sensors.forEach(s => {
-        const magBadge = s.magnet ? '<span class="badge badge-alarm">OPEN (ALARM)</span>' : '<span class="badge badge-ok">CLOSED</span>';
-        const shockBadge = s.shock ? '<span class="badge badge-alarm">SHOCK!</span>' : '<span class="badge badge-ok">Clear</span>';
+        const magBadge = s.camera
+          ? (s.magnet ? '<span class="badge badge-alarm">MOTION</span>' : '<span class="badge badge-ok">No motion</span>')
+          : (s.magnet ? '<span class="badge badge-alarm">OPEN (ALARM)</span>' : '<span class="badge badge-ok">CLOSED</span>');
+        const shockBadge = s.camera ? '&mdash;'
+          : (s.shock ? '<span class="badge badge-alarm">SHOCK!</span>' : '<span class="badge badge-ok">Clear</span>');
         const btnBadge = s.button ? '<span class="badge badge-alarm">TAMPER</span>' : (s.power_on ? '<span class="badge badge-ap">Power-On</span>' : 'Normal');
         const battBadge = s.low_battery ? '<span style="color:var(--danger)">' + s.battery_mv + ' mV (' + s.battery_pct + '%)</span>' : s.battery_mv + ' mV (' + s.battery_pct + '%)';
         rows += `<tr>
@@ -295,8 +312,36 @@ async function fetchStatus() {
       });
       tbody.innerHTML = rows;
     }
+    updateCamera(data);
   } catch (err) {
     console.error(err);
+  }
+}
+
+let camId = null, camLoaded = 0;
+function updateCamera(data) {
+  const cam = data.sensors.find(s => s.camera);
+  document.getElementById('camera-card').style.display = cam ? 'block' : 'none';
+  if (!cam) return;
+  camId = cam.id;
+  document.getElementById('cam-id').textContent = cam.id;
+  document.getElementById('cam-info').textContent =
+    'Alarm ' + (data.armed ? 'armed' : 'disarmed') + ' | last poll ' + cam.last_seen_sec + ' s ago';
+  if (Date.now() - camLoaded > 15000) {         // the newest picture, at most every 15 s
+    camLoaded = Date.now();
+    document.getElementById('cam-img').src = '/api/camera.jpg?t=' + camLoaded;
+  }
+}
+
+async function takePicture(cmd) {
+  if (!camId) return;
+  const info = document.getElementById('cam-msg');
+  try {
+    const res = await fetch('/api/picture?id=' + encodeURIComponent(camId) + '&cmd=' + cmd, { method: 'POST' });
+    info.textContent = res.ok ? cmd + ' requested; the picture appears here when it has arrived.' : 'Request failed.';
+    if (res.ok) camLoaded = Date.now() - 5000;   // look again in ~10 s
+  } catch (err) {
+    info.textContent = 'Request failed.';
   }
 }
 
@@ -305,8 +350,12 @@ async function scanWifi() {
   box.style.display = 'block';
   box.innerHTML = '<div style="padding:10px; color:var(--text-muted); font-size:13px;">Scanning for networks...</div>';
   try {
-    const res = await fetch('/api/scan');
-    const list = await res.json();
+    let list = null;
+    for (let i = 0; i < 40 && !Array.isArray(list); i++) {   // the scan runs in the background
+      if (i) await new Promise(r => setTimeout(r, 500));
+      list = await (await fetch('/api/scan')).json();
+    }
+    if (!Array.isArray(list)) throw new Error('scan timeout');
     if (list.length === 0) {
       box.innerHTML = '<div style="padding:10px; color:var(--text-muted); font-size:13px;">No networks found.</div>';
       return;
@@ -468,6 +517,7 @@ static void handleApiStatus() {
     // The master key is never sent back to the browser, only whether one is set.
     json += "\"master_key_set\":" + String(cfg.masterKeyHex[0] ? "true" : "false") + "},";
 
+    json += "\"armed\":" + String(downlinkArmed() ? "true" : "false") + ",";
     json += "\"sensors\":[";
     int count = sensorRegistryGetCount();
     for (int i = 0; i < count; i++) {
@@ -477,6 +527,7 @@ static void handleApiStatus() {
         unsigned long ageSec = (now >= rec->lastSeenMs) ? (now - rec->lastSeenMs) / 1000 : 0;
         json += "{";
         json += "\"id\":\"" + String(rec->lastTelem.deviceId) + "\",";
+        json += "\"camera\":" + String(haIsMotionCameraSensor(rec->lastTelem.deviceId) ? "true" : "false") + ",";
         json += "\"seq\":" + String(rec->lastTelem.counter) + ",";
         json += "\"magnet\":" + String(rec->lastTelem.isOpen ? "true" : "false") + ",";
         json += "\"shock\":" + String(rec->lastTelem.isShock ? "true" : "false") + ",";
@@ -515,8 +566,18 @@ static void handleApiRadio() {
     s_server.send(200, "application/json", json);
 }
 
+// Asynchronous scan: the first request starts it and gets 202 {"scanning":true}; the page asks
+// again until the list is ready (a synchronous scan blocked the loop for ~2-3 s).
 static void handleApiScan() {
-    int n = WiFi.scanNetworks();
+    int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_FAILED) {
+        WiFi.scanNetworks(true);
+        n = WIFI_SCAN_RUNNING;
+    }
+    if (n == WIFI_SCAN_RUNNING) {
+        s_server.send(202, "application/json", "{\"scanning\":true}");
+        return;
+    }
     String json = "[";
     for (int i = 0; i < n; i++) {
         if (i > 0) json += ",";
@@ -670,6 +731,26 @@ static void handleApiCameraTest() {
     }
 }
 
+// POST /api/picture?id=<camera>&cmd=D1..D6: queue a picture request like MQTT picture/set
+static void handleApiPicture() {
+    String devId = s_server.arg("id");
+    String cmd = s_server.arg("cmd");
+    bool ok = devId.length() == 8 && haIsMotionCameraSensor(devId.c_str()) && cmd.length() == 2 &&
+              cmd[0] == 'D' && cmd[1] >= '1' && cmd[1] <= '6';
+    for (unsigned i = 0; ok && i < devId.length(); i++) ok = isalnum((unsigned char)devId[i]);
+    if (!ok) {
+        s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Need id=<camera ID> and cmd=D1..D6\"}");
+        return;
+    }
+    uint8_t c = (uint8_t)(0xD0 + (cmd[1] - '0'));
+    if (!downlinkRequestPicture(devId.c_str(), c)) {
+        s_server.send(503, "application/json", "{\"ok\":false,\"error\":\"Request table full\"}");
+        return;
+    }
+    Serial.printf("[WebPortal] Picture %s requested for %s\n", cmd.c_str(), devId.c_str());
+    s_server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void webPortalInit() {
     sensorRegistryInit();
     ConfigManager::begin();
@@ -693,9 +774,8 @@ void webPortalInit() {
     WiFi.setAutoReconnect(true);
 
     if (cfg.wifiSsid[0]) {
-        s_wifiMulti.addAP(cfg.wifiSsid, cfg.wifiPass);
         Serial.printf("[Wi-Fi] Connecting to configured SSID: %s...\n", cfg.wifiSsid);
-        s_wifiMulti.run(5000);
+        WiFi.begin(cfg.wifiSsid, cfg.wifiPass);   // returns at once; setup() waits up to 8 s
     } else {
         Serial.println("[Wi-Fi] No Wi-Fi SSID configured. Starting Access Point 'Verisure-Gateway'...");
         WiFi.mode(WIFI_AP);
@@ -718,6 +798,7 @@ void webPortalInit() {
     s_server.on("/api/camera_large.jpg", HTTP_GET, handleApiCameraLargeJpg);
     s_server.on("/api/camera_test", HTTP_GET, handleApiCameraTest);
     s_server.on("/api/camera_test", HTTP_POST, handleApiCameraTest);
+    s_server.on("/api/picture", HTTP_POST, handleApiPicture);
 
     // Captive portal probes
     s_server.on("/generate_204", HTTP_GET, handleRoot);
@@ -741,11 +822,12 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
         s_dnsServer.processNextRequest();
     }
 
-    // Non-blocking Wi-Fi monitor & auto-reconnect
+    // Non-blocking Wi-Fi monitor & reconnect: WiFi.begin() returns at once, so the radio FIFO is
+    // still read while the gateway reconnects (WiFiMulti.run() blocked the loop for up to 3 s)
     const wl_status_t status = WiFi.status();
     static bool wasConnected = false;
     static unsigned long lastAttempt = millis();
-    const unsigned long reconnectInterval = 10000;
+    const unsigned long reconnectInterval = 20000;   // the driver's auto-reconnect usually wins
 
     if (status == WL_CONNECTED) {
         if (!wasConnected) {
@@ -757,10 +839,12 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
         }
     } else {
         wasConnected = false;
-        if (millis() - lastAttempt >= reconnectInterval) {
+        const GatewayConfig& cfg = ConfigManager::get();
+        if (!s_isApMode && cfg.wifiSsid[0] && millis() - lastAttempt >= reconnectInterval) {
             lastAttempt = millis();
-            Serial.println("[Wi-Fi] Attempting connection via WiFiMulti...");
-            s_wifiMulti.run(3000);
+            Serial.println("[Wi-Fi] Not connected, starting a new connection attempt...");
+            WiFi.disconnect();
+            WiFi.begin(cfg.wifiSsid, cfg.wifiPass);
         }
     }
 
