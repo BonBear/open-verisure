@@ -77,15 +77,18 @@ your network (default `http://cc.local`). Generate the master key and set up the
    Before compiling, it reads the gateway's last accepted counter for the sensor
    (`GET <gateway>/api/replay?id=<ID>`) and builds with `-DCTR_SEED`, so a reflashed sensor's
    counter continues above it (flashing erases the counter log). If the gateway cannot be
-   reached, the counter restarts at block 1: run `replay reset <ID>` on the gateway's serial
-   console after flashing, or the gateway drops the sensor's packets as replays.
+   reached the script stops: pass its address with `--gateway http://<ip>` (when `.local`
+   names do not resolve on your computer), or flash with `--no-seed` (counter from block 1) and
+   run `replay reset <ID>` on the gateway's serial console afterwards, or the gateway drops the
+   sensor's packets as replays. A sensor the gateway has never seen needs neither.
 
    | Option | Effect |
    | :--- | :--- |
    | `--serial <port>` | Flash over the flasher's USB serial port instead of Wi-Fi (no monitor) |
    | `--compile-only` | Only build `build/main.bin` |
    | `--erase` | Full chip erase first (unlocks a protected or factory CC1110) |
-   | `--gateway <url>` | Gateway HTTP address for the counter seed (env `GATEWAY_HTTP`) |
+   | `--gateway <url>` | Gateway HTTP address for the counter seed (env `GATEWAY_HTTP`, default `http://verisure-gateway.local`) |
+   | `--no-seed` | Flash without asking the gateway (counter from block 1; needs `replay reset <ID>` if the gateway knew the sensor) |
 
    `python VerisureDoorSensor/build_and_flash.py --help` lists the rest (flasher host, gateway
    serial port, monitor duration).

@@ -117,7 +117,8 @@ sudo usermod -aG dialout $USER     # serial port access; log out and in again
 * In WSL2, attach the boards from Windows with
   [usbipd-win](https://github.com/dorssel/usbipd-win): `usbipd attach --wsl --busid <id> --auto-attach`.
   An attached board is not available to Windows at the same time.
-* The Blackfin tools (`MD_CAM/blackfin/`) are only needed to change the camera's image program.
+* The Blackfin tools (`MD_CAM/blackfin/`) are needed once to convert a factory camera and then
+  only to change the camera's image program.
   `build_ldr.py` finds `bfin-elf-gcc` through `BFIN_TOOLCHAIN` or `PATH`; the JTAG scripts are
   written for Git Bash on Windows with the JTAG proxy in WSL.
 

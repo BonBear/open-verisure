@@ -5,6 +5,13 @@ and the PIR sees motion, the camera takes pictures and sends them over 868 MHz t
 [gateway](../868Receiver/README.md), which publishes them to Home Assistant as a camera entity.
 In the dark it takes grayscale pictures lit by its infrared flash.
 
+**Converting a factory camera** needs both processors programmed once: the Blackfin's boot flash
+over JTAG (header J5, an FT232H: the boot selector and `snap_link`, see
+[Blackfin program](#blackfin-program-blackfin)) and the CC1110 over its debug header J6 with the
+ESP_CC_Flasher ([CC1110 firmware](#cc1110-firmware-firmware)). The factory image program does not
+speak this firmware's link protocol, so flashing only the CC1110 is not enough. Back up the boot
+flash first (`jtag/bf_read_flash.sh`).
+
 ## Hardware
 
 | Part | Role |
@@ -73,7 +80,10 @@ python MD_CAM/build_and_flash_md_cam.py --compile-only           # build check o
 ```
 
 The script prints the master key's check value (KCV) so it can be compared with the gateway's
-`status` output without showing the key.
+`status` output without showing the key. Like the door sensor's script it asks the gateway for the
+camera's last packet counter first and stops if it cannot reach it: set `GATEWAY_HTTP=http://<ip>`
+when `verisure-gateway.local` does not resolve, or pass `--no-seed` (counter from block 1, then
+`replay reset <ID>` on the gateway).
 
 ### Blackfin program (`blackfin/`)
 
