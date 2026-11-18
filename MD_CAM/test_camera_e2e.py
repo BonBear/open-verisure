@@ -135,7 +135,7 @@ def main() -> int:
         return ok
 
     log = GatewayLog(args.port)
-    client = mqtt.Client(client_id="md-cam-e2e")
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="md-cam-e2e")
     if secret("DEFAULT_MQTT_USER"):
         client.username_pw_set(secret("DEFAULT_MQTT_USER"), secret("DEFAULT_MQTT_PASS"))
     images = []                      # (time, payload) of pictures published by the gateway

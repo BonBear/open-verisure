@@ -37,7 +37,7 @@ def rd():
         if l:
             lines.append((time.time(), re.sub(r"\b[0-9A-Fa-f]{32}\b", "<hidden>", l.decode("utf-8", "replace").rstrip())))
 threading.Thread(target=rd, daemon=True).start()
-c = mqtt.Client(client_id="claude-rs-%d" % os.getpid())
+c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="resend-%d" % os.getpid())
 if sec("DEFAULT_MQTT_USER"):
     c.username_pw_set(sec("DEFAULT_MQTT_USER"), sec("DEFAULT_MQTT_PASS"))
 c.on_message = lambda cl, u, m: None if m.retain else images.append((time.time(), m.payload))
