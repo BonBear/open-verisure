@@ -18,6 +18,7 @@
 #include "esp_wifi.h"
 
 void initRadioRegisters();   // main.cpp: the full CC1101 register set, then RX
+void radioSpiAttach();       // main.cpp: give the SPI pins back to the SPI peripheral
 
 static char s_cmdBuf[128];
 static int s_cmdLen = 0;
@@ -63,6 +64,8 @@ static void runTestSpi() {
 
     Serial.printf("CS HIGH (with Pullup) -> MISO: %d (Expected: 1 when CC1101 is deselected)\n", miso_high);
     Serial.printf("CS LOW                -> MISO: %d (MUST be 0 when CC1101 responds!)\n", miso_low);
+
+    radioSpiAttach();   // pinMode() above took MISO from the SPI peripheral (core 3.x)
 
     // Manual CC1101 Power-On-Reset Sequence (TI Datasheet 19.1.2)
     digitalWrite(PIN_CS, HIGH);
@@ -143,7 +146,7 @@ static void printStatus() {
                       rec->lastTelem.isShock ? "SHOCK!" : "Normal",
                       rec->lastTelem.isButton ? "TAMPER!" : "Secured",
                       rec->lastTelem.batteryMv, rec->lastTelem.batteryPct,
-                      rec->lastTelem.rssi, rec->packetCount);
+                      rec->lastTelem.rssi, (unsigned)rec->packetCount);
     }
     Serial.println("================================================\n");
 }
@@ -168,8 +171,8 @@ static void runScan() {
         Serial.printf("  %2d: %-20s (Ch %2d, %3d dBm) [%s] BSSID: %s\n",
                       i + 1,
                       WiFi.SSID(i).c_str(),
-                      WiFi.channel(i),
-                      WiFi.RSSI(i),
+                      (int)WiFi.channel(i),
+                      (int)WiFi.RSSI(i),
                       authStr,
                       WiFi.BSSIDstr(i).c_str());
     }

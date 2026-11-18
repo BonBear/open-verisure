@@ -182,6 +182,17 @@ static void answerCameraPoll(const VerisureTelemetry& t) {
 }
 
 /**
+ * @brief (Re)attach SCK/MISO/MOSI to the SPI peripheral; CS stays a GPIO driven by the driver.
+ *        Needed after anything called pinMode() on them (core 3.x detaches the pin then).
+ */
+void radioSpiAttach() {
+    SPI.end();
+    SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, -1);
+    pinMode(PIN_CS, OUTPUT);
+    digitalWrite(PIN_CS, HIGH);
+}
+
+/**
  * @brief Configure all CC1101 registers to match the Verisure 868.950 MHz radio profile.
  */
 void initRadioRegisters() {
@@ -284,9 +295,11 @@ void setup() {
         Serial.println("[Wi-Fi] Connecting in background...");
     }
 
-    // 2. Initialize CC1101 SPI & Radio Transceiver on ADC1 pins
-    SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
+    // 2. Initialize CC1101 SPI & Radio Transceiver on ADC1 pins. setSpiPin() calls pinMode() on
+    //    the pins, which on Arduino core 3.x detaches them from the SPI peripheral, so SPI is
+    //    attached afterwards (the library's own SPI.begin() in Init() then does nothing).
     ELECHOUSE_cc1101.setSpiPin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
+    radioSpiAttach();
     ELECHOUSE_cc1101.Init();
     delay(50);
     byte ver = ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION);
