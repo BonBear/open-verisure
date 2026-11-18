@@ -105,10 +105,10 @@ your network (default `http://cc.local`). Generate the master key and set up the
 
 ## Docs and photos
 
-Notes in [docs/](docs/):
+Board, pinout, `J2`, radio registers and the radio pitfalls:
+[documentation/verisure_sensor_hardware.md](../documentation/verisure_sensor_hardware.md). Notes in
+[docs/](docs/):
 
-* [verisure_door_sensor_guide.md](docs/verisure_door_sensor_guide.md): board walkthrough, pinout,
-  `SW1`, reed switch, `J2` and the radio pitfalls.
 * [cc1110_quirks_dma_toolchain.md](docs/cc1110_quirks_dma_toolchain.md): CC1110 vs CC1101
   differences, DMA trigger 19, SDCC flags and the flasher's HTTP flow.
 

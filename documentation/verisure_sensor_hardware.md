@@ -6,6 +6,31 @@ This document provides the complete physical and logical hardware mapping of the
 
 ---
 
+## 🧩 Board Overview
+
+The board is marked **`VIB-MAG-SECUR`** on the silkscreen (Securitas / Verisure P/N `N3302409`). It
+detects a door or window opening (reed switch), shock and vibration (piezo elements through an
+op-amp), and the cover being removed (tamper switch); `SW1` is a reset button, and two LEDs show
+the state.
+
+| Component | Marking | Part | Function |
+| :--- | :--- | :--- | :--- |
+| **U1** | `CC1110 F32 TI` | TI CC1110F32 (QFN-36) | 8051 MCU + Sub-1 GHz radio |
+| **X1** | `27.000` | 27.000 MHz crystal | System and radio clock (not TI's usual 26 MHz) |
+| **U2** | `3716` | EPCOS / TDK B3716 SAW filter | 868–870 MHz bandpass |
+| **U3** | `4542I` / `602853` | Low-power op-amp | Conditions the shock/piezo signal into `P1_2` |
+| **VS1, VS2** | | Piezo / spring vibration elements | Shock transducers |
+| **SW1** | | Tactile switch | Reset button on `RESET_N`, under the battery clip; not the tamper switch |
+| **Reed** | Glass capsule | Reed contact | Closes with the frame magnet within ~15 mm |
+| **LEDs** | `LD1` | Red (`P0_2`) and green (`P0_4`) | Alarm and transmit indicators |
+| **J2** | `J2` | 7-pad header (unpopulated) | Debug / programming interface |
+| **Antenna** | Helical coil | 868 MHz spring monopole | |
+
+After a reset by `SW1` (or `J2-6`) the firmware flashes both LEDs twice; every packet carries the
+reset cause, and the first packet after a boot is sent at once.
+
+---
+
 ## 📌 GPIO and Peripheral Mapping
 
 Pin numbers are for the CC1110 QFN-36 package (verified against the board).
