@@ -51,6 +51,10 @@ In the dark it takes grayscale pictures lit by its infrared flash.
   45 s apart, no reset, every picture complete. Without the flash a picture in the dark is black
   (`D1` and `D2`, scene mean ~4/255); `D4`/`D5` give usable grayscale flash pictures. `D2` never
   uses the flash, so 640x480 is for daylight only.
+* **Armed day run (2026-11-18, 7.8 h on the Otii, daylight):** armed idle 0.054 mA again; the 6 h
+  idle picture came after 5 h 28 min (the sleep timer runs ~9 % fast, polls ~27 s apart); one D1 in
+  daylight costs ~3.7 As (~1.0 mAh) with ~22 s above 20 mA; `test_camera_e2e.py` passed 12/12, with
+  `D5`/`D6` giving colour pictures.
 
 The protocol between the parts and over the air is described in
 [docs/Camera_protocol.md](docs/Camera_protocol.md).
