@@ -112,7 +112,9 @@ volatile __xdata uint16_t g_tx_fail = 0;
 /**
  * @brief Busy-wait software millisecond delay.
  * @param ms Number of milliseconds to delay.
- * @note Calibrated for 26.000 MHz system clock (~2100 NOP iterations per ms).
+ * @note Nominally 1 ms per pass (2100 NOP iterations); with the loop overhead and the watchdog
+ *       check it runs ~2.75x longer (measured on the camera's CC1110, same loop). Use it only
+ *       where a longer wait is harmless.
  */
 /* Watchdog (WDCTL, 32 kHz clock, also runs in PM2): resets the chip if it is not fed for ~1 s,
  * e.g. if the CPU never wakes from PM2 again. Started in main(); fed after every sleep and in
@@ -153,15 +155,23 @@ void aes_load_key(const uint8_t __code *key) {
  * @param in Pointer to 16-byte plaintext input buffer.
  * @param out Pointer to 16-byte ciphertext output buffer.
  */
+/* After an encrypt ENCCS.RDY did not come up before ENCDO is read (measured on the camera's
+ * CC1110 with Timer 1: waiting for it with a 50000 timeout cost 44 ms per block). Wait at most
+ * 120 short loop passes (~0.1 ms) instead, far more than one AES block needs; the key load
+ * still waits for RDY (it does come up there). Same as MD_CAM/firmware/main.c. */
+static void aes_wait(void) {
+    uint8_t d;
+    for (d = 0; d < 120 && !(ENCCS & 0x08); d++)
+        ;
+}
+
 void aes_encrypt_block(const uint8_t *in, uint8_t *out) {
-    uint16_t timeout = 50000;
     // Set MODE = 100b (ECB -> bit 6), CMD = 00b (Encrypt -> bit 2:1), ST = 1 (bit 0)
     ENCCS = 0x40 | 0x01;
     for (uint8_t i = 0; i < 16; i++) {
         ENCDI = in[i];
     }
-    // Wait for RDY flag
-    while (!(ENCCS & 0x08) && --timeout);
+    aes_wait();
     // Read 16-byte encrypted ciphertext from hardware output register
     for (uint8_t i = 0; i < 16; i++) {
         out[i] = ENCDO;
@@ -747,6 +757,7 @@ void radio_init(void) {
  * Packet Transmission Engines (DMA vs CPU-Polled)
  * ============================================================================ */
 
+#if !USE_DMA
 /**
  * @brief Transmit packet using CPU polling via the RFD register.
  * @return True if transmission and CRC completed successfully.
@@ -798,6 +809,7 @@ bool radio_send_cpu(void) {
 
     return (timeout > 0);
 }
+#endif
 
 /**
  * @brief Transmit packet using hardware DMA Trigger 19 (DMA_TRIG_RADIO).
