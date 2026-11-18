@@ -27,6 +27,9 @@ Usage Workflow & Examples:
     # 2. Derive device key from secrets.h and write directly to VerisureDoorSensor/config.h:
     python derive_key.py --id "2JHL 2MVN" --write-config
 
+    # 2b. The same for another firmware folder (the camera's build script does this itself):
+    python derive_key.py --id "2NCE KS3T" --out MD_CAM/firmware/config.h
+
     # 3. Derive key for a device ID and print to console (inspect without writing):
     python derive_key.py --id "2JHL 2MVN"
 
@@ -72,20 +75,29 @@ def get_master_key_from_secrets() -> Optional[str]:
 
 def clean_device_id(raw_id: str) -> str:
     """
-    Normalize device ID to 8 uppercase alphanumeric characters.
+    Normalize a device ID to 8 uppercase alphanumeric characters.
 
     Args:
-        raw_id (str): Raw input string (e.g. "2JHL 2MVN" or "vs-mag01").
+        raw_id (str): Raw input string (e.g. "2JHL 2MVN" or "2jhl-2mvn").
 
     Returns:
         str: 8-character uppercase identifier.
+
+    Raises:
+        ValueError: if the ID is not exactly 8 characters A-Z/0-9 after removing spaces and
+            hyphens. The gateway drops packets whose ID is not alphanumeric, so a padded or
+            cut ID would give a sensor that is never heard.
     """
     clean = raw_id.strip().replace(" ", "").replace("-", "").upper()
-    if len(clean) > 8:
-        clean = clean[:8]
-    elif len(clean) < 8:
-        clean = clean.ljust(8, "_")
+    if len(clean) != 8 or not all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" for c in clean):
+        raise ValueError(f"Device ID must be 8 characters A-Z/0-9 (as on the label), got '{raw_id}'")
     return clean
+
+
+def key_check_value(key: bytes) -> str:
+    """First 3 bytes of AES(key, 0^16), as the gateway prints it: compares keys without showing them."""
+    enc = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend()).encryptor()
+    return (enc.update(bytes(16)) + enc.finalize())[:3].hex().upper()
 
 
 def derive_device_key(master_key_bytes: bytes, device_id: str) -> bytes:
@@ -164,6 +176,8 @@ def main():
     parser.add_argument("--generate-master", action="store_true", help="Generate a random 128-bit master key")
     parser.add_argument("--write-config", "-w", action="store_true",
                         help=f"Write output directly to {CONFIG_H_PATH}")
+    parser.add_argument("--out", "-o", default=None,
+                        help="Write config.h to this path instead (e.g. MD_CAM/firmware/config.h)")
 
     args = parser.parse_args()
 
@@ -201,19 +215,33 @@ def main():
     try:
         master_bytes = bytes.fromhex(master_hex.strip())
     except ValueError:
-        print(f"[-] Error: Master key must be valid hex (got: '{master_hex}').")
+        print("[-] Error: Master key must be 32 hex characters.")
+        sys.exit(1)
+    if len(master_bytes) != 16:
+        print(f"[-] Error: Master key must be 16 bytes (32 hex characters), got {len(master_bytes)} bytes.")
         sys.exit(1)
 
-    device_id = clean_device_id(args.id)
+    try:
+        device_id = clean_device_id(args.id)
+    except ValueError as e:
+        parser.error(str(e))
     device_key = derive_device_key(master_bytes, device_id)
+    out_path = args.out or (CONFIG_H_PATH if args.write_config else None)
 
     print("=" * 65)
     print("  VERISURE SENSOR KEY DERIVATION (KDF)")
     print("=" * 65)
     print(f"[*] Input Device ID : {args.id}")
     print(f"[*] Clean Device ID : {device_id} (8 ASCII bytes)")
-    print(f"[*] Master Key (Hex): {master_bytes.hex().upper()}")
+    # the master key itself is never printed: its check value matches the gateway's status output
+    print(f"[*] Master Key      : check value {key_check_value(master_bytes)} (gateway 'status' shows the same)")
     print(f"[*] Key Source      : {key_source}")
+    if key_source.startswith("Built-in"):
+        print("[!] WARNING: built-in example master key. Generate your own (--generate-master) and put it in secrets.h.")
+    if out_path:
+        print("=" * 65)
+        write_config_header(device_id, device_key, out_path)
+        return
     print(f"[+] Device Key (Hex): {device_key.hex().upper()}")
     print("-" * 65)
     print("C Array Format:")
@@ -221,9 +249,6 @@ def main():
     print(format_c_array(device_key))
     print("};")
     print("=" * 65)
-
-    if args.write_config:
-        write_config_header(device_id, device_key, CONFIG_H_PATH)
 
 
 if __name__ == "__main__":

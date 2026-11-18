@@ -1,7 +1,8 @@
 /**
  * @file config.h.example
  * @brief Example configuration for Verisure Motion Camera (GW MD CAM2) CC1110F32 Firmware
- * Run `python derive_key.py --id "2NCEKS3T" --out MD_CAM/firmware/config.h` to generate config.h.
+ * MD_CAM/build_and_flash_md_cam.py writes config.h itself; by hand:
+ * `python derive_key.py --id "2NCEKS3T" --out MD_CAM/firmware/config.h`.
  */
 
 #ifndef CONFIG_H
