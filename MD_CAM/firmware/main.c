@@ -30,9 +30,12 @@
 #define PACKET_LEN        24
 #define BIG_PACKET_LEN    56   // picture packet (type 0x82): 8 B ID + 3 AES blocks, 40 B of JPEG
 
-/** @brief Sleep Timer tick: WOR_RES=2 (1024 x 32 kHz periods = 31.25 ms) x 16 = 0.5 s. */
-#define ST_WOR_RES        0x02
-#define ST_WOREVT         16
+/** @brief Sleep Timer tick 0.5 s. The 32 kHz RC oscillator is calibrated to f_xosc / 750, which
+ *  is 36.0 kHz with this board's 27 MHz crystal (not 32 kHz): with WOR_RES=2 and EVENT0=16 a tick
+ *  was 0.455 s and the camera's 30 s poll came every 27.3 s (2026-11-18). WOR_RES=1 (32 periods
+ *  of 27.8 us) x 563 = 0.5004 s. */
+#define ST_WOR_RES        0x01
+#define ST_WOREVT         563
 
 /** @brief Heartbeat interval in 0.5 s ticks (7200 = 1 hour). */
 #define HEARTBEAT_TICKS   7200
@@ -452,7 +455,7 @@ bool radio_send_dma(void) {
  * Sleep Timer + PM2
  * ============================================================================ */
 
-/** @brief Start the periodic 0.5 s Sleep Timer Event0 (runs on 32 kHz RCOSC). */
+/** @brief Start the periodic 0.5 s Sleep Timer Event0 (runs on the 36 kHz calibrated RCOSC). */
 static void sleep_timer_init(void) {
     uint8_t t0;
     uint16_t timeout;
@@ -467,8 +470,8 @@ static void sleep_timer_init(void) {
     timeout = 60000;
     while (WORTIME0 == t0 && --timeout);
 
-    WOREVT1 = 0x00;
-    WOREVT0 = ST_WOREVT;
+    WOREVT1 = (uint8_t)(ST_WOREVT >> 8);
+    WOREVT0 = (uint8_t)ST_WOREVT;
 
     WORIRQ = 0x10; // EVENT0_MASK = 1, clear flag
     STIF = 0;
@@ -1227,7 +1230,7 @@ static uint16_t cam_sleep(void) {
     enter_pm2();
     WDT_FEED();
     clock_xosc();
-    return g_tick ? (uint16_t)(BF_TICKS_PER_S * ST_WOREVT / 32) : 1;
+    return g_tick ? (uint16_t)(BF_TICKS_PER_S / 2) : 1;   // one 0.5 s tick
 }
 #endif
 

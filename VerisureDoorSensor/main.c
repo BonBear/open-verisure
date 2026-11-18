@@ -294,9 +294,12 @@ static void clock_rcosc(void) {
  * PM2 sleep: 0.5 s sleep-timer tick, port interrupts on reed, shock and tamper
  * ============================================================================ */
 
-/** @brief Sleep Timer tick: WOR_RES=2 (1024 x 32 kHz periods = 31.25 ms) x 16 = 0.5 s. */
-#define ST_WOR_RES        0x02
-#define ST_WOREVT         16
+/** @brief Sleep Timer tick 0.5 s. The 32 kHz RC oscillator is calibrated to f_xosc / 750, which
+ *  is 36.0 kHz with this board's 27 MHz crystal (not 32 kHz): with WOR_RES=2 and EVENT0=16 a tick
+ *  was 0.455 s and the camera's 30 s poll came every 27.3 s (2026-11-18). WOR_RES=1 (32 periods
+ *  of 27.8 us) x 563 = 0.5004 s. */
+#define ST_WOR_RES        0x01
+#define ST_WOREVT         563
 #define TICKS_PER_S       2
 #define HEARTBEAT_TICKS   ((uint16_t)HEARTBEAT_INTERVAL_SEC * TICKS_PER_S)
 #define SHOCK_HOLD_TICKS  (1 * TICKS_PER_S)   // a shock is reported for ~1 s, then cleared
@@ -341,8 +344,8 @@ static void sleep_timer_init(void) {
     timeout = 60000;
     while (WORTIME0 == t0 && --timeout);
 
-    WOREVT1 = 0x00;
-    WOREVT0 = ST_WOREVT;
+    WOREVT1 = (uint8_t)(ST_WOREVT >> 8);
+    WOREVT0 = (uint8_t)ST_WOREVT;
     WORIRQ = 0x10;  // EVENT0_MASK = 1, clear flag
     STIF = 0;
     STIE = 1;
