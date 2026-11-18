@@ -116,7 +116,7 @@ CC1110, and for the camera the ADI Blackfin GCC toolchain. The scripts run on Wi
    and wire it to the device's debug header
    ([documentation/hardware_cc_flasher.md](documentation/hardware_cc_flasher.md)). The scripts use
    it over Wi-Fi (`http://cc.local`, default) or over its USB serial port (`--serial`), which needs
-   the serial command firmware (`serial_cmd.cpp`; see TODO "ESP_CC_Flasher changes").
+   the serial command firmware (`serial_cmd.cpp`, not published yet: see TODO.md).
    **Never power the camera from the flasher's 3V3.**
 4. **First door sensor.** With the ID from its label (the key comes from `secrets.h`):
    ```bash
