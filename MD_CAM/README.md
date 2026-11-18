@@ -38,13 +38,19 @@ In the dark it takes grayscale pictures lit by its infrared flash.
 * **Power:** the Blackfin (~0.17–0.19 A at 3.0 V) is powered only for pictures and 15 s after
   (one D1 picture: Blackfin on ~18.7 s, 3.1–3.4 As ≈ 0.9 mAh from 3.0 to 2.55 V); the CC1110
   sleeps in PM2 otherwise. Disarmed and idle: 0.031 mA mean at 3.0 V (Otii 2026-11-17, floor
-  2 µA; one poll every ~109 s costs ~0.9 mAs ≈ 8 µA, the rest is the 0.5 s wake-ups). Pictures
+  2 µA; one poll every ~109 s costs ~0.9 mAs ≈ 8 µA, the rest is the 0.5 s wake-ups). Armed and
+  idle (polls every 30 s): 0.054 mA mean, ~1.3 mAh a day (Otii overnight 2026-11-18, 5 h without
+  pictures; 0.021 mA between polls). Pictures
   dominate battery life: with ~3.5 Ah usable from three CR123A, idle alone would last for years,
   but each picture costs ~0.9 mAh (~4000 pictures per set of batteries). A watchdog restarts the
   CC1110 if it ever hangs.
 * **Battery flags (Otii steps, 2026-11-17):** 3.0 V: 92 %; 2.8 V: 43 %; 2.65 V: 6 % and low
   battery; 2.55 V: 0 %, low battery, still complete pictures. The value under load reads
   ~50 mV below the supply (cables and the Blackfin's current).
+* **Overnight armed soak (2026-11-17/18, 7 h on the Otii, dark room):** 922 polls, none more than
+  45 s apart, no reset, every picture complete. Without the flash a picture in the dark is black
+  (`D1` and `D2`, scene mean ~4/255); `D4`/`D5` give usable grayscale flash pictures. `D2` never
+  uses the flash, so 640x480 is for daylight only.
 
 The protocol between the parts and over the air is described in
 [docs/Camera_protocol.md](docs/Camera_protocol.md).
