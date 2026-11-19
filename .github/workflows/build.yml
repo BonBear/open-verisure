@@ -1,3 +1,4 @@
+# Actions are pinned to commit SHAs (tag in the comment) and the SDCC download is checksummed.
 # Build check for every push and pull request: the gateway firmware, both CC1110 firmwares and
 # the key derivation. It uses only the *.example configs (placeholder keys, no credentials), so
 # nothing secret is needed or produced. The builds are never flashed: the CC1110 builds are
@@ -17,11 +18,11 @@ jobs:
     name: Gateway (ESP32-S2, PlatformIO)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.12"
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.platformio
           key: pio-${{ hashFiles('868Receiver/platformio.ini') }}
@@ -37,9 +38,11 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       SDCC_VERSION: "4.5.0"
+      # SHA-1 of sdcc-4.5.0-amd64-unknown-linux2.5.tar.bz2 as listed by SourceForge
+      SDCC_SHA1: "194021a5b4569948b878a2bd06dc1193ebf9106d"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.12"
       - name: Install the Python packages the scripts import
@@ -49,6 +52,7 @@ jobs:
         run: |
           curl -fsSL -o sdcc.tar.bz2 \
             "https://sourceforge.net/projects/sdcc/files/sdcc-linux-amd64/${SDCC_VERSION}/sdcc-${SDCC_VERSION}-amd64-unknown-linux2.5.tar.bz2/download"
+          echo "${SDCC_SHA1}  sdcc.tar.bz2" | sha1sum -c -
           mkdir -p "$RUNNER_TEMP/sdcc"
           tar -xjf sdcc.tar.bz2 -C "$RUNNER_TEMP/sdcc" --strip-components=1
           echo "$RUNNER_TEMP/sdcc/bin" >> "$GITHUB_PATH"
@@ -66,8 +70,8 @@ jobs:
     name: Key derivation (derive_key.py)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.12"
       - run: pip install "cryptography>=41"
