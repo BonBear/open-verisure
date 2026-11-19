@@ -40,6 +40,7 @@ static void printHelp() {
     Serial.println("  drop <n>                   - Test: drop every n-th camera picture chunk (0 = off)");
     Serial.println("  replay reset <ID>          - Forget a sensor's replay counter (after reflashing it)");
     Serial.println("  freqoffset [n]             - Show or set the CC1101 frequency correction (FSCTRL0 steps)");
+    Serial.println("  portalpass [<password>|clear] - Show, set (8-64 characters) or clear the web portal password");
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
@@ -153,9 +154,14 @@ static void printStatus() {
 
 static void runScan() {
     Serial.println("[Wi-Fi] Scanning for networks...");
-    WiFi.disconnect(true);
-    delay(200);
-    WiFi.mode(WIFI_STA);
+    const bool ap = webPortalIsApMode();
+    if (ap) {
+        WiFi.mode(WIFI_AP_STA);   // keep the setup access point up while scanning
+    } else {
+        WiFi.disconnect(true);
+        delay(200);
+        WiFi.mode(WIFI_STA);
+    }
     delay(100);
     int n = WiFi.scanNetworks(false, true);
     Serial.printf("[Wi-Fi] Found %d networks:\n", n);
@@ -283,6 +289,17 @@ static void processCommand(char* cmd) {
                 Serial.printf("[CLI] Frequency offset set to %ld (%+.1f kHz) and saved.\n", n, n * 1.587);
             }
         }
+    } else if (strcmp(cmd, "portalpass") == 0) {
+        Serial.printf("[CLI] Web portal password: %s\n", ConfigManager::hasPortalPassword() ? "set" : "NOT SET");
+    } else if (strcmp(cmd, "portalpass clear") == 0) {
+        ConfigManager::clearPortalPassword();
+        Serial.println("[CLI] Web portal password cleared: the web page is locked until a new one is set.");
+    } else if (strncmp(cmd, "portalpass ", 11) == 0) {
+        // the password is never echoed
+        if (ConfigManager::setPortalPassword(cmd + 11))
+            Serial.println("[CLI] Web portal password set (the browser asks for it; any user name).");
+        else
+            Serial.println("[CLI] Error: the password must be 8-64 characters.");
     } else if (strcmp(cmd, "reset") == 0) {
         ConfigManager::resetToDefaults();
         Serial.println("[CLI] Reset all settings to factory defaults.");

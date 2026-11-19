@@ -14,6 +14,7 @@
 #include <SPI.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
 #include "esp_wifi.h"
+#include <mbedtls/base64.h>
 
 static WebServer s_server(80);
 static DNSServer s_dnsServer;
@@ -101,6 +102,8 @@ button.danger:hover { background: #b91c1c; }
     </div>
     <div id="net-badge" class="badge badge-sta">Connected</div>
   </header>
+
+  <div id="warn-card" class="card" style="display:none; border-color: var(--danger); color: var(--danger); font-size: 14px;"></div>
 
   <!-- Live Telemetry -->
   <div class="card">
@@ -209,6 +212,17 @@ button.danger:hover { background: #b91c1c; }
       </div>
 
       <div class="form-group full">
+        <label>Web Portal Password (8&ndash;64 characters)</label>
+        <div class="input-row">
+          <input type="password" id="portal_pass" name="portal_pass" minlength="8" maxlength="64" autocomplete="new-password" placeholder="Leave blank to keep the current one">
+          <button type="button" class="secondary" onclick="togglePass('portal_pass')">&#128065;</button>
+        </div>
+        <small style="color: var(--text-muted); font-size: 11px; margin-top: 4px;">
+          Asked for by the browser (any user name). It protects the settings, the master key and the camera.
+        </small>
+      </div>
+
+      <div class="form-group full">
         <label>Master AES-128 Encryption Key (32 hex characters)</label>
         <div class="input-row">
           <input type="text" id="master_key" name="master_key" pattern="[0-9a-fA-F]{32}" maxlength="32" placeholder="Leave blank to keep the current key" autocomplete="off">
@@ -239,6 +253,23 @@ function showToast(msg, isErr) {
   setTimeout(() => { t.style.display = 'none'; }, 4000);
 }
 
+// Every state-changing request carries X-Gateway: a page on another site cannot send that header
+// without a CORS preflight, which the gateway never answers (CSRF protection).
+function post(url, json) {
+  const opts = { method: 'POST', headers: { 'X-Gateway': '1' } };
+  if (json !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(json);
+  }
+  return fetch(url, opts);
+}
+
+function showWarnings(list) {
+  const w = document.getElementById('warn-card');
+  w.textContent = list.join(' ');
+  w.style.display = list.length ? 'block' : 'none';
+}
+
 function togglePass(id) {
   const el = document.getElementById(id);
   el.type = el.type === 'password' ? 'text' : 'password';
@@ -255,8 +286,21 @@ let initialLoaded = false;
 async function fetchStatus() {
   try {
     const res = await fetch('/api/status');
+    if (res.status === 403) {
+      const r = await res.json();
+      if (r.error === 'no_portal_password')
+        showWarnings([r.message]);
+      return;
+    }
     if (!res.ok) return;
     const data = await res.json();
+    const warn = [];
+    if (data.config.master_key_example)
+      warn.push('The master key is the public example key: anyone can make packets this gateway accepts. Set your own key (python derive_key.py --generate-master).');
+    if (!data.config.portal_password_set)
+      warn.push('Set a web portal password below (required before the gateway leaves setup mode).');
+    showWarnings(warn);
+    document.getElementById('portal_pass').required = !data.config.portal_password_set;
 
     // Badges & Stats
     const nb = document.getElementById('net-badge');
@@ -337,7 +381,7 @@ async function takePicture(cmd) {
   if (!camId) return;
   const info = document.getElementById('cam-msg');
   try {
-    const res = await fetch('/api/picture?id=' + encodeURIComponent(camId) + '&cmd=' + cmd, { method: 'POST' });
+    const res = await post('/api/picture?id=' + encodeURIComponent(camId) + '&cmd=' + cmd);
     info.textContent = res.ok ? cmd + ' requested; the picture appears here when it has arrived.' : 'Request failed.';
     if (res.ok) camLoaded = Date.now() - 5000;   // look again in ~10 s
   } catch (err) {
@@ -395,13 +439,10 @@ async function saveConfig(e) {
   const fd = new FormData(form);
   const json = {};
   fd.forEach((v, k) => { json[k] = v; });
+  json.mqtt_port = parseInt(json.mqtt_port, 10) || 1883;   // a number, not a string
 
   try {
-    const res = await fetch('/api/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(json)
-    });
+    const res = await post('/api/save', json);
     const reply = await res.json();
     if (reply.ok) {
       showToast('Settings saved! Rebooting gateway in 3 seconds...', false);
@@ -417,7 +458,7 @@ async function saveConfig(e) {
 async function rebootGateway() {
   if (!confirm('Reboot the gateway?')) return;
   try {
-    await fetch('/api/reboot', { method: 'POST' });
+    await post('/api/reboot');
     showToast('Rebooting gateway... Reloading page in 5 seconds.', false);
     setTimeout(() => { location.reload(); }, 6000);
   } catch (err) {}
@@ -426,7 +467,7 @@ async function rebootGateway() {
 async function factoryReset() {
   if (!confirm('WARNING: This will erase all stored settings (Wi-Fi, master key, MQTT) in NVS! Continue?')) return;
   try {
-    await fetch('/api/reset', { method: 'POST' });
+    await post('/api/reset');
     showToast('NVS erased. Rebooting gateway...', false);
     setTimeout(() => { location.reload(); }, 6000);
   } catch (err) {}
@@ -461,18 +502,169 @@ static String jsonEscape(const String& in) {
     return out;
 }
 
+/* ============================================================================
+ * Access control
+ * ============================================================================
+ * - Host check: the Host header must name the gateway (its IP or verisure-gateway[.local]), so
+ *   a DNS-rebinding page cannot reach the API under its own name.
+ * - Password: HTTP Basic auth (any user name) against the portal password, whose salted hash
+ *   is in NVS. Without one the API only works in the setup access point (first setup, which
+ *   sets it); outside it the page shows how to set one (serial: portalpass <password>).
+ *   Five wrong passwords in a row lock the check for 30 s.
+ * - CSRF: state-changing requests must be POST with the header X-Gateway: 1 (a cross-site page
+ *   cannot add it without a CORS preflight, which is never answered) and, if the browser sends
+ *   an Origin, it must be this host.
+ * Basic auth over plain HTTP can be read by anyone on the same network: see SECURITY.md. */
+enum Access { ACCESS_PUBLIC, ACCESS_READ, ACCESS_WRITE };
+
+static const char* COLLECT_HEADERS[] = {"Authorization", "Origin", "X-Gateway"};
+static uint8_t s_authFails = 0;
+static unsigned long s_authLockUntil = 0;
+
+static String hostOnly(String h) {
+    if (h.startsWith("[")) return h;          // IPv6 literal: not used here
+    int c = h.indexOf(':');
+    if (c >= 0) h = h.substring(0, c);
+    h.toLowerCase();
+    return h;
+}
+
+static bool hostAllowed() {
+    String h = hostOnly(s_server.hostHeader());
+    if (h.length() == 0) return true;         // HTTP/1.0 client without Host (not a browser)
+    if (h == "verisure-gateway.local" || h == "verisure-gateway") return true;
+    if (s_isApMode && h == WiFi.softAPIP().toString()) return true;
+    return WiFi.status() == WL_CONNECTED && h == WiFi.localIP().toString();
+}
+
+static bool originAllowed() {
+    String o = s_server.header("Origin");
+    if (o.length() == 0) return true;         // not sent by every client; X-Gateway still applies
+    int p = o.indexOf("://");
+    if (p < 0) return false;
+    return hostOnly(o.substring(p + 3)) == hostOnly(s_server.hostHeader());
+}
+
+static bool passwordFromHeader() {
+    String a = s_server.header("Authorization");
+    if (!a.startsWith("Basic ")) return false;
+    String b64 = a.substring(6);
+    b64.trim();
+    unsigned char dec[160];
+    size_t n = 0;
+    if (b64.length() > 200 ||
+        mbedtls_base64_decode(dec, sizeof(dec) - 1, &n, (const unsigned char*)b64.c_str(), b64.length()) != 0)
+        return false;
+    dec[n] = 0;
+    char* colon = strchr((char*)dec, ':');
+    bool ok = colon && ConfigManager::checkPortalPassword(colon + 1);
+    memset(dec, 0, sizeof(dec));
+    return ok;
+}
+
+/** @return true if the request may go on; otherwise the error reply has been sent. */
+static bool authorize(Access access) {
+    if (!hostAllowed()) {
+        s_server.send(403, "application/json", "{\"error\":\"bad_host\"}");
+        return false;
+    }
+    if (access == ACCESS_WRITE && (s_server.header("X-Gateway") != "1" || !originAllowed())) {
+        s_server.send(403, "application/json", "{\"error\":\"csrf\",\"message\":\"POST with the header X-Gateway: 1 from this host\"}");
+        return false;
+    }
+    if (access == ACCESS_PUBLIC) return true;
+    if (!ConfigManager::hasPortalPassword()) {
+        if (s_isApMode) return true;          // first setup in the setup access point
+        s_server.send(403, "application/json",
+                      "{\"error\":\"no_portal_password\",\"message\":\"No web portal password is set. Set one on the "
+                      "gateway's serial console (portalpass <password>) or in the setup access point.\"}");
+        return false;
+    }
+    if (millis() < s_authLockUntil) {
+        s_server.send(429, "application/json", "{\"error\":\"locked\",\"message\":\"Too many wrong passwords, wait 30 s\"}");
+        return false;
+    }
+    if (passwordFromHeader()) {
+        s_authFails = 0;
+        return true;
+    }
+    if (s_server.header("Authorization").length() && ++s_authFails >= 5) {
+        s_authFails = 0;
+        s_authLockUntil = millis() + 30000;
+        Serial.println("[WebPortal] 5 wrong portal passwords: locked for 30 s");
+    }
+    s_server.sendHeader("WWW-Authenticate", "Basic realm=\"Verisure Gateway\", charset=\"UTF-8\"");
+    s_server.send(401, "application/json", "{\"error\":\"auth\"}");
+    return false;
+}
+
 static void handleRoot() {
     if (isCaptivePortalRequest()) {
         s_server.sendHeader("Location", "http://192.168.4.1/", true);
         s_server.send(302, "text/plain", "");
         return;
     }
+    // without a password the static page is shown (it explains how to set one); the API stays shut
+    if (!authorize(ConfigManager::hasPortalPassword() ? ACCESS_READ : ACCESS_PUBLIC)) return;
     s_server.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
+}
+
+/* Minimal JSON field readers for /api/save (flat object of strings and numbers). */
+static int jsonValueStart(const String& json, const char* key) {
+    String k = String("\"") + key + "\"";
+    int p = json.indexOf(k);
+    if (p < 0) return -1;
+    p = json.indexOf(':', p + k.length());
+    if (p < 0) return -1;
+    p++;
+    while (p < (int)json.length() && isspace((unsigned char)json[p])) p++;
+    return p;
+}
+
+/** A string value with its escapes (\" \\ \/ \b \f \n \r \t \uXXXX for ASCII) decoded; "" if absent. */
+static String jsonGetString(const String& json, const char* key) {
+    int p = jsonValueStart(json, key);
+    String out;
+    if (p < 0 || p >= (int)json.length() || json[p] != '"') return out;
+    for (p++; p < (int)json.length() && json[p] != '"'; p++) {
+        char c = json[p];
+        if (c != '\\') { out += c; continue; }
+        if (++p >= (int)json.length()) break;
+        switch (json[p]) {
+            case 'b': out += '\b'; break;
+            case 'f': out += '\f'; break;
+            case 'n': out += '\n'; break;
+            case 'r': out += '\r'; break;
+            case 't': out += '\t'; break;
+            case 'u': {
+                if (p + 4 >= (int)json.length()) return String();
+                long v = strtol(json.substring(p + 1, p + 5).c_str(), nullptr, 16);
+                p += 4;
+                if (v > 0 && v < 0x80) out += (char)v;   // settings are ASCII
+                break;
+            }
+            default: out += json[p];         // \" \\ \/
+        }
+    }
+    return out;
+}
+
+/** A number, also when sent as a quoted string; defaultVal if absent or not a number. */
+static long jsonGetInt(const String& json, const char* key, long defaultVal) {
+    int p = jsonValueStart(json, key);
+    if (p < 0 || p >= (int)json.length()) return defaultVal;
+    if (json[p] == '"') p++;
+    int e = p;
+    if (e < (int)json.length() && json[e] == '-') e++;
+    while (e < (int)json.length() && isdigit((unsigned char)json[e])) e++;
+    if (e == p || (e == p + 1 && json[p] == '-')) return defaultVal;
+    return json.substring(p, e).toInt();
 }
 
 /** GET /api/replay?id=XXXXXXXX: the device's last accepted persistent counter (not secret; the
  *  door sensor's build script starts a reflashed sensor above it). */
 static void handleApiReplay() {
+    if (!authorize(ACCESS_PUBLIC)) return;
     String id = s_server.arg("id");
     bool valid = id.length() == 8;
     for (unsigned i = 0; valid && i < 8; i++) valid = isalnum((unsigned char)id[i]);
@@ -488,6 +680,7 @@ static void handleApiReplay() {
 }
 
 static void handleApiStatus() {
+    if (!authorize(ACCESS_READ)) return;
     const GatewayConfig& cfg = ConfigManager::get();
     unsigned long now = millis();
 
@@ -495,7 +688,7 @@ static void handleApiStatus() {
     json += "\"wifi\":{";
     json += "\"mode\":\"" + String(s_isApMode ? "AP" : "STA") + "\",";
     json += "\"connected\":" + String((WiFi.status() == WL_CONNECTED) ? "true" : "false") + ",";
-    json += "\"ssid\":\"" + String(s_isApMode ? "Verisure-Gateway" : cfg.wifiSsid) + "\",";
+    json += "\"ssid\":\"" + jsonEscape(s_isApMode ? "Verisure-Gateway" : cfg.wifiSsid) + "\",";
     json += "\"ip\":\"" + (s_isApMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString()) + "\",";
     json += "\"rssi\":" + String(s_isApMode ? 0 : WiFi.RSSI()) + "},";
 
@@ -506,7 +699,7 @@ static void handleApiStatus() {
 
     json += "\"mqtt\":{";
     json += "\"connected\":" + String(mqttIsConnected() ? "true" : "false") + ",";
-    json += "\"status\":\"" + mqttGetStatusString() + "\"},";
+    json += "\"status\":\"" + jsonEscape(mqttGetStatusString()) + "\"},";
 
     json += "\"config\":{";
     json += "\"wifi_ssid\":\"" + jsonEscape(cfg.wifiSsid) + "\",";
@@ -515,7 +708,9 @@ static void handleApiStatus() {
     json += "\"mqtt_user\":\"" + jsonEscape(cfg.mqttUser) + "\",";
     json += "\"mqtt_topic\":\"" + jsonEscape(cfg.mqttTopic) + "\",";
     // The master key is never sent back to the browser, only whether one is set.
-    json += "\"master_key_set\":" + String(cfg.masterKeyHex[0] ? "true" : "false") + "},";
+    json += "\"master_key_set\":" + String(cfg.masterKeyHex[0] ? "true" : "false") + ",";
+    json += "\"master_key_example\":" + String(ConfigManager::masterKeyIsExample() ? "true" : "false") + ",";
+    json += "\"portal_password_set\":" + String(ConfigManager::hasPortalPassword() ? "true" : "false") + "},";
 
     json += "\"armed\":" + String(downlinkArmed() ? "true" : "false") + ",";
     json += "\"sensors\":[";
@@ -552,6 +747,7 @@ static void handleApiStatus() {
 }
 
 static void handleApiRadio() {
+    if (!authorize(ACCESS_READ)) return;
     byte ver = ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION);
     byte part = ELECHOUSE_cc1101.SpiReadStatus(CC1101_PARTNUM);
     byte marc = ELECHOUSE_cc1101.SpiReadStatus(CC1101_MARCSTATE);
@@ -569,6 +765,7 @@ static void handleApiRadio() {
 // Asynchronous scan: the first request starts it and gets 202 {"scanning":true}; the page asks
 // again until the list is ready (a synchronous scan blocked the loop for ~2-3 s).
 static void handleApiScan() {
+    if (!authorize(ACCESS_READ)) return;
     int n = WiFi.scanComplete();
     if (n == WIFI_SCAN_FAILED) {
         WiFi.scanNetworks(true);
@@ -593,6 +790,7 @@ static void handleApiScan() {
 }
 
 static void handleApiSave() {
+    if (!authorize(ACCESS_WRITE)) return;
     if (!s_server.hasArg("plain")) {
         s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"No payload\"}");
         return;
@@ -600,40 +798,32 @@ static void handleApiSave() {
 
     String body = s_server.arg("plain");
 
-    // Simple JSON parsing without heavy external libs
-    auto extractJsonString = [](const String& json, const String& key) -> String {
-        int keyPos = json.indexOf("\"" + key + "\"");
-        if (keyPos == -1) return "";
-        int colonPos = json.indexOf(':', keyPos);
-        if (colonPos == -1) return "";
-        int valStart = json.indexOf('"', colonPos);
-        if (valStart == -1) return "";
-        int valEnd = json.indexOf('"', valStart + 1);
-        if (valEnd == -1) return "";
-        return json.substring(valStart + 1, valEnd);
-    };
+    String ssid = jsonGetString(body, "wifi_ssid");
+    String pass = jsonGetString(body, "wifi_pass");
+    String host = jsonGetString(body, "mqtt_host");
+    long port   = jsonGetInt(body, "mqtt_port", 1883);
+    String portalPass = jsonGetString(body, "portal_pass");
+    String user = jsonGetString(body, "mqtt_user");
+    String mpass= jsonGetString(body, "mqtt_pass");
+    String topic= jsonGetString(body, "mqtt_topic");
+    String key  = jsonGetString(body, "master_key");
 
-    auto extractJsonInt = [](const String& json, const String& key, int defaultVal) -> int {
-        int keyPos = json.indexOf("\"" + key + "\"");
-        if (keyPos == -1) return defaultVal;
-        int colonPos = json.indexOf(':', keyPos);
-        if (colonPos == -1) return defaultVal;
-        int valStart = colonPos + 1;
-        while (valStart < (int)json.length() && (json[valStart] == ' ' || json[valStart] == '\t')) valStart++;
-        int valEnd = valStart;
-        while (valEnd < (int)json.length() && (isdigit(json[valEnd]) || json[valEnd] == '-')) valEnd++;
-        if (valEnd > valStart) return json.substring(valStart, valEnd).toInt();
-        return defaultVal;
-    };
-
-    String ssid = extractJsonString(body, "wifi_ssid");
-    String pass = extractJsonString(body, "wifi_pass");
-    String host = extractJsonString(body, "mqtt_host");
-    int port    = extractJsonInt(body, "mqtt_port", 1883);
-    String user = extractJsonString(body, "mqtt_user");
-    String mpass= extractJsonString(body, "mqtt_pass");
-    String topic= extractJsonString(body, "mqtt_topic");
-    String key  = extractJsonString(body, "master_key");
+    if (port < 1 || port > 65535) {
+        s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"MQTT port must be 1..65535\"}");
+        return;
+    }
+    // the first setup must set a portal password; later an empty field keeps it
+    if (portalPass.length() || !ConfigManager::hasPortalPassword()) {
+        if (portalPass.length() < 8 || portalPass.length() > 64) {
+            s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"The web portal password must be 8-64 characters\"}");
+            return;
+        }
+    }
+    uint8_t keyCheck[16];
+    if (key.length() && (key.length() != 32 || !ConfigManager::hexToBytes(key.c_str(), keyCheck, 16))) {
+        s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid Master Key (must be 32 hex characters)\"}");
+        return;
+    }
 
     // MQTT first: a rejected topic must leave every setting untouched
     // The passwords are never sent to the browser, so an empty field means "keep the saved one"
@@ -655,6 +845,7 @@ static void handleApiSave() {
         }
     }
 
+    if (portalPass.length()) ConfigManager::setPortalPassword(portalPass.c_str());
     ConfigManager::save();
     s_server.send(200, "application/json", "{\"ok\":true}");
 
@@ -662,11 +853,13 @@ static void handleApiSave() {
 }
 
 static void handleApiReboot() {
+    if (!authorize(ACCESS_WRITE)) return;
     s_server.send(200, "application/json", "{\"ok\":true}");
     s_rebootAt = millis() + 1000;
 }
 
 static void handleApiReset() {
+    if (!authorize(ACCESS_WRITE)) return;
     ConfigManager::resetToDefaults();
     s_server.send(200, "application/json", "{\"ok\":true}");
     s_rebootAt = millis() + 1000;
@@ -687,6 +880,7 @@ static const uint8_t S_MINIMAL_JPEG[] = {
 };
 
 static void handleApiCameraJpg() {
+    if (!authorize(ACCESS_READ)) return;
     size_t len = 0;
     uint16_t missing = 0;
     const uint8_t* jpg = imageReceiverJpeg(&len, &missing);
@@ -699,6 +893,7 @@ static void handleApiCameraJpg() {
 }
 
 static void handleApiCameraLargeJpg() {
+    if (!authorize(ACCESS_READ)) return;
     size_t len = 0;
     uint16_t missing = 0;
     const uint8_t* jpg = imageReceiverJpegLarge(&len, &missing);
@@ -711,6 +906,7 @@ static void handleApiCameraLargeJpg() {
 }
 
 static void handleApiCameraTest() {
+    if (!authorize(ACCESS_WRITE)) return;
     if (!s_server.hasArg("id")) {
         s_server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing id (the camera's 8-character ID)\"}");
         return;
@@ -733,6 +929,7 @@ static void handleApiCameraTest() {
 
 // POST /api/picture?id=<camera>&cmd=D1..D6: queue a picture request like MQTT picture/set
 static void handleApiPicture() {
+    if (!authorize(ACCESS_WRITE)) return;
     String devId = s_server.arg("id");
     String cmd = s_server.arg("cmd");
     bool ok = devId.length() == 8 && haIsMotionCameraSensor(devId.c_str()) && cmd.length() == 2 &&
@@ -785,7 +982,8 @@ void webPortalInit() {
         Serial.printf("[Wi-Fi] AP started! IP: %s (Password: 12345678)\n", WiFi.softAPIP().toString().c_str());
     }
 
-    // Web routes
+    // Web routes (access rules: authorize())
+    s_server.collectHeaders(COLLECT_HEADERS, sizeof(COLLECT_HEADERS) / sizeof(COLLECT_HEADERS[0]));
     s_server.on("/", HTTP_GET, handleRoot);
     s_server.on("/api/status", HTTP_GET, handleApiStatus);
     s_server.on("/api/replay", HTTP_GET, handleApiReplay);
@@ -796,7 +994,6 @@ void webPortalInit() {
     s_server.on("/api/reset", HTTP_POST, handleApiReset);
     s_server.on("/api/camera.jpg", HTTP_GET, handleApiCameraJpg);
     s_server.on("/api/camera_large.jpg", HTTP_GET, handleApiCameraLargeJpg);
-    s_server.on("/api/camera_test", HTTP_GET, handleApiCameraTest);
     s_server.on("/api/camera_test", HTTP_POST, handleApiCameraTest);
     s_server.on("/api/picture", HTTP_POST, handleApiPicture);
 

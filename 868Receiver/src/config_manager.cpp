@@ -8,6 +8,8 @@
 #include <Preferences.h>
 #include <ctype.h>
 #include <string.h>
+#include <esp_mac.h>
+#include <mbedtls/sha256.h>
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -58,8 +60,21 @@
 #define ACTIVE_MASTER_KEY_HEX "0102030405060708090A0B0C0D0E0F10"
 #endif
 
+// The public example key of secrets.h.example (and the fallback above): a gateway that runs
+// with it accepts packets anyone can make, so it is reported at boot and on the web page.
+#define EXAMPLE_MASTER_KEY_HEX "0102030405060708090A0B0C0D0E0F10"
+
+// Placeholder SSID of secrets.h.example: a copy left unchanged must not stop the setup access point
+#define EXAMPLE_WIFI_SSID "YOUR_WIFI_SSID"
+
+#ifndef DEFAULT_PORTAL_PASS
+#define DEFAULT_PORTAL_PASS ""
+#endif
+
 static Preferences s_prefs;
 static GatewayConfig s_config;
+static uint8_t s_portalHash[32];
+static bool s_portalHashSet = false;
 
 void ConfigManager::bytesToHex(const uint8_t* in, int len, char* out) {
     static const char hexChars[] = "0123456789ABCDEF";
@@ -114,6 +129,11 @@ void ConfigManager::begin() {
     s_config.wifiSsid[sizeof(s_config.wifiSsid) - 1] = '\0';
     strncpy(s_config.wifiPass, pass.c_str(), sizeof(s_config.wifiPass) - 1);
     s_config.wifiPass[sizeof(s_config.wifiPass) - 1] = '\0';
+    if (strcmp(s_config.wifiSsid, EXAMPLE_WIFI_SSID) == 0) {
+        Serial.println("[Config] Wi-Fi SSID is the secrets.h.example placeholder: ignored (setup access point).");
+        s_config.wifiSsid[0] = '\0';
+        s_config.wifiPass[0] = '\0';
+    }
 
     // 2. MQTT Settings
     String mHost = s_prefs.getString("mqtt_host", DEFAULT_MQTT_HOST);
@@ -170,6 +190,63 @@ void ConfigManager::begin() {
     char kcv[7];
     cryptoKeyCheckValue(s_config.masterKey, kcv);
     Serial.printf("         Master Key  : set (check value %s)\n", kcv);   // never print the key
+    if (masterKeyIsExample())
+        Serial.println("[Config] WARNING: the master key is the PUBLIC example key: set your own "
+                       "(python derive_key.py --generate-master) in secrets.h or on the web page.");
+
+    // 5. Web portal password (hash only)
+    s_portalHashSet = s_prefs.getBytes("portal_hash", s_portalHash, sizeof(s_portalHash)) == sizeof(s_portalHash);
+    if (!s_portalHashSet && DEFAULT_PORTAL_PASS[0])
+        setPortalPassword(DEFAULT_PORTAL_PASS);
+    Serial.printf("         Portal pass : %s\n", s_portalHashSet ? "set" : "NOT SET (web page locked outside the setup AP; serial: portalpass <password>)");
+}
+
+bool ConfigManager::masterKeyIsExample() {
+    return strcasecmp(s_config.masterKeyHex, EXAMPLE_MASTER_KEY_HEX) == 0;
+}
+
+// SHA-256 over a fixed label, this chip's factory MAC (salt) and the password
+static void portalHash(const char* pw, uint8_t out[32]) {
+    uint8_t mac[6] = {0};
+    esp_efuse_mac_get_default(mac);
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+    static const char label[] = "verisure-gateway-portal:";
+    mbedtls_sha256_update(&ctx, (const uint8_t*)label, sizeof(label) - 1);
+    mbedtls_sha256_update(&ctx, mac, sizeof(mac));
+    mbedtls_sha256_update(&ctx, (const uint8_t*)pw, strlen(pw));
+    mbedtls_sha256_finish(&ctx, out);
+    mbedtls_sha256_free(&ctx);
+}
+
+bool ConfigManager::hasPortalPassword() {
+    return s_portalHashSet;
+}
+
+bool ConfigManager::setPortalPassword(const char* pw) {
+    size_t n = pw ? strlen(pw) : 0;
+    if (n < 8 || n > 64) return false;
+    portalHash(pw, s_portalHash);
+    s_prefs.putBytes("portal_hash", s_portalHash, sizeof(s_portalHash));
+    s_portalHashSet = true;
+    return true;
+}
+
+bool ConfigManager::checkPortalPassword(const char* pw) {
+    if (!s_portalHashSet || !pw) return false;
+    uint8_t h[32];
+    portalHash(pw, h);
+    uint8_t diff = 0;
+    for (size_t i = 0; i < sizeof(h); i++) diff |= h[i] ^ s_portalHash[i];
+    memset(h, 0, sizeof(h));
+    return diff == 0;
+}
+
+void ConfigManager::clearPortalPassword() {
+    s_prefs.remove("portal_hash");
+    memset(s_portalHash, 0, sizeof(s_portalHash));
+    s_portalHashSet = false;
 }
 
 const GatewayConfig& ConfigManager::get() {
@@ -203,6 +280,9 @@ void ConfigManager::resetToDefaults() {
     hexToBytes(ACTIVE_MASTER_KEY_HEX, s_config.masterKey, 16);
     bytesToHex(s_config.masterKey, 16, s_config.masterKeyHex);
     s_prefs.putString("compiled_key", ACTIVE_MASTER_KEY_HEX);
+    s_portalHashSet = false;               // cleared with the rest of NVS
+    memset(s_portalHash, 0, sizeof(s_portalHash));
+    if (DEFAULT_PORTAL_PASS[0]) setPortalPassword(DEFAULT_PORTAL_PASS);
     save();
     Serial.println("[Config] NVS reset to factory defaults.");
 }
@@ -225,6 +305,10 @@ bool ConfigManager::setMqtt(const char* host, uint16_t port, const char* user, c
         return false;
     }
     if (host) {
+        // a kept password must never go to another broker: a new host without a new password
+        // drops the stored one (otherwise anyone who could change the host gets the password)
+        if (!pass && strcmp(host, s_config.mqttHost) != 0)
+            s_config.mqttPass[0] = '\0';
         strncpy(s_config.mqttHost, host, sizeof(s_config.mqttHost) - 1);
         s_config.mqttHost[sizeof(s_config.mqttHost) - 1] = '\0';
     }

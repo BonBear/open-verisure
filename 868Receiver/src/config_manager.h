@@ -120,4 +120,19 @@ public:
      * @return True on valid hex input.
      */
     static bool hexToBytes(const char* in, uint8_t* out, int len);
+
+    /** @brief True if the active master key is the public example key of secrets.h.example. */
+    static bool masterKeyIsExample();
+
+    /**
+     * Web portal password. Only a salted SHA-256 of it is stored in NVS ("portal_hash"); it is
+     * set in the setup access point, with the serial command "portalpass", or by
+     * DEFAULT_PORTAL_PASS in secrets.h (used while NVS has none).
+     */
+    static bool hasPortalPassword();
+    /** @return false if the password is shorter than 8 or longer than 64 characters. */
+    static bool setPortalPassword(const char* pw);
+    /** @brief Constant-time check of a password against the stored hash. */
+    static bool checkPortalPassword(const char* pw);
+    static void clearPortalPassword();
 };
