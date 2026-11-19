@@ -64,6 +64,7 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 │                         build_and_flash.py, docs                         → VerisureDoorSensor/README.md
 ├── MD_CAM/               Motion camera: CC1110 firmware, Blackfin program,
 │                         JTAG tools, e2e test, docs                       → MD_CAM/README.md
+├── cc1110_common/        CC1110 code shared by both firmwares (AES, clocks, sleep timer, counter log)
 ├── SIREN/                Siren research photos                            → SIREN/README.md
 ├── documentation/        Shared docs: protocol & crypto, CC flasher, gateway hardware, HA/MQTT
 ├── derive_key.py         Master key generation and per-device key derivation (KDF)
