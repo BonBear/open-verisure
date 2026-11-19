@@ -43,6 +43,7 @@ If you have unused sensors, you can contribute by:
   * **Radio registers:** use the SDCC `cc1110.h` names (`FSCAL0` = 0xDF1F, `PA_TABLE0` = 0xDF2E).
     The CC1110's XDATA radio map is not the CC1101 SPI offset + 0xDF00 (0xDF26 is reserved).
 * **Power Management:** Code should favor low power consumption, sleep modes, and rapid burst transmissions.
+* **Counter log host tests:** The persistent packet counter (`cc1110_common/ctr_log.c` and `ctr_boot()` in both `main.c` files) has host tests on an emulated CC1110 flash: run `make -C cc1110_common/test_host` on Linux x86-64 or WSL (gcc, g++, make, python3; `T=<name>` runs only matching tests). They compile the real code, cut out of the `main.c` files at every build, and check that no counter value is ever used twice across resets and power cuts at every point of a flash write or erase; CI runs them on every push. Tests marked XFAIL show known firmware problems that still need a fix and a bench test; when a fix makes one pass, the run fails until its XFAIL mark is removed. Run them when you change the counter code.
 
 ### 2. Gateway Firmware (ESP32-S2)
 * **Framework:** Arduino framework under **PlatformIO**.
@@ -68,6 +69,7 @@ If you have unused sensors, you can contribute by:
    * Verify that the camera firmware compiles (SDCC, `MD_CAM/build_and_flash_md_cam.py`).
    * Verify that `868Receiver` builds with PlatformIO (`pio run -d 868Receiver`).
    * Run the gateway host unit tests (`make -C 868Receiver/test_host`).
+   * Run the counter log host tests (`make -C cc1110_common/test_host`).
    * Verify live reception and MQTT discovery.
 4. **Commit with Clear Messages:**
    ```bash
