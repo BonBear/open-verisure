@@ -435,10 +435,12 @@ def main():
     if args.serial:
         # ESP_CC_Flasher serial protocol (src/serial_cmd.cpp), shared with the camera
         dev = cc1110_tools.config_device_id(CONFIG_H)
-        before = cc1110_tools.replay_counter(args.gateway, dev) if dev else None
         cc1110_tools.flash_serial(args.serial, BIN_FILE, allow_locked=args.erase)
-        # the boot packet goes out at once: the gateway's counter for the sensor must move
-        if dev and not args.skip_monitor and not cc1110_tools.wait_for_device(args.gateway, dev, before, 60):
+        # the boot packet goes out at once: the gateway must accept a counter from the seed block
+        # on (with --no-seed the old firmware's higher counters would make that check meaningless)
+        if args.no_seed:
+            print("[!] --no-seed: not checked on the gateway (run 'replay reset' there first)")
+        elif dev and not args.skip_monitor and not cc1110_tools.wait_for_device(args.gateway, dev, seed, 60):
             sys.exit(1)
         return
 

@@ -130,14 +130,17 @@ def main():
     # config.h from the master key in secrets.h (exits without one; only its check value is shown)
     cc1110_tools.write_config(DEVICE_ID, CONFIG_H)
     # a flashed build starts its packet counter above the gateway's last accepted one
-    compile_firmware(cc1110_tools.counter_seed(GATEWAY_HTTP, DEVICE_ID, args.no_seed))
-    before = cc1110_tools.replay_counter(GATEWAY_HTTP, DEVICE_ID)
+    seed = cc1110_tools.counter_seed(GATEWAY_HTTP, DEVICE_ID, args.no_seed)
+    compile_firmware(seed)
     if args.serial:
         cc1110_tools.flash_serial(args.serial, BIN_PATH, allow_locked=args.erase)
     else:
         flash_http(args.erase)
-    # the boot packet goes out at once; the camera's counter on the gateway must move past 'before'
-    if not cc1110_tools.wait_for_device(GATEWAY_HTTP, DEVICE_ID, before, timeout=150):
+    # the boot packet goes out at once: the gateway must accept a counter from the seed block on
+    # (the old firmware's polls are below it, so they cannot pass this check)
+    if args.no_seed:
+        print("[!] --no-seed: not checked on the gateway (run 'replay reset' there first)")
+    elif not cc1110_tools.wait_for_device(GATEWAY_HTTP, DEVICE_ID, seed, timeout=150):
         sys.exit(1)
 
 

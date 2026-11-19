@@ -69,14 +69,14 @@ def counter_seed(gateway: str, device_id: str, no_seed: bool = False) -> int:
         print(f"[!] --no-seed: counter starts at block 1; run 'replay reset {device_id}' on the gateway")
         return 1
     try:
-        r = requests.get(f"{gateway}/api/replay", params={"id": device_id}, timeout=5)
-        data = r.json()
+        data = replay_query(gateway, device_id)
     except Exception as e:
-        print(f"[-] Gateway {gateway} not reachable ({e}): no counter seed.")
-        print("    Use --gateway http://<ip> (or GATEWAY_HTTP), or --no-seed (counter restarts at block 1,")
-        print(f"    then run 'replay reset {device_id}' on the gateway).")
+        print(f"[-] No counter seed from the gateway {gateway}: {e}")
+        print("    Use --gateway http://<gateway IP> or http://verisure-gateway.local (the gateway answers")
+        print("    only to its own names), or --no-seed (counter restarts at block 1, then run")
+        print(f"    'replay reset {device_id}' on the gateway).")
         sys.exit(1)
-    if not data.get("known"):
+    if not data["known"]:
         print(f"[+] Gateway has no counter for {device_id} yet: counter starts at block 1")
         return 1
     seed = (int(data["counter"]) >> 8) + 2
@@ -84,33 +84,49 @@ def counter_seed(gateway: str, device_id: str, no_seed: bool = False) -> int:
     return seed
 
 
+def replay_query(gateway: str, device_id: str) -> dict:
+    """GET /api/replay?id=... (public). Raises on any error, also on a refusal such as 403
+    bad_host (the gateway answers only to its IP and verisure-gateway[.local]), so a refused
+    request is never mistaken for "no counter yet"."""
+    r = requests.get(f"{gateway}/api/replay", params={"id": device_id}, timeout=5)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} {r.text[:80]}")
+    data = r.json()
+    if "known" not in data or "counter" not in data:
+        raise RuntimeError(f"unexpected answer {r.text[:80]}")
+    return data
+
+
 def replay_counter(gateway: str, device_id: str) -> Optional[int]:
-    """The gateway's last accepted counter of a device (GET /api/replay, public), 0 if it has
-    none yet, None if the gateway does not answer."""
+    """The gateway's last accepted counter of a device, 0 if it has none yet, None on any error."""
     try:
-        data = requests.get(f"{gateway}/api/replay", params={"id": device_id}, timeout=5).json()
+        data = replay_query(gateway, device_id)
     except Exception:
         return None
-    return int(data["counter"]) if data.get("known") else 0
+    return int(data["counter"]) if data["known"] else 0
 
 
-def wait_for_device(gateway: str, device_id: str, before: Optional[int], timeout: float = 90) -> bool:
-    """After flashing: wait until the gateway has accepted a packet of device_id with a counter
-    above 'before' (read before flashing). Only an authenticated packet moves that counter, so
-    this proves the new firmware's key and seed, unlike the device merely being listed."""
-    print(f"[*] Waiting up to {timeout:.0f} s for an authenticated packet from {device_id} at {gateway} ...")
+def wait_for_device(gateway: str, device_id: str, seed: int, timeout: float = 90) -> bool:
+    """After flashing a build with counter seed 'seed' (block): wait until the gateway has accepted
+    a packet of device_id from that block or later. The old firmware's counters are below the seed
+    block and only an authenticated packet moves the gateway's counter, so this proves the new
+    firmware's key and seed (the device merely being listed would not)."""
+    need = seed << 8
+    print(f"[*] Waiting up to {timeout:.0f} s for an authenticated packet from {device_id} "
+          f"(counter >= {need}) at {gateway} ...")
     t0 = time.time()
+    now = None
     while time.time() - t0 < timeout:
         now = replay_counter(gateway, device_id)
-        if now is not None and before is not None and now > before:
-            print(f"[+] {device_id} authenticated on the gateway (counter {before} -> {now})")
+        if now is not None and now >= need:
+            print(f"[+] {device_id} authenticated on the gateway (counter {now})")
             return True
         time.sleep(2)
-    if before is None:
-        print(f"[!] Gateway {gateway} did not answer: check the gateway log for {device_id} yourself")
+    if now is None:
+        print(f"[-] Gateway {gateway} did not answer: check the gateway log for {device_id} yourself")
     else:
-        print(f"[-] No authenticated packet from {device_id} within {timeout:.0f} s (wrong key or seed, "
-              "or out of range): check the gateway log")
+        print(f"[-] No authenticated packet from {device_id} within {timeout:.0f} s (gateway counter {now}, "
+              f"need >= {need}): wrong key, out of range, or not powered; check the gateway log")
     return False
 
 
