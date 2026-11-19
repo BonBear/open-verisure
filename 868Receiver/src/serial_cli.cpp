@@ -42,6 +42,7 @@ static void printHelp() {
     Serial.println("                               then only its boot packet of blocks 1..block (default 8) is taken");
     Serial.println("  freqoffset [n]             - Show or set the CC1101 frequency correction (FSCTRL0 steps)");
     Serial.println("  portalpass [<password>|clear] - Show, set (8-64 characters) or clear the web portal password");
+    Serial.println("  appass                     - Show the setup access point's password (unique per gateway)");
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
@@ -298,6 +299,11 @@ static void processCommand(char* cmd) {
                 Serial.printf("[CLI] Frequency offset set to %ld (%+.1f kHz) and saved.\n", n, n * 1.587);
             }
         }
+    } else if (strcmp(cmd, "appass") == 0) {
+        char apPass[64];
+        ConfigManager::apPassword(apPass);
+        Serial.printf("[CLI] Setup access point 'Verisure-Gateway' password: %s\n", apPass);
+        memset(apPass, 0, sizeof(apPass));
     } else if (strcmp(cmd, "portalpass") == 0) {
         Serial.printf("[CLI] Web portal password: %s\n", ConfigManager::hasPortalPassword() ? "set" : "NOT SET");
     } else if (strcmp(cmd, "portalpass clear") == 0) {
