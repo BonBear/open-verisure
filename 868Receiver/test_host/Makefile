@@ -25,7 +25,7 @@ CPPFLAGS := -DHOST_TEST -Istubs -I$(SRC_DIR) -I. $(MBEDTLS_CFLAGS)
 
 COMMON       := test_main.cpp stubs/host_stubs.cpp $(SRC_DIR)/crypto.cpp $(SRC_DIR)/downlink.cpp
 UNIT_SOURCES := $(COMMON) test_crypto.cpp test_portal_util.cpp test_config.cpp test_downlink.cpp \
-                $(SRC_DIR)/config_manager.cpp
+                test_ota_image.cpp $(SRC_DIR)/config_manager.cpp
 FUZZ_SOURCES := $(COMMON) fuzz_jpeg_splice.cpp fuzz_image_receiver.cpp fuzz_crypto.cpp \
                 stubs/host_mqtt.cpp $(SRC_DIR)/image_receiver.cpp $(SRC_DIR)/jpeg_splice.cpp
 

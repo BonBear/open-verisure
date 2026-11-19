@@ -14,6 +14,7 @@
  * - `POST /api/save`  : Save new configuration parameters to NVS
  * - `POST /api/reboot`: Reboot the ESP32-S2
  * - `POST /api/reset` : Factory reset NVS configuration
+ * - `POST /api/ota`   : Firmware update (raw image body), then reboot
  */
 
 #pragma once
@@ -45,3 +46,9 @@ bool webPortalIsApMode();
  * @return SoftAP IP or Station local IP.
  */
 String webPortalGetIp();
+
+/**
+ * @brief Function called while an OTA upload blocks the loop (once per received piece), so the
+ *        radio FIFO is still read.
+ */
+void webPortalSetBusyHook(void (*hook)());
