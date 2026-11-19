@@ -68,3 +68,6 @@ Desktop.ini
 .agents/*.json
 .mcp.json
 MD_CAM/blackfin/jtag/gdbproxy.log
+
+# release packages (release/make_release.py)
+dist/

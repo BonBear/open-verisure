@@ -1,0 +1,63 @@
+# Release: pushing a tag like v1.0.0 builds the setup package with release/make_release.py,
+# checks it (unpacks it and builds the gateway and both CC1110 firmwares from it) and attaches
+# the zip to a GitHub release for that tag. Nothing secret goes in: only tracked files are packed,
+# and secrets.h/config.h are generated on the user's machine (the key guard runs first).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build the release for"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build, check and publish the setup package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write          # create the release and upload the zip
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SDCC_VERSION: "4.5.0"
+      SDCC_SHA1: "194021a5b4569948b878a2bd06dc1193ebf9106d"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0       # git describe and the GitHub links need the history and tags
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Key guard
+        run: python .github/scripts/check_secrets.py
+      - name: Install the Python packages and PlatformIO
+        run: pip install -r requirements.txt
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('868Receiver/platformio.ini') }}
+      - name: Install SDCC ${{ env.SDCC_VERSION }}
+        run: |
+          curl -fsSL -o sdcc.tar.bz2 \
+            "https://sourceforge.net/projects/sdcc/files/sdcc-linux-amd64/${SDCC_VERSION}/sdcc-${SDCC_VERSION}-amd64-unknown-linux2.5.tar.bz2/download"
+          echo "${SDCC_SHA1}  sdcc.tar.bz2" | sha1sum -c -
+          mkdir -p "$RUNNER_TEMP/sdcc"
+          tar -xjf sdcc.tar.bz2 -C "$RUNNER_TEMP/sdcc" --strip-components=1
+          echo "$RUNNER_TEMP/sdcc/bin" >> "$GITHUB_PATH"
+      - name: Build and check the package
+        run: python release/make_release.py --ref "$TAG" --out dist --check
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip --clobber
+          else
+            gh release create "$TAG" dist/*.zip --title "$TAG" --generate-notes --verify-tag
+          fi
