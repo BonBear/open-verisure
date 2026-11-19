@@ -12,7 +12,7 @@
  * 1. Microcontroller & Radio:
  *    - SoC: Texas Instruments CC1110F32 (8051 CPU, 32 KB Flash, 4 KB XRAM); runs on the
  *      27 MHz crystal while awake, on the HS RC oscillator around PM2 sleep
- *    - Power: PM2 sleep (~17 uA idle) with a 0.5 s sleep-timer tick; port interrupts on
+ *    - Power: PM2 sleep (~26 uA idle) with a 0.5 s sleep-timer tick; port interrupts on
  *      reed (P1_7), shock (P1_2) and tamper (P0_1) wake it. Watchdog ~1 s, heartbeat
  *      every HEARTBEAT_INTERVAL_SEC (3600 s). Below BOOT_MIN_MV (2.3 V) at boot nothing is
  *      logged or sent; the battery is measured again about every minute.

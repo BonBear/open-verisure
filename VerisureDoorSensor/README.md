@@ -8,7 +8,7 @@ Open-source firmware for the Verisure **GW-MC-SHOCK** door/window sensor (TI CC1
 
 * **Event driven, sleeping in PM2:** the CC1110 sleeps in PM2 and wakes on port interrupts from
   the reed switch (P1_7, door open/close), the shock sensor (P1_2) and the tamper switch (P0_1),
-  and on a 0.5 s sleep-timer tick. Idle current is about 17 uA. A heartbeat goes out every
+  and on a 0.5 s sleep-timer tick. Idle current is about 26 µA. A heartbeat goes out every
   3600 s, and a ~1 s watchdog resets the chip if it ever hangs.
 * **Encrypted packets:** 24 bytes, the 8-byte plaintext device ID followed by one AES-128-ECB
   block encrypted with the device key. The block carries a 32-bit persistent packet counter
@@ -25,11 +25,14 @@ Open-source firmware for the Verisure **GW-MC-SHOCK** door/window sensor (TI CC1
 * **Home Assistant entities** (created by the gateway): door contact, vibration, tamper,
   battery %, battery voltage (mV), signal strength.
 
-**Status:** verified on the bench (2026-11-17): PM2 sleep (idle ~17 µA), heartbeat, boot, and the
+**Status:** verified on the bench (2026-11-17): PM2 sleep, heartbeat, boot, and the
 events: reed open/close (a packet per change, ~0.33 s apart when toggled fast), shock and tamper
 (pressed/released), each sent at once; the gateway logs a frequency error of +3.2 kHz. Idle current
 at 3.0 V is the same with the door closed and the tamper switch pressed (lid on) as with them open:
-17.9 µA (Otii, 4 minutes), so the pull-ups dropped in PM2 for closed switches work.
+17.9 µA (Otii, 4 minutes), so the pull-ups dropped in PM2 for closed switches work. A 2.6 h
+recording on 2026-11-19 (lid on, 0.5 s tick for the 36 kHz sleep clock) gave 26.3 µA, with
+heartbeats 60.0 min apart; the 2026-11-17 recording read its sleep floor at -6 µA, so its
+absolute value was low. Most of the idle current is the crystal start at every tick (TODO).
 
 ## Hardware
 
