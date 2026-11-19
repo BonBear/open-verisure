@@ -765,6 +765,10 @@ static void handleApiStatus() {
     json += "\"marcstate\":\"0x" + String(s_cachedMarc, HEX) + "\",";
     json += "\"total_packets\":" + String(s_cachedPackets) + "},";
 
+    json += "\"diag\":{";       // counters since boot (gateway_diag.h)
+    gatewayDiagAppendJson(json, gatewayDiagSample());
+    json += "},";
+
     json += "\"mqtt\":{";
     json += "\"connected\":" + String(mqttIsConnected() ? "true" : "false") + ",";
     json += "\"status\":\"" + jsonEscape(mqttGetStatusString()) + "\"},";

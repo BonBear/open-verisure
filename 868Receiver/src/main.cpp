@@ -40,6 +40,7 @@
 #include "image_receiver.h"
 #include "downlink.h"
 #include "ha_discovery.h"
+#include "gateway_diag.h"
 #include <WiFi.h>
 
 #include "hardware_pins.h"
@@ -412,9 +413,13 @@ static void radioService() {
             int packetRssi = (rawRssi >= 128) ? ((rawRssi - 256) / 2) - 74 : (rawRssi / 2) - 74;
             const uint8_t* activeMasterKey = ConfigManager::get().masterKey;
 
-            if (crcAt(frame, BIG_PACKET_LEN) && cryptoProcessBigPacket(frame, activeMasterKey)) {
+            bool crcBig = crcAt(frame, BIG_PACKET_LEN);
+            bool crcSmall = crcAt(frame, VERISURE_PACKET_LEN);
+            if (crcBig || crcSmall) g_gatewayDiag.rxCrcOk++;
+
+            if (crcBig && cryptoProcessBigPacket(frame, activeMasterKey)) {
                 // camera image packet (type 0x82), handled by the image receiver
-            } else if (crcAt(frame, VERISURE_PACKET_LEN)) {
+            } else if (crcSmall) {
                 VerisureTelemetry telem;
                 if (cryptoProcessPacket(frame, packetRssi, rawLqi & 0x7F, activeMasterKey, &telem)) {
                     if (haIsMotionCameraSensor(telem.deviceId)) {

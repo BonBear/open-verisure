@@ -79,6 +79,8 @@ To save tokens and prevent mistakes, the following strict rules apply:
 
 To preserve knowledge and avoid recurring mistakes across sessions, the team uses a shared memory bank: [memory.md](.agents/memory.md).
 
+The memory bank is grouped by topic (CC1110 general, RF link, crypto/replay/protocol, door sensor, camera CC1110, camera Blackfin, camera image pipeline, gateway, build/toolchains, bench tools); add each entry to its section and rewrite entries that a later finding supersedes.
+
 ### Rules for memory management:
 1. **Read before starting:** Before a subagent starts a task involving hardware, protocols or the build system, the relevant sections of `.agents/memory.md` must be consulted.
 2. **Qualify new lessons learned:** When a hard-to-solve problem, a hardware quirk (e.g. register properties, timing, pin limitations) or a build fix has been confirmed to work, it must be documented.

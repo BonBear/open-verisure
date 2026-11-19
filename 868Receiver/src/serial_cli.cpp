@@ -12,6 +12,7 @@
 #include "downlink.h"
 #include "crypto.h"
 #include "image_receiver.h"
+#include "gateway_diag.h"
 #include <WiFi.h>
 #include <SPI.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
@@ -137,6 +138,17 @@ static void printStatus() {
     cryptoKeyCheckValue(cfg.masterKey, kcv);
     Serial.printf("  Master Key   : set (check value %s)\n", kcv);   // never print the key
     Serial.printf("  Freq. offset : %d (FSCTRL0, x 1.587 kHz)\n", cfg.freqOffset);
+    const GatewayDiagSample ds = gatewayDiagSample();
+    const GatewayDiag& d = g_gatewayDiag;
+    Serial.printf("  Last reset   : %s\n", ds.resetReason);
+    Serial.printf("  Free heap    : %lu B (minimum %lu B)\n", (unsigned long)ds.freeHeap,
+                  (unsigned long)ds.minFreeHeap);
+    Serial.printf("  RX (boot)    : CRC OK %lu | auth OK %lu | auth rejected %lu | replay dropped %lu\n",
+                  (unsigned long)d.rxCrcOk, (unsigned long)d.authOk, (unsigned long)d.authFail,
+                  (unsigned long)d.replayDrop);
+    Serial.printf("                 stale picture chunks %lu | session table full %lu | last rejected %s\n",
+                  (unsigned long)d.picStale, (unsigned long)d.sessionFull,
+                  d.lastRejectedId[0] ? d.lastRejectedId : "-");
     Serial.printf("  Sensors      : %d registered\n", sensorRegistryGetCount());
 
     int count = sensorRegistryGetCount();

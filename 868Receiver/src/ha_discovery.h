@@ -23,6 +23,7 @@
 
 #include <Arduino.h>
 #include "crypto.h"
+#include "gateway_diag.h"
 
 /**
  * @struct HaEntityDef
@@ -123,7 +124,7 @@ String haStateBuildPayload(const VerisureTelemetry& telem);
 
 /**
  * @brief Get total number of entity definitions exposed for the gateway itself.
- * @return Gateway entity count (RF RSSI, packet count, active sensor count).
+ * @return Gateway entity count (RF RSSI, packet count, active sensors, diagnostics).
  */
 int haDiscoveryGetGatewayEntityCount();
 
@@ -155,6 +156,8 @@ String haDiscoveryBuildGatewayPayload(const HaEntityDef* def, const char* baseTo
  * @param marcstate Radio modem state register.
  * @param totalPackets Cumulative number of successfully received packets.
  * @param activeSensors Number of active sensors registered.
+ * @param diag Uptime, reset reason and heap; the counters come from g_gatewayDiag.
  * @return JSON payload.
  */
-String haStateBuildGatewayPayload(int radioRssi, uint8_t marcstate, uint32_t totalPackets, int activeSensors);
+String haStateBuildGatewayPayload(int radioRssi, uint8_t marcstate, uint32_t totalPackets, int activeSensors,
+                                  const GatewayDiagSample& diag);
