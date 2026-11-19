@@ -27,7 +27,7 @@ INCLUDE = [
     "VerisureDoorSensor/README.md", "VerisureDoorSensor/main.c", "VerisureDoorSensor/config.h.example",
     "VerisureDoorSensor/build_and_flash.py",
     "MD_CAM/README.md", "MD_CAM/build_and_flash_md_cam.py", "MD_CAM/firmware", "MD_CAM/blackfin",
-    "MD_CAM/test_camera_e2e.py",
+    "MD_CAM/test_camera_e2e.py", "MD_CAM/test_resend.py", "MD_CAM/dump_cc1110.py",
     "documentation",
 ]
 # never in the package, even if tracked by mistake
@@ -84,7 +84,11 @@ def github_blob(ref):
     m = re.match(r"(?:https://github\.com/|git@github\.com:)([^/]+/[^/]+?)(?:\.git)?$", url)
     if not m:
         return None
-    return f"https://github.com/{m.group(1)}/blob/{git('rev-parse', ref).strip()}/"
+    sha = git("rev-parse", ref).strip()
+    if not git("branch", "-r", "--contains", sha).strip():
+        print(f"[!] {sha[:7]} is not on any remote branch yet: the GitHub links in the package "
+              "give 404 until it is pushed")
+    return f"https://github.com/{m.group(1)}/blob/{sha}/"
 
 
 def relink(top, blob):
