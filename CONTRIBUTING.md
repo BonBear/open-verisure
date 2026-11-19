@@ -35,8 +35,9 @@ If you have unused sensors, you can contribute by:
 ## 🛠️ Development & Coding Standards
 
 ### 1. Sensor Firmware (MCS-51 / 8051)
-* **Compiler:** Must compile cleanly with **SDCC (Small Device C Compiler)**:
-  `sdcc -mmcs51 --model-small`
+* **Compiler:** Must compile cleanly with **SDCC (Small Device C Compiler)** 4.5 or newer:
+  `sdcc -mmcs51 --model-small` for the door sensor, `--model-large` for the camera
+  (see the build scripts for the full options).
 * **Memory Constraints:** The CC1110F32 has 32 KB Flash and 4 KB XRAM. Always allocate buffers in `__xdata` and constant lookups in `__code`.
 * **Hardware Register Safety:**
   * **Radio registers:** use the SDCC `cc1110.h` names (`FSCAL0` = 0xDF1F, `PA_TABLE0` = 0xDF2E).

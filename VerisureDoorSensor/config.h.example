@@ -23,7 +23,8 @@
  * @brief 8-character ASCII identifier for this sensor node.
  *
  * This matches the code printed on the sensor's physical sticker (e.g. "2JHL2MVN")
- * or can be any custom 8-character string (e.g. "VS-DOOR1").
+ * or can be any custom ID of exactly 8 characters A-Z/0-9 (e.g. "VSDOOR01"); the gateway
+ * and derive_key.py reject anything else.
  * The first 8 bytes of each RF transmission are sent in plaintext with this ID.
  */
 #define DEVICE_ID "SAMPLE01"

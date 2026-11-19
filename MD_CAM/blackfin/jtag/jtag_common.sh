@@ -4,7 +4,8 @@
 # Before use (once per Windows session; the WSL VM stops when nothing runs in it):
 #   powershell Start-Process wsl -ArgumentList '-u','root','sleep','28800'   # keeps WSL up 8 h
 #   usbipd attach --wsl --busid <FT232H busid>                              # e.g. 5-4
-# The Blackfin must be powered (the CC1110 powers it for a picture and keeps it on 120 s).
+# The Blackfin must be powered: the CC1110 keeps it on only 15 s after a picture (BF_KEEP_ON_S),
+# so publish HOLD to verisure/<id>/picture/set first (on for 10 min without a picture).
 # Run the scripts with MSYS_NO_PATHCONV=1 so Git Bash leaves the gdb arguments alone.
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BLACKFIN=$(cd "$HERE/.." && pwd)

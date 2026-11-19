@@ -17,7 +17,7 @@
  *      every HEARTBEAT_INTERVAL_SEC (3600 s). Below BOOT_MIN_MV (2.3 V) at boot nothing is
  *      logged or sent; the battery is measured again about every minute.
  *    - Radio: Built-in Sub-1GHz CC1100/CC1101 transceiver core
- *    - RF Frequency: 868.950 MHz (2-FSK, 38.383 kBaud, 21.4 kHz frequency deviation)
+ *    - RF Frequency: 868.950 MHz (2-FSK, 38.418 kBaud, 21.4 kHz frequency deviation)
  *    - RF Crystal (X1): 27.000 MHz (Important: FREQ and MDMCFG registers are
  *      specifically calibrated for the 27 MHz reference crystal)
  *    - TX Output Power: +10 dBm (PA_TABLE0 = 0xC2)
@@ -234,13 +234,13 @@ uint8_t calculate_battery_pct(uint16_t mv) {
 }
 
 /* ============================================================================
- * System Clock Initialization (26.000 MHz External Crystal)
+ * System Clock Initialization (27.000 MHz External Crystal)
  * ============================================================================ */
 
 /**
  * @brief Initialize the high-speed system oscillator to the 27 MHz XOSC.
  * @details Powers up the external crystal oscillator and cleanly switches
- * the CPU clock from the internal 13 MHz RC oscillator to the 27 MHz crystal.
+ * the CPU clock from the internal 13.5 MHz RC oscillator to the 27 MHz crystal.
  */
 void clock_init(void) {
     uint16_t timeout;
@@ -637,8 +637,8 @@ static void battery_guard(void) {
  * - P0_4: Green Status LED (Output; 1 = ON)
  * - P1_2: Vibration/Shock sensor (Input with pull-up)
  * - P1_7: Magnetic reed switch (Input with pull-up; 0 = closed/magnet, 1 = open)
- * - P2_1: DD (Debug Data) / Pin 5 on J2 header (Output diagnostic)
- * - P2_2: DC (Debug Clock) / Pin 4 on J2 header (Output diagnostic)
+ * - P2_1: DD (Debug Data) / Pin 4 on J2 header (Output diagnostic)
+ * - P2_2: DC (Debug Clock) / Pin 5 on J2 header (Output diagnostic)
  */
 void setup_gpio(void) {
     // Port 0 Configuration:
@@ -680,8 +680,9 @@ void setup_gpio(void) {
  * - Reference RF Crystal: 27.000 MHz (X1)
  * - Target Frequency: 868.950 MHz
  *   FREQ = (868.950 * 2^16) / 27.000 = 2109167 = 0x202EEF (FREQ2=0x20, FREQ1=0x2E, FREQ0=0xEF)
- * - Data Rate: 38.383 kBaud
- *   MDMCFG4 = 0x8A, MDMCFG3 = 0x75 (38.386 kBaud at 27 MHz)
+ * - Data Rate: 38.418 kBaud
+ *   MDMCFG4 = 0x8A, MDMCFG3 = 0x75: (256 + 117) * 2^10 * 27 MHz / 2^28 = 38,418 Baud
+ *   (the gateway's CC1101 runs 38,383 Baud with its 26 MHz crystal, 0.09 % apart)
  * - Modulation: 2-FSK with 21.4 kHz frequency deviation (DEVIATN = 0x35)
  * - Sync Word: 0xD3 0x91 (30/32 bits match)
  * - Output Power: +10 dBm (PA_TABLE0 = 0xC2)
@@ -709,7 +710,7 @@ void radio_init(void) {
     FREQ1 = 0x2E;
     FREQ0 = 0xEF;
 
-    // Modem configuration (38.383 kBaud, 2-FSK, 4B preamble, 30/32 sync bits)
+    // Modem configuration (38.418 kBaud, 2-FSK, 4B preamble, 30/32 sync bits)
     MDMCFG4 = 0x8A;
     MDMCFG3 = 0x75;
     MDMCFG2 = 0x03; // 2-FSK, 30/32 sync word bits

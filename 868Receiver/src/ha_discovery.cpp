@@ -8,8 +8,8 @@
 /** Seconds without a packet before Home Assistant shows a camera's entities as unavailable
  *  (the camera polls every ~30 s, every ~2 minutes when disarmed and idle). */
 #define HA_CAMERA_EXPIRE_S 600
-/** The same for the door sensor: heartbeat every 3600 s (its RC sleep timer runs ~9 % fast, so
- *  ~55 min); 2.5 h is two missed heartbeats plus margin. */
+/** The same for the door sensor: heartbeat every 3600 s (60.0 min apart since its sleep tick
+ *  fix); 2.5 h is two missed heartbeats plus margin. */
 #define HA_SENSOR_EXPIRE_S 9000
 
 /**

@@ -6,7 +6,9 @@
  *  - PIR Motion (P1_7, active LOW) wakes the CPU instantly via Port 1 interrupt.
  *  - Sleep Timer wakes the CPU every 0.5 s to sample the rear tamper switch SW3 on P1_6
  *    (tamper_read) and to count down the poll interval.
- *  - 27 MHz XOSC + radio are only powered while transmitting.
+ *  - The 27 MHz XOSC runs whenever the CPU is awake: cam_sleep() stops it only for PM2 (via the
+ *    HS RCOSC) and starts it again at every wake-up, i.e. at each 0.5 s tick. The radio is on
+ *    only to send and for the listen window after a poll.
  *
  * Tamper: SW3 closes P1_6 to VBAT when the camera is pressed against the wall (secure);
  * released = cover off the wall = tamper (flag bit 2, event 0xB5 on every change).
@@ -344,7 +346,7 @@ void radio_init(void) {
     FREQ1 = 0x2E;
     FREQ0 = 0xEF;
 
-    MDMCFG4 = 0x8A; // 38.383 kBaud, 2-FSK
+    MDMCFG4 = 0x8A; // 38.418 kBaud at 27 MHz, 2-FSK
     MDMCFG3 = 0x75;
     MDMCFG2 = 0x03;
     MDMCFG1 = 0x22;

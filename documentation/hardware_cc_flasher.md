@@ -13,7 +13,7 @@ The flashing and debug interface consists of 7 through-hole/test pads situated a
 
 | J2 Pin | Shape & Marking | Measured Node on CC1110 | Signal Name | Description & Function |
 | :---: | :--- | :---: | :---: | :--- |
-| **`J2-1`** | Square pad (white dot) | `P1_0` or `P1_1` (not verified) | Aux / UART | Factory test point / Aux GPIO |
+| **`J2-1`** | Square pad (white dot) | CC1110 pin 3, `P1_1` (not verified) | Aux / UART | Factory test point / Aux GPIO |
 | **`J2-2`** | Round pad | `P1_0` or `P1_1` (not verified) | Aux / UART | Factory test point / Aux GPIO |
 | **`J2-3`** | Round pad | **VCC (3.3V)** | **VDD (Target Power)** | Direct supply from battery positive terminal via fuse `F1` |
 | **`J2-4`** | Round pad | **`P2_1`** | **`DD` (Debug Data)** | CC-Debugger bidirectional data line (verified 2026-11-17: DD is J2-4, not J2-5) |

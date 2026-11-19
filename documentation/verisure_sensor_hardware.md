@@ -67,7 +67,7 @@ The firmware copies this value into flag bits 7:6 of every packet (see [cryptogr
 
 | J2 Pin | Measured Node | Function |
 | :---: | :--- | :--- |
-| **`J2-1`** | CC1110 pin 3 (`P1_1`) | Square pad (white dot). Aux / UART / GPIO. |
+| **`J2-1`** | CC1110 pin 3, `P1_1` (not verified) | Square pad (white dot). Aux / UART / GPIO. |
 | **`J2-2`** | CC1110 pin 2 (as measured) | Round pad. Aux. |
 | **`J2-3`** | **VCC** | Target supply. Connected to the battery positive terminal via fuse `F1` / `BAT+_R`. |
 | **`J2-4`** | **`P2_1`** (pin 15) | **`DD`** (Debug Data) |
@@ -112,8 +112,8 @@ $$\text{FREQ} = \frac{f_{\text{carrier}} \times 2^{16}}{f_{\text{xosc}}} = \frac
 * **`FREQ1`** = `0x2E`
 * **`FREQ0`** = `0xEF` (Yields 868.950027 MHz, an error of only +27 Hz / 0.03 ppm!)
 
-Formula for symbol rate at standard 38.383 kBaud (`DRATE_E = 10`, `DRATE_M = 117`):
-$$R_{\text{data}} = \frac{(256 + 117) \times 2^{10}}{2^{28}} \times 27.000\text{ MHz} = 38\,386.6\text{ Baud}$$
+Formula for the symbol rate (`DRATE_E = 10`, `DRATE_M = 117`; the gateway's CC1101 uses `MDMCFG3 = 0x83` with its 26 MHz crystal, 38 383 Baud, 0.09 % apart):
+$$R_{\text{data}} = \frac{(256 + 117) \times 2^{10}}{2^{28}} \times 27.000\text{ MHz} = 38\,417.8\text{ Baud}$$
 * **`MDMCFG4`** = `0x8A`
 * **`MDMCFG3`** = `0x75`
 
@@ -132,7 +132,7 @@ Addresses are the CC1110 XDATA addresses from SDCC's `<cc1110.h>` (they do **not
 | `CHANNR` | `0xDF06` | `0x00` | Channel 0 |
 | `FSCTRL1` / `FSCTRL0` | `0xDF07` / `0xDF08` | `0x06` / `0x00` | IF frequency, no frequency offset |
 | `FREQ2..0` | `0xDF09..0xDF0B` | `0x20 0x2E 0xEF` | 868.950 MHz at 27 MHz |
-| `MDMCFG4` / `MDMCFG3` | `0xDF0C` / `0xDF0D` | `0x8A` / `0x75` | 38.386 kBaud |
+| `MDMCFG4` / `MDMCFG3` | `0xDF0C` / `0xDF0D` | `0x8A` / `0x75` | 38.418 kBaud |
 | `MDMCFG2` | `0xDF0E` | `0x03` | 2-FSK, 30/32 sync bits |
 | `MDMCFG1` / `MDMCFG0` | `0xDF0F` / `0xDF10` | `0x22` / `0xF8` | 4 bytes preamble, channel spacing |
 | `DEVIATN` | `0xDF11` | `0x35` | ~21.4 kHz deviation |
