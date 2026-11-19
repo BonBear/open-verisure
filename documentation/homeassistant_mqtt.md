@@ -62,7 +62,7 @@ homeassistant/
 The gateway picks the entity set from the device ID: IDs starting with `2NCE` are motion cameras,
 all others are door/window sensors.
 
-### Door/window sensor (6 entities)
+### Door/window sensor (7 entities)
 
 | Entity | Platform | Device Class (`device_class`) | Unit | Payload / Template | Description |
 | :--- | :---: | :---: | :---: | :---: | :--- |
@@ -71,6 +71,7 @@ all others are door/window sensors.
 | **Tamper** | `binary_sensor` | `tamper` | – | `{{ value_json.button }}`<br>(`ON` / `OFF`) | Tamper switch (reports Tamper/Open if cover is removed) |
 | **Battery** | `sensor` | `battery` | `%` | `{{ value_json.battery_pct }}` | Battery percentage (0–100%) |
 | **Battery Voltage** | `sensor` | `voltage` | `mV` | `{{ value_json.battery_mv }}` | Accurate battery terminal voltage in millivolts |
+| **Low Battery** | `binary_sensor` | `battery` | – | `{{ value_json.low_battery }}`<br>(`ON` / `OFF`) | Low-battery flag of the sensor (below 2.4 V) |
 | **Signal Strength** | `sensor` | `signal_strength` | `dBm` | `{{ value_json.rssi }}` | RF reception signal strength from sensor to gateway |
 
 ### Motion camera (10 entities)
