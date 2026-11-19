@@ -23,6 +23,7 @@ public:
     bool isKey(const char* key);
 
     size_t putChar(const char* key, int8_t value);
+    size_t putBool(const char* key, bool value);
     size_t putUShort(const char* key, uint16_t value);
     size_t putULong(const char* key, uint32_t value);
     size_t putString(const char* key, const char* value);
@@ -30,6 +31,7 @@ public:
     size_t putBytes(const char* key, const void* value, size_t len);
 
     int8_t getChar(const char* key, int8_t defaultValue = 0);
+    bool getBool(const char* key, bool defaultValue = false);
     uint16_t getUShort(const char* key, uint16_t defaultValue = 0);
     uint32_t getULong(const char* key, uint32_t defaultValue = 0);
     String getString(const char* key, String defaultValue = String());

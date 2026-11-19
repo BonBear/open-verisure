@@ -98,6 +98,11 @@ const std::vector<uint8_t>* Preferences::get(const char* key, char type) {
 }
 
 size_t Preferences::putChar(const char* key, int8_t v) { return put(key, 'c', &v, 1) ? 1 : 0; }
+size_t Preferences::putBool(const char* key, bool v) { uint8_t b = v ? 1 : 0; return put(key, 'b', &b, 1) ? 1 : 0; }
+bool Preferences::getBool(const char* key, bool d) {
+    const std::vector<uint8_t>* e = get(key, 'b');
+    return e ? (*e)[0] != 0 : d;
+}
 size_t Preferences::putUShort(const char* key, uint16_t v) { return put(key, 'S', &v, 2) ? 2 : 0; }
 size_t Preferences::putULong(const char* key, uint32_t v) { return put(key, 'L', &v, 4) ? 4 : 0; }
 

@@ -18,7 +18,8 @@ BUILD    := build
 CPPFLAGS := -DHOST_TEST -Istubs -I$(SRC_DIR) -I. $(MBEDTLS_CFLAGS)
 
 SOURCES := test_main.cpp test_crypto.cpp test_portal_util.cpp test_config.cpp \
-           stubs/host_stubs.cpp $(SRC_DIR)/crypto.cpp $(SRC_DIR)/config_manager.cpp
+           test_downlink.cpp stubs/host_stubs.cpp $(SRC_DIR)/crypto.cpp $(SRC_DIR)/config_manager.cpp \
+           $(SRC_DIR)/downlink.cpp
 OBJECTS := $(patsubst %.cpp,$(BUILD)/%.o,$(subst ../src/,src/,$(SOURCES)))
 DEPS    := $(OBJECTS:.o=.d)
 
