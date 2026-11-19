@@ -11,7 +11,7 @@ This project handles wireless alarm hardware and radio transmissions. While we i
   python derive_key.py --generate-master
   ```
 * Save this key in `secrets.h` on the gateway and use it when generating device keys with `derive_key.py`.
-* Prefer `secrets.h` over typing the key on the setup access point's page: the access point `Verisure-Gateway` has the fixed password `12345678` and its page is plain HTTP, so anyone in Wi-Fi range who joins it can read what you send. If you do use it, do the setup where nobody else can listen.
+* Prefer `secrets.h` over typing the key on the setup access point's page: the access point `Verisure-Gateway` has a password unique to each gateway (derived from its MAC, or `DEFAULT_AP_PASS` in `secrets.h`; shown only on the serial console), but its page is plain HTTP, so anyone who knows or cracks that password and is in Wi-Fi range can read what you send. Do the setup where nobody else can listen.
 
 ### 2. Keep Credentials Local
 * `VerisureDoorSensor/config.h`, `MD_CAM/firmware/config.h` and `868Receiver/src/secrets.h` are git-ignored.

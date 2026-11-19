@@ -968,10 +968,15 @@ void webPortalInit() {
     } else {
         Serial.println("[Wi-Fi] No Wi-Fi SSID configured. Starting Access Point 'Verisure-Gateway'...");
         WiFi.mode(WIFI_AP);
-        WiFi.softAP("Verisure-Gateway", "12345678");
+        // every gateway has its own AP password (see ConfigManager::apPassword): with a common
+        // one, anyone who recorded the setup could read the settings typed on the page
+        char apPass[64];
+        ConfigManager::apPassword(apPass);
+        WiFi.softAP("Verisure-Gateway", apPass);
         s_dnsServer.start(53, "*", WiFi.softAPIP());
         s_isApMode = true;
-        Serial.printf("[Wi-Fi] AP started! IP: %s (Password: 12345678)\n", WiFi.softAPIP().toString().c_str());
+        Serial.printf("[Wi-Fi] AP started! IP: %s (Password: %s)\n", WiFi.softAPIP().toString().c_str(), apPass);
+        memset(apPass, 0, sizeof(apPass));
     }
 
     // Web routes (access rules: authorize())
@@ -1009,6 +1014,15 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
 
     if (s_isApMode) {
         s_dnsServer.processNextRequest();
+        // repeat the AP password on the serial console for whoever opens it after the boot
+        static unsigned long lastApHint = 0;
+        if (millis() - lastApHint >= 60000UL) {
+            lastApHint = millis();
+            char apPass[64];
+            ConfigManager::apPassword(apPass);
+            Serial.printf("[Wi-Fi] Setup access point 'Verisure-Gateway', password: %s, page http://192.168.4.1\n", apPass);
+            memset(apPass, 0, sizeof(apPass));
+        }
     }
 
     // Non-blocking Wi-Fi monitor & reconnect: WiFi.begin() returns at once, so the radio FIFO is

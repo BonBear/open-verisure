@@ -30,8 +30,9 @@ pio run -d 868Receiver -t upload --upload-port <gateway port>
 ```
 
 `secrets.h` only needs `MASTER_KEY_HEX`; Wi-Fi, MQTT and the web portal password are optional
-there. Without Wi-Fi the gateway opens the setup access point `Verisure-Gateway` (password
-`12345678`, page `http://192.168.4.1`). Settings can be changed later in the web portal (stored
+there. Without Wi-Fi the gateway opens the setup access point `Verisure-Gateway` (its password is
+unique per gateway: the serial console shows it at boot, every minute and with `appass`; or
+set `DEFAULT_AP_PASS` in `secrets.h`; page `http://192.168.4.1`). Settings can be changed later in the web portal (stored
 in NVS).
 
 ## What it does
