@@ -66,7 +66,7 @@ def secret(name: str, default: str = "") -> str:
         text = open(SECRETS, encoding="utf-8").read()
     except OSError:
         return default
-    m = re.search(r'#define\s+%s\s+"([^"]*)"' % name, text)
+    m = re.search(r'(?m)^[ \t]*#define\s+%s\s+"([^"]*)"' % name, text)
     return m.group(1) if m else default
 
 

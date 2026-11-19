@@ -43,7 +43,7 @@ if not dev:
     sys.exit("[-] No camera ID: pass --device (no MD_CAM/firmware/config.h)")
 SECRETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "868Receiver", "src", "secrets.h")
 txt = open(SECRETS, encoding="utf-8").read()
-sec = lambda n, d="": (re.search(r'#define\s+%s\s+"([^"]*)"' % n, txt) or [None, d])[1]
+sec = lambda n, d="": (re.search(r'(?m)^[ \t]*#define\s+%s\s+"([^"]*)"' % n, txt) or [None, d])[1]
 lines, images = [], []
 ser = serial.Serial(port, 115200, timeout=0.3)
 def rd():
