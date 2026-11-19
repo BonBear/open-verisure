@@ -1,6 +1,6 @@
 # Actions are pinned to commit SHAs (tag in the comment) and the SDCC download is checksummed.
 # Build check for every push and pull request: the gateway firmware and its host unit tests, both
-# CC1110 firmwares and the key derivation. It uses only the *.example configs (placeholder keys, no
+# CC1110 firmwares and the host tests of their counter log, and the key derivation. It uses only the *.example configs (placeholder keys, no
 # credentials), so nothing secret is needed or produced. The builds are never flashed: the CC1110
 # builds are unseeded (counter block 1).
 name: build
@@ -50,6 +50,19 @@ jobs:
         # jpeg_splice.cpp built with g++ against stubs (868Receiver/test_host): unit tests and
         # deterministic fuzz tests (fuzz_*.cpp, a few seconds); only public test keys, no secrets.h
         run: make -C 868Receiver/test_host
+
+  cc1110-ctr-log-tests:
+    name: CC1110 counter log tests (host)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Fewer mmap random bits for AddressSanitizer
+        # ASan of GCC 13 can crash at start-up with the kernel's 32 bits (Ubuntu 24.04 runners)
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Run the tests
+        # the real ctr_log.c and both ctr_boot() (cut out of the main.c files at build time) on
+        # an emulated CC1110 flash, with gcc/g++ and the sanitizers (cc1110_common/test_host)
+        run: make -C cc1110_common/test_host
 
   cc1110:
     name: Door sensor and camera (CC1110, SDCC)
