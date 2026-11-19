@@ -90,7 +90,7 @@ your network (default `http://cc.local`). Generate the master key and set up the
    | `--id <label ID>` | Write `config.h` for this sensor first (key from `secrets.h`) |
    | `--serial <port>` | Flash over the flasher's USB serial port instead of Wi-Fi (no monitor) |
    | `--compile-only` | Only build `build/main.bin` |
-   | `--erase` | Full chip erase first (unlocks a protected or factory CC1110) |
+   | `--erase` | Full chip erase first. Required for a debug-locked (factory) CC1110; it wipes the factory firmware for good (it cannot be read back) |
    | `--gateway <url>` | Gateway HTTP address for the counter seed (env `GATEWAY_HTTP`, default `http://verisure-gateway.local`) |
    | `--no-seed` | Flash without asking the gateway (counter from block 1; needs `replay reset <ID>` if the gateway knew the sensor) |
 

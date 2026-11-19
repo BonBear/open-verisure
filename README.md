@@ -101,17 +101,20 @@ CC1110, and for the camera the ADI Blackfin GCC toolchain. The scripts run on Wi
    python derive_key.py --generate-master
    cp 868Receiver/src/secrets.h.example 868Receiver/src/secrets.h
    ```
-   Put the key in `868Receiver/src/secrets.h` as `MASTER_KEY_HEX` (git-ignored), and the Wi-Fi
-   and MQTT settings if you want them built in.
+   Put the key in `868Receiver/src/secrets.h` as `MASTER_KEY_HEX` (git-ignored). That is all the
+   file needs: Wi-Fi, MQTT and the web portal password are optional there and can be set on the
+   gateway's page instead. Never keep the example key of `secrets.h.example`: it is public.
 2. **Gateway.** Wire the CC1101 to the S2 Mini ([868Receiver/README.md](868Receiver/README.md)) and
    flash it:
    ```bash
    pio run -d 868Receiver -t upload
    ```
-   Without Wi-Fi settings it opens the access point `Verisure-Gateway` (password `12345678`); set Wi-Fi, MQTT and (if
-   not built in) the master key on its page, `http://192.168.4.1`. Afterwards the page is at
-   `http://verisure-gateway.local`. The serial console (`help`) shows the status and the key's
-   check value.
+   Without Wi-Fi settings it opens the access point `Verisure-Gateway` (password `12345678`); set
+   Wi-Fi and MQTT on its page, `http://192.168.4.1`. The first save also needs a web portal
+   password (8-64 characters). Afterwards the page is at `http://verisure-gateway.local` and the
+   browser asks for that password (any user name). For a gateway that is already on Wi-Fi without
+   one, set it on the serial console: `portalpass <password>`. The serial console (`help`) also
+   shows the status and the key's check value.
 3. **Flasher.** Build [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher) for the ESP32
    and wire it to the device's debug header
    ([documentation/hardware_cc_flasher.md](documentation/hardware_cc_flasher.md)). The scripts use
@@ -123,12 +126,14 @@ CC1110, and for the camera the ADI Blackfin GCC toolchain. The scripts run on Wi
    python VerisureDoorSensor/build_and_flash.py --id "2JHL 2MVN"                 # over Wi-Fi
    python VerisureDoorSensor/build_and_flash.py --id "2JHL 2MVN" --serial COM12  # over USB serial
    ```
-   The script asks the gateway for the sensor's last packet counter before flashing; if
-   `verisure-gateway.local` does not resolve, add `--gateway http://<gateway-ip>`.
+   A factory sensor's CC1110 is debug-locked, so its first flash needs `--erase`: the chip erase
+   wipes the factory firmware for good (it cannot be read back). The script asks the gateway for
+   the sensor's last packet counter before flashing; if `verisure-gateway.local` does not
+   resolve, add `--gateway http://<gateway-ip>`.
    Details: [VerisureDoorSensor/README.md](VerisureDoorSensor/README.md).
-5. **Camera (optional).** A factory camera needs its Blackfin boot flash written once over JTAG
-   and then its CC1110 flashed like the door sensor (`MD_CAM/build_and_flash_md_cam.py --id ...`):
-   [MD_CAM/README.md](MD_CAM/README.md).
+5. **Camera (optional).** A factory camera needs its CC1110 flashed first, like the door sensor
+   and also with `--erase` (`MD_CAM/build_and_flash_md_cam.py --id ... --erase`), and then its
+   Blackfin boot flash written once over JTAG: [MD_CAM/README.md](MD_CAM/README.md).
 6. **Home Assistant.** Each device appears under *Settings → Devices & services → MQTT* with its
    first packet (a door sensor: open/close it or press the tamper switch; the camera polls every
    ~2 minutes). Arm and disarm the cameras with `verisure/alarm/set` (`ON`/`OFF`):
@@ -148,6 +153,9 @@ source ~/vs-venv/bin/activate
 sudo usermod -aG dialout $USER     # serial port access; log out and in again
 ```
 
+* SDCC must be 4.5 or newer (`sdcc --version`). Ubuntu 26.04 packages 4.5, but Ubuntu 24.04's
+  `apt install sdcc` gives 4.2: there, install the Linux binary from
+  [sdcc.sourceforge.net](https://sdcc.sourceforge.net/) instead.
 * Serial ports are `/dev/ttyACM0` (the gateway, ESP32-S2 native USB) and `/dev/ttyUSB0` (the
   CP210x on the flasher) instead of `COM9`/`COM12`. The camera tests find the gateway by its USB
   ID; the other scripts take `--port`/`--serial` or show a port list.
@@ -191,8 +199,10 @@ Pin 1 of `J2` is the square pad with a white dot. Rules:
 * **AES-128** on every packet, hardware AES on the CC1110 and mbedTLS on the gateway.
 * **Per-device keys:** `DeviceKey = AES(MasterKey, Pad16(DeviceID))`; one compromised device does
   not expose the others.
-* **Authentication:** decrypted packets must contain the magic bytes `VS` and echo the device ID;
-  camera picture packets are chained (CBC) so blocks cannot be swapped between packets.
+* **Authentication:** decrypted packets must contain the magic bytes `VS` and echo the device ID.
+  Camera picture chunks are AES-CBC without a MAC: someone in radio range cannot read the
+  pictures, but can corrupt them, because a modified copy of a real chunk still passes the
+  gateway's checks.
 * **Replay protection:** the door sensor and the camera send a 32-bit packet counter that
   survives resets (its upper part is logged in flash; the gateway keeps the last value in NVS),
   so the gateway accepts only newer packets. Camera downlink answers echo the poll's counter, so
