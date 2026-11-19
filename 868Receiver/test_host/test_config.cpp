@@ -175,3 +175,19 @@ TEST(master_key_hex_rejects_bad_input) {
     CHECK(!ConfigManager::setMasterKeyHex("000102030405060708090a0b0c0d0e0g"));   // not hex
     CHECK(ConfigManager::masterKeyIsExample());                                   // unchanged
 }
+
+/* ---- Setup access point password ------------------------------------------------------------ */
+TEST(ap_password_unique_per_chip_and_typeable) {
+    char a[64], a2[64], b[64];
+    hostSetFactoryMac(MAC_A);
+    ConfigManager::apPassword(a);
+    ConfigManager::apPassword(a2);
+    hostSetFactoryMac(MAC_B);
+    ConfigManager::apPassword(b);
+    hostSetFactoryMac(MAC_A);
+    CHECK_EQ(strlen(a), 10);                       // WPA2 needs 8..63
+    CHECK_STR(a, a2);                              // stable for one chip
+    CHECK(strcmp(a, b) != 0);                      // differs between chips
+    for (const char* p = a; *p; p++)               // no 0/O/1/l/i: typed from the serial log
+        CHECK(strchr("abcdefghjkmnpqrstuvwxyz23456789", *p) != nullptr);
+}

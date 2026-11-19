@@ -1,11 +1,13 @@
 /**
  * @file test_main.cpp
- * @brief Runner of the host unit tests. Usage: gateway_tests [name-substring]
+ * @brief Runner of the host unit tests. Usage: gateway_tests|fuzz_tests [name-substring]
+ *        Exit code: 0 all passed, 1 a test failed, 77 no test matches the filter.
  */
 
 #include "test.h"
 #include <Arduino.h>
 #include <Preferences.h>
+#include "gateway_diag.h"
 #include <string>
 #include <vector>
 
@@ -63,6 +65,7 @@ void testResetWorld() {
     hostNvsWipe();
     hostSetMillis(100000);
     cryptoHostTestRestart();
+    gatewayDiagClear();
 }
 
 int main(int argc, char** argv) {
@@ -82,5 +85,6 @@ int main(int argc, char** argv) {
         }
     }
     printf("\n%d tests, %d failed\n", run, failed);
-    return (failed || run == 0) ? 1 : 0;
+    if (failed) return 1;
+    return run ? 0 : 77;        // no test matches the filter (the Makefile runs two binaries)
 }
