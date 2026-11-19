@@ -112,35 +112,7 @@ void delay_ms(uint16_t ms) {
  * AES-128 Coprocessor
  * ============================================================================ */
 
-void aes_load_key(const uint8_t __code *key) {
-    uint16_t timeout = 50000;
-    ENCCS = (0x02 << 1) | 0x01; // CMD = Load Key, ST = 1
-    for (uint8_t i = 0; i < 16; i++) {
-        ENCDI = key[i];
-    }
-    while (!(ENCCS & 0x08) && --timeout);
-}
-
-// After an encrypt/decrypt ENCCS.RDY did not come up before ENCDO is read, so waiting for
-// it with a 50000 timeout cost 44 ms per block (measured with Timer 1): a picture chunk
-// took 52 ms instead of ~8 ms. Wait at most 120 short loop passes (~0.1 ms) instead, far
-// more than one AES block needs; the key load still waits for RDY (it does come up there).
-static void aes_wait(void) {
-    uint8_t d;
-    for (d = 0; d < 120 && !(ENCCS & 0x08); d++)
-        ;
-}
-
-void aes_encrypt_block(const uint8_t *in, uint8_t *out) {
-    ENCCS = 0x40 | 0x01; // MODE = ECB, CMD = Encrypt, ST = 1
-    for (uint8_t i = 0; i < 16; i++) {
-        ENCDI = in[i];
-    }
-    aes_wait();
-    for (uint8_t i = 0; i < 16; i++) {
-        out[i] = ENCDO;
-    }
-}
+#include "../../cc1110_common/aes.c"
 
 /* ============================================================================
  * Battery (VDD/3)
@@ -223,30 +195,7 @@ static uint8_t bat_load_code(void) {
  * Clock switching: 27 MHz XOSC (TX) <-> 13.5 MHz HS RCOSC (required before PM2)
  * ============================================================================ */
 
-/** @brief Run on 27.000 MHz crystal Y1 (needed for radio). */
-static void clock_xosc(void) {
-    uint16_t timeout;
-    SLEEP &= ~0x04;                               // Power up both HS oscillators
-    timeout = 50000;
-    while (!(SLEEP & 0x40) && --timeout);         // XOSC_STB
-    CLKCON = (CLKCON & 0x80);                     // OSC=0 (XOSC), TICKSPD=0, CLKSPD=0
-    timeout = 50000;
-    while ((CLKCON & 0x40) && --timeout);
-    SLEEP |= 0x04;                                // Power down unused HS RCOSC
-}
-
-/** @brief Run on 13.5 MHz HS RCOSC and power down the 27 MHz crystal. */
-static void clock_rcosc(void) {
-    uint16_t timeout;
-    RFST = 0x04;                                  // Radio SIDLE
-    SLEEP &= ~0x04;
-    timeout = 50000;
-    while (!(SLEEP & 0x20) && --timeout);         // HFRC_STB
-    CLKCON = (CLKCON & 0x80) | 0x40 | 0x08 | 0x01; // OSC=1, TICKSPD=001, CLKSPD=001
-    timeout = 50000;
-    while (!(CLKCON & 0x40) && --timeout);
-    SLEEP |= 0x04;                                // Power down unused 27 MHz XOSC
-}
+#include "../../cc1110_common/clock.c"
 
 
 /* ============================================================================
@@ -457,28 +406,7 @@ bool radio_send_dma(void) {
  * Sleep Timer + PM2
  * ============================================================================ */
 
-/** @brief Start the periodic 0.5 s Sleep Timer Event0 (runs on the 36 kHz calibrated RCOSC). */
-static void sleep_timer_init(void) {
-    uint8_t t0;
-    uint16_t timeout;
-
-    WORCTRL = 0x04 | ST_WOR_RES; // WOR_RESET + resolution
-
-    // Wait for 2 sleep-timer edges after reset (SWRS033), bounded so it can never hang
-    t0 = WORTIME0;
-    timeout = 60000;
-    while (WORTIME0 == t0 && --timeout);
-    t0 = WORTIME0;
-    timeout = 60000;
-    while (WORTIME0 == t0 && --timeout);
-
-    WOREVT1 = (uint8_t)(ST_WOREVT >> 8);
-    WOREVT0 = (uint8_t)ST_WOREVT;
-
-    WORIRQ = 0x10; // EVENT0_MASK = 1, clear flag
-    STIF = 0;
-    STIE = 1;
-}
+#include "../../cc1110_common/sleep_timer.c"
 
 /**
  * @brief Enter PM2 until the Sleep Timer tick or a PIR edge on P1_7.
@@ -567,97 +495,7 @@ static __xdata uint32_t s_ctr_first; // first counter of this boot (its block is
 static __xdata uint32_t s_pic_tag;   // counter of the start packet (0xB2) of the last picture
 static __xdata uint8_t s_rst_cause;  // SLEEP.RST at boot, sent in flags bits 7:6
 
-static const __code uint8_t *ctr_entry(uint8_t page, uint16_t i) {
-    return (const __code uint8_t *)(CTR_PAGE_ADDR(page) + (i << 2));
-}
-
-static bool ctr_erased(const __code uint8_t *e) {
-    return (e[0] & e[1] & e[2] & e[3]) == 0xFF;
-}
-
-/** @return true and the block in *block if the entry is valid. */
-static bool ctr_decode(const __code uint8_t *e, uint32_t *block) {
-    if (e[3] == 0xFF || e[1] != (uint8_t)(e[0] ^ e[2] ^ e[3] ^ 0xA5))
-        return false;
-    *block = (uint32_t)e[0] | ((uint32_t)e[2] << 8) | ((uint32_t)e[3] << 16);
-    return true;
-}
-
-/** @brief Flash timing (FWT) is set for the 27 MHz crystal: no flash operation without it. */
-static bool flash_clock_ok(void) {
-    return (CLKCON & 0x40) == 0;   // OSC = 0: crystal
-}
-
-static void flash_erase_page(uint8_t page) {
-    if (!flash_clock_ok()) return;
-    WDT_FEED();
-    FWT = 0x23;                  // 21000 * 27 MHz / 16e9 = 35.4 (SWRS033 flash timing)
-    FADDRH = page << 1;          // word address of the page
-    FADDRL = 0;
-    FCTL |= 0x01;                // ERASE
-    __asm nop __endasm;
-    while (FCTL & 0x80);         // BUSY (~20 ms)
-}
-
-/** @brief Write the 4 bytes in ctr_buf to flash (word aligned) with DMA, the way the CC1110
- *  needs it when the code runs from flash. */
-static void flash_write4(uint16_t addr) {
-    if (!flash_clock_ok()) return;
-    WDT_FEED();
-    FWT = 0x23;
-    FADDRH = (uint8_t)(addr >> 9);   // word address = byte address / 2
-    FADDRL = (uint8_t)(addr >> 1);
-    dma_desc.src_h = (uint8_t)(((uint16_t)ctr_buf) >> 8);
-    dma_desc.src_l = (uint8_t)(((uint16_t)ctr_buf) & 0xFF);
-    dma_desc.dst_h = X_FWDATA_H;
-    dma_desc.dst_l = X_FWDATA_L;
-    dma_desc.len_h = 0x00;
-    dma_desc.len_l = 4;
-    dma_desc.cfg0  = DMA_TRIG_FLASH; // byte size, single mode, trigger FLASH
-    dma_desc.cfg1  = 0x42;           // SRCINC=1, DESTINC=0, no IRQ, PRIORITY=High
-    DMA0CFGH = (uint8_t)(((uint16_t)&dma_desc) >> 8);
-    DMA0CFGL = (uint8_t)(((uint16_t)&dma_desc) & 0xFF);
-    DMAIRQ &= ~0x01;
-    DMAARM = 0x01;
-    __asm
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-    __endasm;
-    FCTL |= 0x02;                    // WRITE: each byte written to FWDATA by the DMA
-    while (FCTL & 0x80);             // BUSY until all 4 bytes are written
-}
-
-/** @brief Append a block number to the log (up to 3 slots if a write does not read back).
- *  @return false if no slot read back (worn page, weak supply, no crystal): see ctr_pending. */
-static bool ctr_log(uint32_t block) {
-    uint8_t tries;
-    uint32_t got;
-
-    if (block > CTR_BLOCK_MAX) block = CTR_BLOCK_MAX;
-    ctr_buf[0] = (uint8_t)block;
-    ctr_buf[2] = (uint8_t)(block >> 8);
-    ctr_buf[3] = (uint8_t)(block >> 16);
-    ctr_buf[1] = ctr_buf[0] ^ ctr_buf[2] ^ ctr_buf[3] ^ 0xA5;
-    for (tries = 0; tries < 3; tries++) {
-        if (ctr_next >= CTR_ENTRIES) {
-            ctr_page = (ctr_page == CTR_PAGE0) ? CTR_PAGE0 + 1 : CTR_PAGE0;
-            flash_erase_page(ctr_page);
-            ctr_next = 0;
-        }
-        flash_write4(CTR_PAGE_ADDR(ctr_page) + (ctr_next << 2));
-        ctr_next++;
-        if (ctr_decode(ctr_entry(ctr_page, ctr_next - 1), &got) && got == block)
-            return true;
-    }
-    return false;
-}
+#include "../../cc1110_common/ctr_log.c"
 
 /* A block whose log entry failed is retried before every packet in it: packets in an unlogged
  * block would be reused after the next reset (the gateway drops them, and the device would be
