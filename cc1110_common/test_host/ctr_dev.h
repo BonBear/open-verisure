@@ -30,9 +30,9 @@ struct ctr_dev {
     void (*reset)(void);
     /** ctr_boot(); *first = the first counter value of this boot. */
     bool (*boot)(uint32_t *first);
-    /** The firmware's counter rule before sending the packet with counter @p ctr
-     *  (@p boot_pkts: packets already sent since this boot, saturating at 255). */
-    bool (*packet)(uint32_t ctr, uint8_t boot_pkts);
+    /** The firmware's counter rule before the packet with counter @p ctr; *send = the packet
+     *  goes out (false: it is held, nothing is sent and the counter stays). */
+    bool (*packet)(uint32_t ctr, bool *send);
     /** ctr_log(block) directly; *ok = its result. */
     bool (*log)(uint32_t block, bool *ok);
     /** flash_erase_page() and flash_write4() directly (4 bytes from @p data). */
@@ -43,10 +43,12 @@ struct ctr_dev {
     bool (*erased)(uint8_t page, uint16_t i);
     bool (*clock_ok)(void);
 
-    uint32_t (*pending)(void);
+    /** ctr_limit: the highest block a packet may use (the newest logged block + 1). */
+    uint32_t (*limit)(void);
     unsigned (*page)(void);
     unsigned (*next)(void);
-    void (*set_log_state)(unsigned page, unsigned next, uint32_t pending);
+    bool (*safe)(void);
+    void (*set_log_state)(unsigned page, unsigned next, uint32_t limit, bool safe);
 };
 
 extern const struct ctr_dev dev_door, dev_door4, dev_door_seed, dev_door_seed0, dev_door_seedbig;

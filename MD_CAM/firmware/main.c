@@ -467,10 +467,15 @@ static void enter_pm2(void) {
  * never fits a later poll). Before this the camera restarted its 16-bit seq at every reset and
  * the gateway had to accept its power-on packet, which re-opened all recorded packets.
  * The log: 4-byte entries, appended; 0xFFFFFFFF = empty. An entry is [b0, check, b1, b2] with the
- * 24-bit block b2:b1:b0 and check = b0 ^ b1 ^ b2 ^ 0xA5. A write cut short leaves b2 = 0xFF and
- * blocks never reach 0xFF0000, so such an entry, or one with a wrong check byte, is skipped.
- * Every entry is read back. When the page of the newest entry is full, the other page is erased
- * and used. Reflashing erases the log: build_and_flash_md_cam.py builds the firmware with
+ * 24-bit block b2:b1:b0 and check = the number of 0 bits in b0, b1 and b2 (a Berger code, since
+ * 2026-11-19): a cut write or erase and a worn cell only leave bits at 1, so such an entry never
+ * passes and is skipped. Blocks never reach 0xFF0000; above CTR_BLOCK_MAX nothing is logged and
+ * nothing sent. Every entry is read back, and a slot that is not blank is never written. When the
+ * page of the newest entry is full, the other page is erased and used (only with the crystal,
+ * and only once this page holds the newest entry). A packet is sent only in a block up to the
+ * newest logged block + 1 (ctr_use), as the next boot starts at newest + 2; a block that cannot
+ * be logged holds the packets (transmit sends nothing). Details: the door sensor's main.c.
+ * Reflashing erases the log: build_and_flash_md_cam.py builds the firmware with
  * CTR_SEED = the block above the gateway's last accepted counter (GET /api/replay).
  * Picture chunks (56-byte packets) do not use up counter values: each picture starts with a
  * 24-byte packet of type 0xB2, and all its chunks (also resent ones) carry that packet's counter
@@ -491,20 +496,14 @@ static __xdata uint8_t ctr_buf[4];
 static __xdata uint8_t ctr_page;     // page the next entry goes to
 static __xdata uint16_t ctr_next;    // next free entry in ctr_page (CTR_ENTRIES = full)
 static __xdata uint32_t s_ctr;       // counter of the next 24-byte packet
-static __xdata uint32_t s_ctr_first; // first counter of this boot (its block is already logged)
 static __xdata uint32_t s_pic_tag;   // counter of the start packet (0xB2) of the last picture
 static __xdata uint8_t s_rst_cause;  // SLEEP.RST at boot, sent in flags bits 7:6
 
 #include "../../cc1110_common/ctr_log.c"
 
-/* A block whose log entry failed is retried before every packet in it: packets in an unlogged
- * block would be reused after the next reset (the gateway drops them, and the device would be
- * silent until its counter passes them again, ~10 days for a door sensor). 0 = none (block 0 is
- * never used). The boot also skips one block (see ctr_boot), which covers one unlogged block. */
-static __xdata uint32_t ctr_pending;
-
 /** @brief Find the newest valid block and log the next one, which this boot uses (on the
- *  crystal). Sets s_ctr to the first counter value of this boot. */
+ *  crystal; its packets are held while it is not logged: ctr_use). Sets s_ctr to the first
+ *  counter value of this boot. */
 static void ctr_boot(void) {
     uint32_t best = 0, v;
     bool found = false;
@@ -530,12 +529,13 @@ static void ctr_boot(void) {
     ctr_next = used[ctr_page - CTR_PAGE0];
     // An empty log means the chip was just flashed: start at CTR_SEED (build_and_flash_md_cam.py
     // sets it above the gateway's last accepted counter, so no 'replay reset' is needed)
-    // A found log skips one block (best + 2), in case the last block before the reset could not
-    // be logged (ctr_pending): its packets may have reached the gateway.
+    // A found log skips one block (best + 2): the block after the newest entry may have been
+    // used without being logged (ctr_limit). best <= CTR_BLOCK_MAX, so this cannot overflow.
     best = found ? best + 2 : (CTR_SEED >= 1 && CTR_SEED <= CTR_BLOCK_MAX ? CTR_SEED : 1);
-    ctr_pending = ctr_log(best) ? 0 : best;
+    ctr_limit = best - 1;            // newest + 1, or below the seed: nothing used yet
+    ctr_safe = true;                 // ctr_page holds the newest entry (or there is none)
+    ctr_log(best);
     s_ctr = best << 8;
-    s_ctr_first = s_ctr;
 }
 
 /* ============================================================================
@@ -544,7 +544,8 @@ static void ctr_boot(void) {
 
 // 24-byte packet: plain[0..1] counter low 16 bits, [2] flags, [3] battery %, [4..5] battery mV,
 // [6..9] device ID[0..3], [10..11] 'V' 'S', [12] marker (0xBA poll, 0xB2 picture start,
-// 0xB3..0xB9 events/diagnostics, 0 announce), [13] its argument, [14..15] counter high 16 bits. Returns the counter it used.
+// 0xB3..0xB9 events/diagnostics, 0 announce), [13] its argument, [14..15] counter high 16 bits. Returns the counter it used (a held packet, see ctr_use, is not
+// sent and its counter stays for the next one).
 static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t arg) {
     uint8_t plain[16];
     uint16_t batt_mv;
@@ -552,11 +553,10 @@ static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t ar
     uint32_t ctr = s_ctr;
 
     clock_xosc();
-    // a new block is logged before its first packet (the boot's block already is)
-    if ((uint8_t)ctr == 0 && ctr != s_ctr_first)
-        ctr_pending = ctr_log(ctr >> 8) ? 0 : ctr >> 8;
-    else if (ctr_pending && ctr_pending == ctr >> 8 && ctr_log(ctr_pending))
-        ctr_pending = 0;
+    // a new block is logged before its first packet; a block that cannot be logged (and is not
+    // the one after the newest entry) holds the packet: nothing is sent (see ctr_use)
+    if (!ctr_use(ctr >> 8))
+        return ctr;
     radio_init();
     aes_load_key(DEVICE_AES_KEY);
 

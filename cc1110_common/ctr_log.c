@@ -3,8 +3,16 @@
  * comment in either main.c), shared by the door sensor and the camera. Included by both main.c
  * files; not compiled on its own. The includer defines CTR_PAGE0, CTR_ENTRIES, CTR_BLOCK_MAX,
  * CTR_PAGE_ADDR(), X_FWDATA_H/L, DMA_TRIG_FLASH, WDT_FEED(), dma_desc, ctr_buf, ctr_page and
- * ctr_next (their memory class may differ between the devices), and ctr_boot().
+ * ctr_next (their memory class may differ between the devices), and ctr_boot(), which sets
+ * ctr_limit and ctr_safe below before the first ctr_log().
  */
+
+/* The highest block a packet may use: the newest block in the log + 1. The next boot starts at
+ * newest + 2, so packets up to here are never reused, even if this block could not be logged. */
+static __xdata uint32_t ctr_limit;
+/* ctr_page holds the newest entry (or the log has none): only then may the other page be
+ * erased. False from a page switch until an entry in the new page reads back. */
+static __xdata bool ctr_safe;
 
 static const __code uint8_t *ctr_entry(uint8_t page, uint16_t i) {
     return (const __code uint8_t *)(CTR_PAGE_ADDR(page) + (i << 2));
@@ -14,11 +22,28 @@ static bool ctr_erased(const __code uint8_t *e) {
     return (e[0] & e[1] & e[2] & e[3]) == 0xFF;
 }
 
+/** @brief The check byte of an entry: the number of 0 bits in the 24-bit block (a Berger
+ *  code). A cut write or erase and a worn cell only leave bits at 1: that lowers the count of
+ *  the block's bytes and can only raise the stored check, so such an entry never passes. */
+static uint8_t ctr_check(uint32_t block) {
+    uint8_t n = 24, i, b;
+    for (i = 0; i < 3; i++) {
+        b = (uint8_t)block;
+        block >>= 8;
+        while (b) {             // one pass per 1 bit
+            n--;
+            b &= b - 1;
+        }
+    }
+    return n;
+}
+
 /** @return true and the block in *block if the entry is valid. */
 static bool ctr_decode(const __code uint8_t *e, uint32_t *block) {
-    if (e[3] == 0xFF || e[1] != (uint8_t)(e[0] ^ e[2] ^ e[3] ^ 0xA5))
+    uint32_t v = (uint32_t)e[0] | ((uint32_t)e[2] << 8) | ((uint32_t)e[3] << 16);
+    if (e[3] == 0xFF || e[1] != ctr_check(v))
         return false;
-    *block = (uint32_t)e[0] | ((uint32_t)e[2] << 8) | ((uint32_t)e[3] << 16);
+    *block = v;
     return true;
 }
 
@@ -73,27 +98,51 @@ static void flash_write4(uint16_t addr) {
     while (FCTL & 0x80);             // BUSY until all 4 bytes are written
 }
 
-/** @brief Append a block number to the log (up to 3 slots if a write does not read back).
- *  @return false if no slot read back (worn page, weak supply, no crystal): see ctr_pending. */
+/** @brief Append a block number to the log (up to 3 slots if a write does not read back) and
+ *  raise ctr_limit to block + 1.
+ *  @return false if no slot read back (worn page, weak supply), without the crystal (nothing
+ *  is written, so no page is switched without its erase), above CTR_BLOCK_MAX (the counter
+ *  never wraps), or if this page has no valid entry yet and is full (the other page holds the
+ *  newest entry and is not erased). */
 static bool ctr_log(uint32_t block) {
     uint8_t tries;
+    uint16_t addr;
     uint32_t got;
 
-    if (block > CTR_BLOCK_MAX) block = CTR_BLOCK_MAX;
+    if (block > CTR_BLOCK_MAX || !flash_clock_ok())
+        return false;
     ctr_buf[0] = (uint8_t)block;
+    ctr_buf[1] = ctr_check(block);
     ctr_buf[2] = (uint8_t)(block >> 8);
     ctr_buf[3] = (uint8_t)(block >> 16);
-    ctr_buf[1] = ctr_buf[0] ^ ctr_buf[2] ^ ctr_buf[3] ^ 0xA5;
     for (tries = 0; tries < 3; tries++) {
         if (ctr_next >= CTR_ENTRIES) {
+            if (!ctr_safe)
+                return false;
             ctr_page = (ctr_page == CTR_PAGE0) ? CTR_PAGE0 + 1 : CTR_PAGE0;
             flash_erase_page(ctr_page);
             ctr_next = 0;
+            ctr_safe = false;
         }
-        flash_write4(CTR_PAGE_ADDR(ctr_page) + (ctr_next << 2));
+        addr = CTR_PAGE_ADDR(ctr_page) + (ctr_next << 2);
         ctr_next++;
-        if (ctr_decode(ctr_entry(ctr_page, ctr_next - 1), &got) && got == block)
+        if (ctr_erased(ctr_entry(ctr_page, ctr_next - 1)))   // never program a word twice
+            flash_write4(addr);
+        if (ctr_decode(ctr_entry(ctr_page, ctr_next - 1), &got) && got == block) {
+            ctr_limit = block + 1;
+            ctr_safe = true;
             return true;
+        }
     }
     return false;
+}
+
+/** @brief The counter rule before every packet: a block not in the log yet (a new one, or one
+ *  whose entry failed) is logged first.
+ *  @return false: do not send the packet (its block is above ctr_limit: it could not be logged
+ *  and would be used again after a reset). */
+static bool ctr_use(uint32_t block) {
+    if (block >= ctr_limit)
+        ctr_log(block);
+    return block <= ctr_limit;
 }

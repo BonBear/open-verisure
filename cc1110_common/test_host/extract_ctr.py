@@ -5,11 +5,11 @@ The tests compile the real code, so nothing is copied by hand: this script write
 directives pointing back at main.c,
   - the WDT_FEED() macro, the dma_desc_t typedef and the dma_desc variable,
   - the region from '#define CTR_PAGE0' to the end of ctr_boot() (the log constants, ctr_buf,
-    ctr_page, ctr_next, the #include of cc1110_common/ctr_log.c, ctr_pending and ctr_boot),
-  - the counter rule run before every packet (the if / else if that logs a new block or retries
-    ctr_pending), wrapped as  static void pkt_rule(uint32_t ctr, uint8_t boot_pkts).
-It fails if the code no longer has the expected shape, or if main.c calls ctr_log() anywhere
-else (the test model of when packets go out would then be incomplete).
+    ctr_page, ctr_next, the #include of cc1110_common/ctr_log.c and ctr_boot),
+  - the counter rule run before every packet (the one call ctr_use(ctr >> 8), whose result says
+    whether the packet is sent), wrapped as  static bool pkt_rule(uint32_t ctr).
+It fails if the code no longer has the expected shape, or if main.c calls ctr_log() or
+ctr_use() anywhere else (the test model of when packets go out would then be incomplete).
 
 Usage: extract_ctr.py <main.c> <output.inc>
 """
@@ -99,33 +99,20 @@ def main():
         die("the region does not include cc1110_common/ctr_log.c")
     chunk(start, region_end)
 
-    # the counter rule before each packet: exactly four lines
-    lines = text.split("\n")
-    anchor = [i for i, l in enumerate(lines)
-              if l.strip() == "ctr_pending = ctr_log(ctr >> 8) ? 0 : ctr >> 8;"]
-    if len(anchor) != 1:
-        die("expected one 'ctr_pending = ctr_log(ctr >> 8) ? 0 : ctr >> 8;', found %d"
-            % len(anchor))
-    a = anchor[0]
-    rule = lines[a - 1:a + 3]
-    if (not rule[0].strip().startswith("if (")
-            or not rule[2].strip().startswith("else if (ctr_pending")
-            or rule[3].strip() != "ctr_pending = 0;"
-            or lines[a + 3].strip().startswith("else")):
-        die("the counter rule before a packet does not have the expected shape:\n"
-            + "\n".join(lines[a - 1:a + 4]))
-    parts.append("static void pkt_rule(uint32_t ctr, uint8_t boot_pkts) {\n"
-                 "    (void)ctr;\n    (void)boot_pkts;\n")
-    parts.append('#line %d "%s"\n%s\n}\n' % (a, src_name, "\n".join(rule)))
+    # the counter rule before each packet: one call of ctr_use() with the packet's block
+    rule = one(r"\bctr_use\s*\(\s*ctr\s*>>\s*8\s*\)", text, "call 'ctr_use(ctr >> 8)'")
+    parts.append('static bool pkt_rule(uint32_t ctr) {\n#line %d "%s"\n    return %s;\n}\n'
+                 % (line_of(text, rule.start()), src_name, rule.group(0)))
 
-    # every ctr_log() call must be in ctr_boot or in the rule above
-    calls = [line_of(text, m.start()) for m in re.finditer(r"\bctr_log\s*\(", text)]
+    # every ctr_log() call must be in ctr_boot, and ctr_use() only the call above
     region_lines = range(line_of(text, start), line_of(text, region_end) + 1)
-    rule_lines = range(a, a + 4)
-    stray = [n for n in calls if n not in region_lines and n not in rule_lines]
+    stray = [line_of(text, m.start()) for m in re.finditer(r"\bctr_log\s*\(", text)
+             if line_of(text, m.start()) not in region_lines]
+    stray += [line_of(text, m.start()) for m in re.finditer(r"\bctr_use\s*\(", text)
+              if m.start() != rule.start()]
     if stray:
-        die("ctr_log() is also called at line(s) %s of %s: extend the test model"
-            % (", ".join(map(str, stray)), src_path))
+        die("ctr_log()/ctr_use() is also called at line(s) %s of %s: extend the test model"
+            % (", ".join(map(str, sorted(stray))), src_path))
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8", newline="\n") as f:

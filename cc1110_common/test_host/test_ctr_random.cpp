@@ -8,8 +8,13 @@
  * and in 40 % of the sessions a power cut armed at one of the next 8 flash operations, either as
  * it starts or with a random partial result (half-programmed word, half-erased page). A session
  * without a cut ends with a reset between packets. The model of what may have been sent is
- * Sim's (sim.h): every packet whose counter rule returned.
+ * Sim's (sim.h): every packet whose counter rule returned true (held packets are not sent).
+ *
+ * Longer runs: CTR_RANDOM_SCALE=<n> runs n times as many sequences, CTR_RANDOM_SEED=<s> adds s
+ * to the seeds (e.g. CTR_RANDOM_SCALE=20 CTR_RANDOM_SEED=7000000 make).
  */
+
+#include <stdlib.h>
 
 #include <random>
 #include <string>
@@ -27,6 +32,7 @@ struct Faults {
 
 struct Totals {
     unsigned sequences = 0, cuts = 0, erases = 0, words = 0, errors = 0, rewrites = 0;
+    unsigned held = 0;        // packets held by the counter rule
     unsigned bad = 0;         // sequences with a reused counter below CTR_BLOCK_MAX
     unsigned saturated = 0;   // sequences that reused a counter only above it (log saturated)
     std::string first, firstSaturated;
@@ -120,6 +126,7 @@ void runSequence(const ctr_dev& d, uint32_t seed, const Faults& f, Totals& t) {
     t.words += emu_stats.words;
     t.errors += emu_stats.errors;
     t.rewrites += emu_stats.rewrites;
+    t.held += s.held;
     if (s.violations > s.saturated) {
         if (!t.bad)
             t.first = s.firstBad;
@@ -131,13 +138,21 @@ void runSequence(const ctr_dev& d, uint32_t seed, const Faults& f, Totals& t) {
     }
 }
 
+unsigned envNum(const char* name, unsigned dflt) {
+    const char* v = getenv(name);
+    return v && *v ? (unsigned)strtoul(v, nullptr, 0) : dflt;
+}
+
 Totals runMany(const ctr_dev& d, uint32_t seed0, unsigned count, const Faults& f) {
     Totals t;
+    count *= envNum("CTR_RANDOM_SCALE", 1);
+    seed0 += envNum("CTR_RANDOM_SEED", 0);
     for (unsigned i = 0; i < count; i++)
         runSequence(d, seed0 + i, f, t);
     printf("    %s: %u sequences, %u power cuts in a flash operation, %u erases, %u words "
-           "written; reused counters: %u sequences, %u more after a saturated log\n",
-           d.name, t.sequences, t.cuts, t.erases, t.words, t.bad, t.saturated);
+           "written, %u packets held; reused counters: %u sequences, %u more after a "
+           "saturated log\n",
+           d.name, t.sequences, t.cuts, t.erases, t.words, t.held, t.bad, t.saturated);
     if (t.bad)
         printf("      first: %s\n", t.first.c_str());
     if (t.saturated)
@@ -172,28 +187,26 @@ TEST(random_power_cuts_never_reuse_a_counter) {
     printf("    %u random sequences\n", total);
 }
 
-/* KNOWN PROBLEM: some of the random cut writes leave a valid entry with a block close to or at
- * CTR_BLOCK_MAX (see cut_second_word_can_saturate_the_log_and_reuse_counters), after which the
- * boots reuse counter values (counter_reused_once_the_log_is_saturated). */
-XFAIL_TEST(random_power_cuts_never_saturate_the_log,
-           "a cut write can saturate the log, then every boot reuses 0xFF000100") {
+/* Until 2026-11-19 some random cut writes left a valid entry at or near CTR_BLOCK_MAX (XOR
+ * check byte), after which the boots reused counter values. */
+TEST(random_power_cuts_never_saturate_the_log) {
     unsigned saturated = 0;
     for (const Totals& t : powerCutRuns())
         saturated += t.saturated;
     CHECK_EQ(saturated, 0);
 }
 
-/* KNOWN PROBLEMS (see the XFAIL tests in test_ctr_log.cpp): with worn cells or a crystal that
- * does not start, a block can be used without being logged, and counter values are reused after
- * a reset. */
-XFAIL_TEST(random_worn_cells_and_crystal_failures_never_reuse_a_counter,
-           "unlogged boot blocks and skipped erases reuse counters (see the directed XFAIL tests)") {
+/* Until 2026-11-19, with worn cells or a crystal that does not start, a block could be used
+ * without being logged (the boot's block, or two blocks in a row), and a skipped erase could
+ * lose the newest entry: counter values were reused after a reset. */
+TEST(random_worn_cells_and_crystal_failures_never_reuse_a_counter) {
     const Faults faults = {true, true};
     unsigned bad = 0;
     for (const ctr_dev* d : {&dev_door, &dev_door4, &dev_cam}) {
         Totals t = runMany(*d, 50000, 500, faults);
         bad += t.bad + t.saturated;
         CHECK_EQ(t.errors, 0);
+        CHECK_EQ(t.rewrites, 0);
     }
     CHECK_EQ(bad, 0);
 }

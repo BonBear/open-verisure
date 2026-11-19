@@ -341,12 +341,19 @@ static void enter_pm2(uint8_t shock_level, uint8_t last_reed, uint8_t last_tampe
  * not newer than the last one (before this, a reset restarted seq at 0 and the gateway had to
  * accept any packet with the power-on flag, so recorded ones could be replayed).
  * The log: 4-byte entries, appended; 0xFFFFFFFF = empty. An entry is [b0, check, b1, b2] with the
- * 24-bit block b2:b1:b0 and check = b0 ^ b1 ^ b2 ^ 0xA5. The flash controller writes the low word
- * (b0, check) first, so a write cut short by a power loss leaves b2 = 0xFF, and blocks never reach
- * 0xFF0000: such an entry, or one with a wrong check byte (a cut erase), is skipped. Every entry is
- * read back; a failed one is skipped and the next slot used. When the page of the newest entry
+ * 24-bit block b2:b1:b0 and check = the number of 0 bits in b0, b1 and b2 (a Berger code, since
+ * 2026-11-19; it was b0 ^ b1 ^ b2 ^ 0xA5, which a write cut in its second word could pass). A cut
+ * write or erase and a worn cell only leave bits at 1, which lowers the count of the block bytes
+ * and can only raise the stored check, so such an entry never passes and is skipped. Blocks
+ * never reach 0xFF0000 (b2 = 0xFF is invalid): above CTR_BLOCK_MAX nothing is logged and nothing
+ * sent, the counter never wraps. Every entry is read back; a failed one is skipped and the next
+ * slot used, and a slot that is not blank is never written. When the page of the newest entry
  * is full, the other page is erased and used, so a power loss during the erase never loses the
- * newest entry. Reflashing erases the log; build_and_flash.py then builds the firmware with
+ * newest entry; without the crystal nothing is logged (no erase, so no page switch), and the
+ * other page is only erased once this one holds the newest entry. A packet is sent only in a
+ * block up to the newest logged block + 1 (ctr_use): the next boot starts at newest + 2, so no
+ * counter value can come again, even when blocks cannot be logged (the device then holds its
+ * packets). Reflashing erases the log; build_and_flash.py then builds the firmware with
  * CTR_SEED = the block above the gateway's last accepted counter (GET /api/replay), so the
  * counter continues. Without the gateway it starts at block 1 and the gateway needs
  * 'replay reset <ID>' on its serial console.
@@ -370,13 +377,8 @@ static uint16_t ctr_next;    // next free entry in ctr_page (CTR_ENTRIES = full)
 
 #include "../cc1110_common/ctr_log.c"
 
-/* A block whose log entry failed is retried before every packet in it: packets in an unlogged
- * block would be reused after the next reset (the gateway drops them, and the device would be
- * silent until its counter passes them again, ~10 days for a door sensor). 0 = none (block 0 is
- * never used). The boot also skips one block (see ctr_boot), which covers one unlogged block. */
-static __xdata uint32_t ctr_pending;
-
-/** @brief Find the newest valid block and log the next one, which this boot uses.
+/** @brief Find the newest valid block and log the next one, which this boot uses (its packets
+ *  are held while it is not logged: ctr_use).
  *  @return The first counter value of this boot. */
 static uint32_t ctr_boot(void) {
     uint32_t best = 0, v;
@@ -403,10 +405,12 @@ static uint32_t ctr_boot(void) {
     ctr_next = used[ctr_page - CTR_PAGE0];
     // An empty log means the chip was just flashed: start at CTR_SEED, which build_and_flash.py
     // sets above the gateway's last accepted counter, so no 'replay reset' is needed.
-    // A found log skips one block (best + 2), in case the last block before the reset could not
-    // be logged (ctr_pending): its packets may have reached the gateway.
+    // A found log skips one block (best + 2): the block after the newest entry may have been
+    // used without being logged (ctr_limit). best <= CTR_BLOCK_MAX, so this cannot overflow.
     best = found ? best + 2 : (CTR_SEED >= 1 && CTR_SEED <= CTR_BLOCK_MAX ? CTR_SEED : 1);
-    ctr_pending = ctr_log(best) ? 0 : best;
+    ctr_limit = best - 1;            // newest + 1, or below the seed: nothing used yet
+    ctr_safe = true;                 // ctr_page holds the newest entry (or there is none)
+    ctr_log(best);
     return best << 8;
 }
 
@@ -878,11 +882,9 @@ void main(void) {
 
             // 2. Plaintext Payload (16 Bytes) before AES-128 encryption
             uint8_t plain[16];
-            // a new block of 256 is logged in flash before it is used (see ctr_boot)
-            if ((ctr & 0xFF) == 0 && boot_pkts)   // clock_xosc() has run (flash timing needs it)
-                ctr_pending = ctr_log(ctr >> 8) ? 0 : ctr >> 8;
-            else if (ctr_pending && ctr_pending == ctr >> 8 && ctr_log(ctr_pending))
-                ctr_pending = 0;
+            // a new block of 256 is logged in flash before it is used; a block that cannot be
+            // logged (and is not the one after the newest entry) is not sent (see ctr_use)
+            bool ctr_ok = ctr_use(ctr >> 8);
             plain[0] = (uint8_t)(ctr >> 8);
             plain[1] = (uint8_t)ctr;
 
@@ -917,8 +919,10 @@ void main(void) {
             //    the gateway), so load it before every packet.
             aes_load_key(DEVICE_AES_KEY);
             aes_encrypt_block(plain, &tx_buf[8]);
-            ctr++;
-            if (boot_pkts < 0xFF) boot_pkts++;
+            if (ctr_ok) {
+                ctr++;
+                if (boot_pkts < 0xFF) boot_pkts++;
+            }
 
             // 4. Green LED on a heartbeat or back to safe, red when entering an alert; both off
             //    while idle
@@ -931,7 +935,7 @@ void main(void) {
             P2_1 = !P2_1;  // Toggle DD pin for oscilloscope / logic analyzer hookup
 
             radio_init();  // TEST2..0 and PA_TABLE1..7 are not kept in PM2 (as in the camera)
-            bool ok = radio_send();
+            bool ok = ctr_ok && radio_send();   // held packet: nothing sent
             P2_2 = ok ? 1 : 0; // DC pin indicates transmission success
 
             // The transmission itself puts a falling edge on the shock input P1_2 (seen in
