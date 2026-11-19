@@ -118,6 +118,43 @@ Solid lines: door sensor, dashed lines: camera (one target at a time). The flash
 the door sensor only; the camera has its own supply. An unpowered flasher holds
 RESET_N low, so give the flasher USB power before connecting it to a running device.
 
+### Second flasher: ESP32-C3 Super Mini (camera)
+
+To keep the door sensor and the camera connected at the same time, the bench uses a second
+flasher: an ESP32-C3 Super Mini on the camera's J6 (environment `esp32-c3-supermini` of the
+flasher firmware). Any ESP32 with three free GPIOs works; the C3 is small and cheap.
+
+| ESP32-C3 Super Mini | Camera | Function |
+| :---: | :---: | :---: |
+| **GND** | **`J6-5`** | Ground |
+| **GPIO 4** | **`J6-2`** (`P2_1`) | Debug Data (`DD`) |
+| **GPIO 3** | **`J6-3`** (`P2_2`) | Debug Clock (`DC`) |
+| **GPIO 1** | **`J6-4`** (`RESET_N`) | Debug Reset |
+| 3V3 | not connected | the camera runs on its `VBAT` supply |
+
+Avoid GPIO 2, 8 and 9 (strapping pins; 8 is the board LED). What the C3 needs, all in the
+flasher firmware's `esp32-c3-supermini` environment:
+
+* **Its own mDNS name.** Both flashers would answer as `cc.local`; the C3 build sets
+  `-DCC_MDNS_NAME=\"cccamera\"`, so it is `http://cccamera.local` (camera script:
+  `--host http://cccamera.local`, or `--serial <its port>`).
+* **Wi-Fi at 8.5 dBm.** At full power the Super Mini's small antenna never gets an IP. The Wi-Fi
+  network and password are in the flasher's `src/secrets.h` (git-ignored, template
+  `src/secrets.h.example`); the C3 can use a different network than the other flasher.
+* **A 32 kB USB receive buffer.** The C3 has no USB-UART chip: its serial port is the native USB
+  port (`Serial` = HWCDC), whose 256-byte buffer dropped ~4 kB of a `FLASH` image
+  (`#ERR timeout 5567/9602`). The firmware sets `Serial.setRxBufferSize(32768)`.
+* **First upload:** if the board does not show up for flashing, hold BOOT while plugging it in.
+
+Opening the native USB port does not restart the C3. Opening or closing the CP210x port of an
+ESP32 DevKit flasher does: it reboots the ESP32, which pulses RESET_N, so the target restarts
+(an extra boot, 2 counter blocks).
+
+| Flasher | Target | Port | Address |
+| :--- | :--- | :--- | :--- |
+| ESP32 DevKit (`esp32doit-devkit-v1`) | door sensor J2 | CP210x | `cc.local` |
+| ESP32-C3 Super Mini (`esp32-c3-supermini`) | camera J6 | native USB | `cccamera.local` |
+
 
 ---
 
@@ -147,6 +184,6 @@ Compilation and flashing are automated by [`VerisureDoorSensor/build_and_flash.p
 
 ## ⚠️ Important Precautions
 * **Never flash gateway firmware to the CC Flasher port:**
-  The ESP32 CC-Flasher is a Silicon Labs CP210x serial port; the gateway is the LOLIN S2 Mini's native USB port. Always verify target ports prior to running `pio run -t upload`.
+  The ESP32 DevKit CC-Flasher is a Silicon Labs CP210x serial port; the gateway (LOLIN S2 Mini) and the ESP32-C3 flasher are native USB ports (USB VID 303A). Always verify target ports prior to running `pio run -t upload`.
 * **Reliable Power Connection on 3V3 / GND:**
   If `cc_init` returns `Device id: 0000` or `Status: 00`, inspect the 3V3 and GND jumper wires for loose contact on J2-3 and J2-7.
