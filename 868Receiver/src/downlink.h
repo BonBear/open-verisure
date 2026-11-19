@@ -56,8 +56,9 @@ bool downlinkRequestResend(const char* deviceId, uint16_t first, uint32_t map);
 bool downlinkResendPending(const char* deviceId);
 
 /** Command to put in the answer to this poll (0 = none) and, for DOWNLINK_CMD_RESEND, its first
- *  chunk and bitmap. A pending picture command stays queued until the camera reports
- *  DOWNLINK_STATE_ACK in a later poll; a resend request goes out once. */
+ *  chunk and bitmap. A pending picture command is first sent in the answer to a poll without
+ *  DOWNLINK_STATE_ACK (so a later ACK can only be for it) and stays queued until the camera
+ *  reports DOWNLINK_STATE_ACK in a later poll; a resend request goes out once. */
 uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16_t* first, uint32_t* map);
 
 /** Build the 16-byte plaintext of a poll answer (see the format above). */
