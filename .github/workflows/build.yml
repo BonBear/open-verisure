@@ -1,0 +1,89 @@
+# Actions are pinned to commit SHAs (tag in the comment) and the SDCC download is checksummed.
+# Build check for every push and pull request: the gateway firmware, both CC1110 firmwares and
+# the key derivation. It uses only the *.example configs (placeholder keys, no credentials), so
+# nothing secret is needed or produced. The builds are never flashed: the CC1110 builds are
+# unseeded (counter block 1).
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gateway:
+    name: Gateway (ESP32-S2, PlatformIO)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('868Receiver/platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install "platformio>=6.1"
+      - name: secrets.h from the example
+        run: cp 868Receiver/src/secrets.h.example 868Receiver/src/secrets.h
+      - name: Build
+        run: pio run -d 868Receiver
+
+  cc1110:
+    name: Door sensor and camera (CC1110, SDCC)
+    runs-on: ubuntu-24.04
+    env:
+      SDCC_VERSION: "4.5.0"
+      # SHA-1 of sdcc-4.5.0-amd64-unknown-linux2.5.tar.bz2 as listed by SourceForge
+      SDCC_SHA1: "194021a5b4569948b878a2bd06dc1193ebf9106d"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install the Python packages the scripts import
+        run: pip install "pyserial>=3.5" "requests>=2.28" "cryptography>=41" "paho-mqtt>=2.0,<3"
+      - name: Install SDCC ${{ env.SDCC_VERSION }}
+        # Ubuntu 24.04 packages SDCC 4.2; the README asks for 4.5 or newer
+        run: |
+          curl -fsSL -o sdcc.tar.bz2 \
+            "https://sourceforge.net/projects/sdcc/files/sdcc-linux-amd64/${SDCC_VERSION}/sdcc-${SDCC_VERSION}-amd64-unknown-linux2.5.tar.bz2/download"
+          echo "${SDCC_SHA1}  sdcc.tar.bz2" | sha1sum -c -
+          mkdir -p "$RUNNER_TEMP/sdcc"
+          tar -xjf sdcc.tar.bz2 -C "$RUNNER_TEMP/sdcc" --strip-components=1
+          echo "$RUNNER_TEMP/sdcc/bin" >> "$GITHUB_PATH"
+      - run: sdcc --version
+      - name: config.h files from the examples
+        run: |
+          cp VerisureDoorSensor/config.h.example VerisureDoorSensor/config.h
+          cp MD_CAM/firmware/config.h.example MD_CAM/firmware/config.h
+      - name: Door sensor
+        run: python VerisureDoorSensor/build_and_flash.py --compile-only
+      - name: Camera
+        run: python MD_CAM/build_and_flash_md_cam.py --compile-only
+
+  key:
+    name: Key derivation (derive_key.py)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: pip install "cryptography>=41"
+      - name: Test vector
+        # Public test master key 00..0f, not a real key. Device key = AES-128-ECB(master, ID padded
+        # to 16 bytes); the check value is the first 3 bytes of AES(master, 0^16), as the gateway's
+        # 'status' prints it.
+        run: |
+          out=$(python derive_key.py --master-key 000102030405060708090a0b0c0d0e0f --id 2K79A65A)
+          echo "$out"
+          echo "$out" | grep -q "check value C6A13B"
+          echo "$out" | grep -q "Device Key (Hex): 7960FF23E9DFE83C57BF94B437CCC0B9"
+          if python derive_key.py --master-key 000102030405060708090a0b0c0d0e0f --id 2K79A65; then
+            echo "a 7-character ID must be rejected"; exit 1
+          fi
