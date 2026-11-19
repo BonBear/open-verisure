@@ -114,13 +114,20 @@ uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16
     expirePending();
     PendingCommand* p = findPending(deviceId);
     if (!p) return 0;
+    // The camera's ACK bit only says "the last answer I received carried a command", not which
+    // one. So a command goes out the first time only in the answer to a poll WITHOUT the ACK bit
+    // (the camera's last received answer had none); every ACK after that can only be for this
+    // command. Otherwise an ACK left over from an older command, whose answer to it was lost,
+    // would clear a newer command that never arrived. While the camera still reports an old ACK
+    // it gets an answer without a command (it clears the bit when it receives one): at most one
+    // more poll.
     if (p->cmd && p->sent && (cameraState & DOWNLINK_STATE_ACK))
         p->cmd = 0;             // delivered with an earlier answer
-    if (p->cmd) {
+    if (p->cmd && (p->sent || !(cameraState & DOWNLINK_STATE_ACK))) {
         p->sent = true;
         return p->cmd;
     }
-    if (p->resendMap) {
+    if (p->resendMap) {        // also while a new command waits for an ACK-free poll
         if (first) *first = p->resendFirst;
         if (map) *map = p->resendMap;
         p->resendMap = 0;       // once: the gateway asks again for what is still missing
