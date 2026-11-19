@@ -584,3 +584,42 @@ TEST(big_packet_ignored_while_waiting_for_boot) {
     CHECK(!sendChunk(CAM, 0x0001));
     CHECK_EQ(s_chunks, 0);
 }
+
+// Found by fuzz_crypto_picture_tag_window: a fresh session (gateway restart) compared new picture
+// tags with a tag of 0 as a signed 32-bit distance, so for a camera whose counter is 0x80000000
+// or more every picture chunk counted as older and was dropped, for as long as the session lived.
+TEST(big_packet_counter_above_2_pow_31) {
+    resetImageCounters();
+    CHECK(sendCtr(CAM, 0x80001000));
+    CHECK(sendChunk(CAM, 0x80001001));
+    CHECK_EQ(s_chunks, 1);
+    cryptoHostTestRestart();                               // fresh session from the NVS floor
+    CHECK(sendChunk(CAM, 0x80001001));
+    CHECK_EQ(s_chunks, 2);
+    CHECK(sendChunk(CAM, 0x80001001, 0x83, 1, 0x40 | 17)); // resend of that picture
+    CHECK_EQ(s_resends, 1);
+    CHECK(sendChunk(CAM, 0x80001000));                     // older picture: still dropped
+    CHECK_EQ(s_chunks, 2);
+}
+
+// A resent chunk (0x83) belongs to the picture being completed: none before the first chunk.
+TEST(big_packet_resend_without_a_picture_is_dropped) {
+    resetImageCounters();
+    CHECK(sendCtr(CAM, 0x0040));
+    CHECK(sendChunk(CAM, 0x0000, 0x83, 1, 17));            // tag 0 is in the window behind
+    CHECK_EQ(s_resends, 0);
+}
+
+// Found by fuzz_crypto_picture_tag_window: 'replay reset' (a camera reflashed without a counter
+// seed starts again at block 1) kept the newest picture tag of the old counter, so every picture
+// of the reflashed camera was dropped as older until the gateway restarted.
+TEST(big_packet_after_replay_reset_and_boot) {
+    resetImageCounters();
+    CHECK(sendCtr(CAM, 0x00051000));
+    CHECK(sendChunk(CAM, 0x00051001));
+    CHECK_EQ(s_chunks, 1);
+    cryptoReplayReset(CAM);
+    CHECK(sendCtr(CAM, 0x0100));                           // boot packet of block 1
+    CHECK(sendChunk(CAM, 0x0101));
+    CHECK_EQ(s_chunks, 2);
+}
