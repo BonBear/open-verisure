@@ -28,6 +28,10 @@ static void reset(void) {
     ctr_next = 0xA5A5;
     ctr_limit = 0xA5A5A5A5UL;
     ctr_safe = true;                 /* the unsafe value: ctr_boot must set it */
+    ctr_retry = 0xA5;
+#ifdef DEV_CAM
+    s_tx_held = true;
+#endif
 #ifdef DEV_CAM
     s_ctr = 0x5A5A5A5AUL;
 #endif
@@ -131,6 +135,43 @@ static void set_log_state(unsigned pg, unsigned nx, uint32_t lim, bool sf) {
     ctr_safe = sf;
 }
 
+#ifdef DEV_CAM
+static uint8_t s_cmd;
+
+static void cb_pic_ok(void *a) {
+    (void)a;
+    s_ok = pic_ctr_ok();
+}
+
+static bool pic_ok(uint32_t *ctr, bool *ok) {
+    bool r;
+    s_ctr = *ctr;
+    s_ok = false;
+    r = emu_run(cb_pic_ok, 0);
+    *ctr = s_ctr;
+    *ok = s_ok;
+    return r;
+}
+
+static void cb_picture(void *a) {
+    (void)a;
+    s_ok = bf_send_picture(s_cmd, false);
+}
+
+static bool picture(uint8_t cmd, uint32_t *ctr, struct pic_trace *trace, bool *ok) {
+    bool r;
+    memset(&s_pic, 0, sizeof(s_pic));
+    s_cmd = cmd;
+    s_ctr = *ctr;
+    s_ok = false;
+    r = emu_run(cb_picture, 0);
+    *ctr = s_ctr;
+    *trace = s_pic;
+    *ok = s_ok;
+    return r;
+}
+#endif
+
 const struct ctr_dev DEV_SYM = {
     DEV_NAME,
 #ifdef DEV_CAM
@@ -141,4 +182,9 @@ const struct ctr_dev DEV_SYM = {
     CTR_ENTRIES, CTR_PAGE0, CTR_SEED, CTR_BLOCK_MAX,
     reset, boot, packet, log_block, erase_page, write4, decode, erased, clock_ok,
     limit, page, next, safe, set_log_state,
+#ifdef DEV_CAM
+    pic_ok, picture,
+#else
+    NULL, NULL,
+#endif
 };

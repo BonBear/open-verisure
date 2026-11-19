@@ -17,6 +17,18 @@
 extern "C" {
 #endif
 
+#define PIC_TRACE_MAX 64
+
+/** What the camera's picture path sent (pic_stubs.h). */
+struct pic_trace {
+    unsigned npackets;                     /* 24-byte packets sent by transmit() */
+    uint32_t packet_ctr[PIC_TRACE_MAX];
+    uint8_t packet_marker[PIC_TRACE_MAX];
+    unsigned nchunks;                      /* picture chunks (transmit_big_chunk) */
+    uint32_t chunk_tag[PIC_TRACE_MAX];
+    unsigned bf_cmds;                      /* picture commands to the Blackfin */
+};
+
 struct ctr_dev {
     const char *name;
     bool camera;             /* MD_CAM/firmware/main.c, else VerisureDoorSensor/main.c */
@@ -49,6 +61,12 @@ struct ctr_dev {
     unsigned (*next)(void);
     bool (*safe)(void);
     void (*set_log_state)(unsigned page, unsigned next, uint32_t limit, bool safe);
+
+    /** Camera only (NULL for the door sensor): the real pic_ctr_ok() and bf_send_picture()
+     *  with the stubs of pic_stubs.h, from counter s_ctr = *ctr (updated); *trace = what was
+     *  sent (cleared first); *ok = the result. */
+    bool (*pic_ctr_ok)(uint32_t *ctr, bool *ok);
+    bool (*picture)(uint8_t cmd, uint32_t *ctr, struct pic_trace *trace, bool *ok);
 };
 
 extern const struct ctr_dev dev_door, dev_door4, dev_door_seed, dev_door_seed0, dev_door_seedbig;

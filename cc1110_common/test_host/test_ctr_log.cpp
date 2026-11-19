@@ -573,3 +573,153 @@ TEST(unlogged_boot_block_is_not_sent) {
         CHECK_EQ(s.held, 1);
     }
 }
+
+/* Erases that fail without a power cut (weak supply) at a page switch: the page without a
+ * valid entry is erased again as soon as its next slot is not blank, so the device sends again
+ * after at most one held packet per 3 failed erases (3 tries per ctr_log()), and the page with
+ * the newest entry is never touched (a failed erase whose next slot is blank needs no retry). */
+TEST(failed_erase_at_a_page_switch_is_retried) {
+    for (const ctr_dev* dp : {&dev_door, &dev_door4, &dev_cam}) {
+        const ctr_dev& d = *dp;
+        for (unsigned k = 1; k <= 6; k++) {
+            for (uint32_t seed = 1; seed <= 20; seed++) {
+                emu_init();
+                uint32_t last = prefill(d, 2 * d.entries);   // page 1 full, newest at its end
+                emu_seed(seed * 977 + k);
+                emu_erase_fail = k;
+                Sim s(d);
+                s.sentUpTo((last << 8) | 0xFF);
+                s.note("[%s, %u failed erases, seed %u] ", d.name, k, seed);
+                REQUIRE(s.boot());
+                REQUIRE(s.packets(300));
+                uint32_t v = 0;
+                CHECK(newestBlock(d, &v) && v > last);
+                // an erase that failed but left the next slot blank needs no second one
+                CHECK(emu_stats.failed_erases >= 1 && emu_stats.failed_erases <= k);
+                CHECK(s.held <= (emu_stats.failed_erases + 2) / 3);
+                CHECK_EQ(emu_stats.rewrites, 0);
+                s.report();
+                CHECK_EQ(s.violations, 0);
+            }
+        }
+    }
+}
+
+/* A page whose cells no longer erase (stuck at 0): nothing can be logged there, so the device
+ * holds its packets (the newest entry is in the other page, which is never erased), and the
+ * early erases are capped (CTR_RETRY_MAX per boot, then one per full walk of ~85 calls). */
+TEST(dead_page_holds_packets_with_bounded_wear) {
+    for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
+        const ctr_dev& d = *dp;
+        emu_init();
+        uint32_t last = prefill(d, d.entries);   // page 0 full, newest at its end
+        memset(&emu_stuck0[(d.page0 + 1) * EMU_PAGE_SIZE], 0xFF, EMU_PAGE_SIZE);
+        std::vector<uint8_t> page0(entryPtr(d.page0, 0), entryPtr(d.page0, 0) + EMU_PAGE_SIZE);
+        Sim s(d);
+        s.sentUpTo((last << 8) | 0xFF);
+        const unsigned kAttempts = 1000;
+        REQUIRE(s.boot());
+        REQUIRE(s.packets(kAttempts));
+        CHECK_EQ(s.held, kAttempts);
+        CHECK(memcmp(page0.data(), entryPtr(d.page0, 0), EMU_PAGE_SIZE) == 0);
+        unsigned erases = emu_stats.erases + emu_stats.failed_erases;
+        printf("    %s: %u erases of the dead page in %u held packets\n", d.name, erases, kAttempts);
+        CHECK(erases <= 1 + 8 + (kAttempts + 1) / 85 + 1);
+        // the page works again (e.g. after the supply recovered): the next packet is sent
+        memset(&emu_stuck0[(d.page0 + 1) * EMU_PAGE_SIZE], 0, EMU_PAGE_SIZE);
+        unsigned held = s.held;
+        REQUIRE(s.packets(90));
+        CHECK(s.held - held <= d.entries / 3 + 2);
+        CHECK(s.held - held < 90);
+        s.report();
+        CHECK_EQ(s.violations, 0);
+        CHECK_EQ(emu_stats.rewrites, 0);
+    }
+}
+
+/* If an erase pre-programmed cells to 0 before erasing (the CC1110 documents no such step), a
+ * cut one could leave a 0-heavy pattern that passes the 0-bit count, e.g. FF 01 FF FE = block
+ * 0xFEFFFF. Such an entry can only be in the page without the newest entry and can only raise
+ * the counter: the device then holds every packet (CTR_BLOCK_MAX), it never reuses one. */
+TEST(zero_heavy_cut_erase_can_only_raise_the_counter) {
+    for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
+        const ctr_dev& d = *dp;
+        uint32_t v = 0;
+        blank(d);
+        putEntry(d.page0, 0, 0x100);
+        putRaw(d.page0 + 1, 7, 0xFF, 0x01, 0xFF, 0xFE);
+        CHECK(d.decode((uint8_t)(d.page0 + 1), 7, &v) && v == d.block_max);   // documented
+        Sim s(d);
+        s.sentUpTo((0x100u << 8) | 0xFF);
+        for (int r = 0; r < 2; r++)
+            if (s.boot())
+                s.packets(3);
+        s.report();
+        CHECK_EQ(s.violations, 0);
+        CHECK_EQ(s.held, 6);
+    }
+}
+
+/* Camera: a picture starts with a 24-byte packet (0xB2) whose counter tags all its chunks. If
+ * that packet is held (its block cannot be logged), no picture may be taken or sent: its chunks
+ * would carry a counter that was not sent and that the next packet uses again. */
+TEST(cam_held_start_packet_sends_no_picture) {
+    const ctr_dev& d = dev_cam;
+    REQUIRE(d.picture && d.pic_ctr_ok);
+    uint32_t first = 0;
+    bool ok = true;
+    struct pic_trace t;
+    blank(d);
+    REQUIRE(d.boot(&first));                     // block 1 in slot 0
+    for (unsigned i = 1; i <= 9; i++)            // slots 1..9: bit 0 of b2 no longer programs
+        emu_stuck1[d.page0 * EMU_PAGE_SIZE + i * 4 + 3] = 0x01;
+    d.reset();
+    REQUIRE(d.boot(&first));                     // block 3 cannot be logged (slots 1..3)
+    CHECK_EQ(d.limit(), 2);
+    uint32_t ctr = first;
+    REQUIRE(d.pic_ctr_ok(&ctr, &ok));            // slots 4..6: still not logged
+    CHECK(!ok);
+    REQUIRE(d.picture(0xD3, &ctr, &t, &ok));     // slots 7..9
+    CHECK(!ok);
+    CHECK_EQ(t.npackets, 0);
+    CHECK_EQ(t.nchunks, 0);
+    CHECK_EQ(t.bf_cmds, 0);
+    CHECK_EQ(ctr, first);
+    // the next slot works: the picture goes out, tagged with its start packet's counter
+    REQUIRE(d.picture(0xD3, &ctr, &t, &ok));
+    CHECK(ok);
+    CHECK_EQ(t.npackets, 1);
+    CHECK_EQ(t.packet_ctr[0], first);
+    CHECK_EQ(t.bf_cmds, 1);
+    CHECK_EQ(t.nchunks, 3);                      // 100 bytes, 40 per chunk
+    for (unsigned i = 0; i < t.nchunks && i < PIC_TRACE_MAX; i++)
+        CHECK_EQ(t.chunk_tag[i], first);
+    checkClean(d);
+}
+
+TEST(cam_each_picture_has_its_own_tag) {
+    const ctr_dev& d = dev_cam;
+    REQUIRE(d.picture && d.pic_ctr_ok);
+    uint32_t first = 0, prevTag = 0;
+    bool ok;
+    struct pic_trace t;
+    blank(d);
+    REQUIRE(d.boot(&first));
+    uint32_t ctr = first + 250;                  // pictures across a block rollover
+    for (unsigned p = 0; p < 12; p++) {
+        REQUIRE(d.picture(0xD3, &ctr, &t, &ok));
+        CHECK(ok);
+        REQUIRE(t.npackets == 1);
+        CHECK_EQ(t.packet_marker[0], 0xB2);
+        uint32_t tag = t.packet_ctr[0];
+        if (p)
+            CHECK(tag > prevTag);
+        CHECK_EQ(t.nchunks, 3);
+        for (unsigned i = 0; i < t.nchunks && i < PIC_TRACE_MAX; i++)
+            CHECK_EQ(t.chunk_tag[i], tag);
+        prevTag = tag;
+    }
+    uint32_t v = 0;
+    CHECK(newestBlock(d, &v) && v == (first >> 8) + 1);   // the rollover block was logged first
+    checkClean(d);
+}

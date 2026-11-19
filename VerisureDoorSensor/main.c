@@ -350,7 +350,8 @@ static void enter_pm2(uint8_t shock_level, uint8_t last_reed, uint8_t last_tampe
  * slot used, and a slot that is not blank is never written. When the page of the newest entry
  * is full, the other page is erased and used, so a power loss during the erase never loses the
  * newest entry; without the crystal nothing is logged (no erase, so no page switch), and the
- * other page is only erased once this one holds the newest entry. A packet is sent only in a
+ * other page is only erased once this one holds the newest entry (a page without a valid entry
+ * yet is erased again if its erase did not finish). A packet is sent only in a
  * block up to the newest logged block + 1 (ctr_use): the next boot starts at newest + 2, so no
  * counter value can come again, even when blocks cannot be logged (the device then holds its
  * packets). Reflashing erases the log; build_and_flash.py then builds the firmware with
@@ -410,6 +411,7 @@ static uint32_t ctr_boot(void) {
     best = found ? best + 2 : (CTR_SEED >= 1 && CTR_SEED <= CTR_BLOCK_MAX ? CTR_SEED : 1);
     ctr_limit = best - 1;            // newest + 1, or below the seed: nothing used yet
     ctr_safe = true;                 // ctr_page holds the newest entry (or there is none)
+    ctr_retry = 0;
     ctr_log(best);
     return best << 8;
 }

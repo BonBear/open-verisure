@@ -7,9 +7,13 @@ directives pointing back at main.c,
   - the region from '#define CTR_PAGE0' to the end of ctr_boot() (the log constants, ctr_buf,
     ctr_page, ctr_next, the #include of cc1110_common/ctr_log.c and ctr_boot),
   - the counter rule run before every packet (the one call ctr_use(ctr >> 8), whose result says
-    whether the packet is sent), wrapped as  static bool pkt_rule(uint32_t ctr).
+    whether the packet is sent), wrapped as  static bool pkt_rule(uint32_t ctr),
+  - in the camera's main.c, the picture path from '#define BF_IMG_CHUNK' to the end of
+    bf_send_picture() (with pic_ctr_ok()), after an #include of pic_stubs.h.
 It fails if the code no longer has the expected shape, or if main.c calls ctr_log() or
-ctr_use() anywhere else (the test model of when packets go out would then be incomplete).
+ctr_use() anywhere else (the test model of when packets go out would then be incomplete). The
+one exception is ctr_use(s_ctr >> 8): the camera's check before a picture that its start
+packet will be sent (the same rule on the same counter, which transmit() then runs again).
 
 Usage: extract_ctr.py <main.c> <output.inc>
 """
@@ -99,6 +103,19 @@ def main():
         die("the region does not include cc1110_common/ctr_log.c")
     chunk(start, region_end)
 
+    # the camera's picture path: '#define BF_IMG_CHUNK' to the end of bf_send_picture(), after
+    # the stubs of what it calls (pic_stubs.h)
+    pic = list(re.finditer(r"^static\s+bool\s+bf_send_picture\s*\([^)]*\)\s*\{", text,
+                           re.MULTILINE))
+    if pic:
+        if len(pic) != 1:
+            die("expected at most one bf_send_picture() definition")
+        pstart = one(r"^#define BF_IMG_CHUNK\b", text, "#define BF_IMG_CHUNK").start()
+        if not (region_end < pstart < pic[0].start()):
+            die("#define BF_IMG_CHUNK is not between ctr_boot() and bf_send_picture()")
+        parts.append('#include "pic_stubs.h"\n')
+        chunk(pstart, match_brace(text, pic[0].end() - 1))
+
     # the counter rule before each packet: one call of ctr_use() with the packet's block
     rule = one(r"\bctr_use\s*\(\s*ctr\s*>>\s*8\s*\)", text, "call 'ctr_use(ctr >> 8)'")
     parts.append('static bool pkt_rule(uint32_t ctr) {\n#line %d "%s"\n    return %s;\n}\n'
@@ -109,7 +126,8 @@ def main():
     stray = [line_of(text, m.start()) for m in re.finditer(r"\bctr_log\s*\(", text)
              if line_of(text, m.start()) not in region_lines]
     stray += [line_of(text, m.start()) for m in re.finditer(r"\bctr_use\s*\(", text)
-              if m.start() != rule.start()]
+              if m.start() != rule.start()
+              and not re.match(r"ctr_use\(s_ctr >> 8\)", text[m.start():])]
     if stray:
         die("ctr_log()/ctr_use() is also called at line(s) %s of %s: extend the test model"
             % (", ".join(map(str, sorted(stray))), src_path))

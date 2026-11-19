@@ -4,7 +4,16 @@
  * files; not compiled on its own. The includer defines CTR_PAGE0, CTR_ENTRIES, CTR_BLOCK_MAX,
  * CTR_PAGE_ADDR(), X_FWDATA_H/L, DMA_TRIG_FLASH, WDT_FEED(), dma_desc, ctr_buf, ctr_page and
  * ctr_next (their memory class may differ between the devices), and ctr_boot(), which sets
- * ctr_limit and ctr_safe below before the first ctr_log().
+ * ctr_limit, ctr_safe and ctr_retry below before the first ctr_log().
+ *
+ * Residual risks (each needs a fault outside the flash specification, and none is detected):
+ * an entry that reads back correctly and loses charge later (the next boot then starts at the
+ * entry before it + 2, which can be a block already used; a second read-back right after the
+ * write reads the same cells at the same moment and would not see it), and an erase that
+ * pre-programs cells to 0 before erasing (the CC1110 documents no such step): cut, it could
+ * leave a 0-heavy pattern that passes the 0-bit count (e.g. FF 01 FF FE = block 0xFEFFFF). That
+ * can only happen in the page that does not hold the newest entry, and a valid entry there can
+ * only raise the counter (skip ahead, at worst hold every packet at CTR_BLOCK_MAX), never reuse.
  */
 
 /* The highest block a packet may use: the newest block in the log + 1. The next boot starts at
@@ -13,6 +22,9 @@ static __xdata uint32_t ctr_limit;
 /* ctr_page holds the newest entry (or the log has none): only then may the other page be
  * erased. False from a page switch until an entry in the new page reads back. */
 static __xdata bool ctr_safe;
+/* Early erases of a page without a valid entry since the boot (CTR_RETRY_MAX at most). */
+static __xdata uint8_t ctr_retry;
+#define CTR_RETRY_MAX 8
 
 static const __code uint8_t *ctr_entry(uint8_t page, uint16_t i) {
     return (const __code uint8_t *)(CTR_PAGE_ADDR(page) + (i << 2));
@@ -100,10 +112,14 @@ static void flash_write4(uint16_t addr) {
 
 /** @brief Append a block number to the log (up to 3 slots if a write does not read back) and
  *  raise ctr_limit to block + 1.
+ *  A page without a valid entry yet (ctr_safe false: the newest entry is in the other page) is
+ *  erased again when it is full, or when its next slot is not blank (an erase that did not
+ *  finish: weak supply, cells stuck at 0; at most CTR_RETRY_MAX times per boot, then only when
+ *  full, so a dead page costs one erase per ~85 calls). The page with the newest entry is never
+ *  erased.
  *  @return false if no slot read back (worn page, weak supply), without the crystal (nothing
- *  is written, so no page is switched without its erase), above CTR_BLOCK_MAX (the counter
- *  never wraps), or if this page has no valid entry yet and is full (the other page holds the
- *  newest entry and is not erased). */
+ *  is written, so no page is switched without its erase), or above CTR_BLOCK_MAX (the counter
+ *  never wraps). */
 static bool ctr_log(uint32_t block) {
     uint8_t tries;
     uint16_t addr;
@@ -116,10 +132,12 @@ static bool ctr_log(uint32_t block) {
     ctr_buf[2] = (uint8_t)(block >> 8);
     ctr_buf[3] = (uint8_t)(block >> 16);
     for (tries = 0; tries < 3; tries++) {
-        if (ctr_next >= CTR_ENTRIES) {
-            if (!ctr_safe)
-                return false;
-            ctr_page = (ctr_page == CTR_PAGE0) ? CTR_PAGE0 + 1 : CTR_PAGE0;
+        if (ctr_next >= CTR_ENTRIES || (!ctr_safe && ctr_retry < CTR_RETRY_MAX &&
+                                         !ctr_erased(ctr_entry(ctr_page, ctr_next)))) {
+            if (ctr_safe)
+                ctr_page = (ctr_page == CTR_PAGE0) ? CTR_PAGE0 + 1 : CTR_PAGE0;
+            else if (ctr_next < CTR_ENTRIES)
+                ctr_retry++;
             flash_erase_page(ctr_page);
             ctr_next = 0;
             ctr_safe = false;

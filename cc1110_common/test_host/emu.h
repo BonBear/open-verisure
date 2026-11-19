@@ -28,6 +28,11 @@ extern "C" {
 extern uint8_t emu_flash[EMU_FLASH_SIZE];
 /** Worn cells: bits set here no longer program (they stay 1 after a write). */
 extern uint8_t emu_stuck1[EMU_FLASH_SIZE];
+/** Cells stuck at 0: bits set here no longer erase (they stay 0 after an erase). */
+extern uint8_t emu_stuck0[EMU_FLASH_SIZE];
+/** The next this many page erases fail without a power cut (weak supply): a random part of
+ *  the page reaches 1, as in a cut erase, and the firmware goes on. */
+extern unsigned emu_erase_fail;
 
 typedef enum {
     EMU_CUT_BEFORE,   /* the power fails as the operation starts: nothing changes */
@@ -38,6 +43,7 @@ typedef enum {
 struct emu_stats {
     unsigned ops;        /* flash operations started (page erase or word program) */
     unsigned erases;     /* completed page erases */
+    unsigned failed_erases;  /* erases that failed without a power cut (emu_erase_fail) */
     unsigned words;      /* completed word programs */
     unsigned rewrites;   /* words programmed over data (not 0xFFFF): the result is garbage */
     unsigned errors;     /* misuse of the flash controller or the DMA (see emu_last_error) */
@@ -49,9 +55,10 @@ extern char emu_last_error[256];
 /** CLKCON.OSC (bit 6) = 1: the system clock is the HS RCOSC, flash_clock_ok() is false. */
 extern volatile uint8_t CLKCON;
 
-/** A blank chip: all flash 0xFF, no worn bits, statistics and SFRs reset, no cut armed. */
+/** A blank chip: all flash 0xFF, no worn or stuck bits, no failing erases, statistics and SFRs
+ *  reset, no cut armed. */
 void emu_init(void);
-/** The whole flash state (contents, worn bits, statistics). */
+/** The whole flash state (contents, worn and stuck bits, failing erases, statistics). */
 unsigned emu_state_size(void);
 void emu_save(void *buf);
 void emu_restore(const void *buf);
@@ -69,6 +76,8 @@ void emu_cut_at(unsigned op, emu_cut_kind kind, uint32_t seed);
  *  that should become 0 are still 1 (the others are programmed). */
 void emu_cut_word_at(unsigned op, uint8_t keep_lo, uint8_t keep_hi);
 void emu_cut_clear(void);
+/** Seed the random partial effects (cut operations, failing erases). */
+void emu_seed(uint32_t seed);
 bool emu_cut_armed(void);
 
 /** Run firmware code; false if the power was cut inside it. */

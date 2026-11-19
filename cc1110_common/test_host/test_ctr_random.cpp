@@ -9,6 +9,9 @@
  * it starts or with a random partial result (half-programmed word, half-erased page). A session
  * without a cut ends with a reset between packets. The model of what may have been sent is
  * Sim's (sim.h): every packet whose counter rule returned true (held packets are not sent).
+ * Liveness: at the end of each sequence all faults are removed (worn and stuck cells, failing
+ * erases); the device must then send again within CTR_ENTRIES / 3 + 2 packets without a reset,
+ * and the first packet after the next reset must be sent.
  *
  * Longer runs: CTR_RANDOM_SCALE=<n> runs n times as many sequences, CTR_RANDOM_SEED=<s> adds s
  * to the seeds (e.g. CTR_RANDOM_SCALE=20 CTR_RANDOM_SEED=7000000 make).
@@ -28,11 +31,14 @@ namespace {
 struct Faults {
     bool worn;      // cells that no longer program (writes do not read back)
     bool crystal;   // clock_xosc() timed out for some packets (no flash operation, no radio)
+    bool erase;     // erases that fail without a power cut, and cells stuck at 0
 };
 
 struct Totals {
     unsigned sequences = 0, cuts = 0, erases = 0, words = 0, errors = 0, rewrites = 0;
     unsigned held = 0;        // packets held by the counter rule
+    unsigned failedErases = 0;
+    unsigned stuck = 0;       // sequences that still held packets after the faults were gone
     unsigned bad = 0;         // sequences with a reused counter below CTR_BLOCK_MAX
     unsigned saturated = 0;   // sequences that reused a counter only above it (log saturated)
     std::string first, firstSaturated;
@@ -75,8 +81,23 @@ void runSequence(const ctr_dev& d, uint32_t seed, const Faults& f, Totals& t) {
         }
     }
 
+    if (f.erase) {
+        unsigned count = r(4);
+        for (unsigned i = 0; i < count; i++) {
+            unsigned pg = d.page0 + r(2), slot = r(d.entries), byte = r(4);
+            uint8_t bits = r(2) ? (uint8_t)(1u << r(8)) : 0xFF;
+            emu_stuck0[pg * EMU_PAGE_SIZE + slot * 4 + byte] |= bits;
+            s.note("[stuck0 p%u s%u b%u %02X] ", pg, slot, byte, bits);
+        }
+        emu_seed((uint32_t)rng());
+    }
+
     unsigned sessions = 10 + r(50);
     for (unsigned k = 0; k < sessions; k++) {
+        if (f.erase && r(5) == 0) {
+            emu_erase_fail = 1 + r(5);
+            s.note("[%u erases fail] ", emu_erase_fail);
+        }
         bool armed = r(10) < 4;
         if (armed) {
             unsigned at = emu_stats.ops + r(8);
@@ -118,10 +139,33 @@ void runSequence(const ctr_dev& d, uint32_t seed, const Faults& f, Totals& t) {
             t.cuts++;
         emu_cut_clear();
     }
-    s.boot();
-    s.packets(1);
+    // the faults are gone: the device must send again, first without a reset, then after one
+    memset(emu_stuck1, 0, EMU_FLASH_SIZE);
+    memset(emu_stuck0, 0, EMU_FLASH_SIZE);
+    emu_erase_fail = 0;
+    s.note("[faults gone] ");
+    bool live = true;
+    if (s.on) {
+        unsigned held = s.held, bound = d.entries / 3 + 2, i;
+        for (i = 0; i <= bound && s.held - held == i; i++)
+            s.packet();
+        live = s.held - held < i;   // the last one was sent
+    }
+    if (!s.boot())
+        live = false;
+    else {
+        unsigned held = s.held;
+        s.packets(1);
+        live = live && s.held == held;
+    }
+    if (!live) {
+        if (!t.stuck)
+            printf("      first stuck: %s\n", s.trace.c_str());
+        t.stuck++;
+    }
 
     t.sequences++;
+    t.failedErases += emu_stats.failed_erases;
     t.erases += emu_stats.erases;
     t.words += emu_stats.words;
     t.errors += emu_stats.errors;
@@ -150,9 +194,10 @@ Totals runMany(const ctr_dev& d, uint32_t seed0, unsigned count, const Faults& f
     for (unsigned i = 0; i < count; i++)
         runSequence(d, seed0 + i, f, t);
     printf("    %s: %u sequences, %u power cuts in a flash operation, %u erases, %u words "
-           "written, %u packets held; reused counters: %u sequences, %u more after a "
-           "saturated log\n",
-           d.name, t.sequences, t.cuts, t.erases, t.words, t.held, t.bad, t.saturated);
+           "written, %u failed erases, %u packets held, %u stuck; reused counters: %u "
+           "sequences, %u more after a saturated log\n",
+           d.name, t.sequences, t.cuts, t.erases, t.words, t.failedErases, t.held, t.stuck,
+           t.bad, t.saturated);
     if (t.bad)
         printf("      first: %s\n", t.first.c_str());
     if (t.saturated)
@@ -166,10 +211,10 @@ Totals runMany(const ctr_dev& d, uint32_t seed0, unsigned count, const Faults& f
 const std::vector<Totals>& powerCutRuns() {
     static std::vector<Totals> runs;
     if (runs.empty()) {
-        const Faults none = {false, false};
+        const Faults none = {false, false, false};
         runs.push_back(runMany(dev_door, 1000, 2000, none));
         runs.push_back(runMany(dev_door4, 1000, 4000, none));
-        runs.push_back(runMany(dev_cam, 1000, 2000, none));
+        runs.push_back(runMany(dev_cam, 2001000, 2000, none));   // other sequences than the door
     }
     return runs;
 }
@@ -182,6 +227,7 @@ TEST(random_power_cuts_never_reuse_a_counter) {
         CHECK_EQ(t.bad, 0);
         CHECK_EQ(t.errors, 0);
         CHECK_EQ(t.rewrites, 0);
+        CHECK_EQ(t.stuck, 0);
         total += t.sequences;
     }
     printf("    %u random sequences\n", total);
@@ -200,13 +246,31 @@ TEST(random_power_cuts_never_saturate_the_log) {
  * without being logged (the boot's block, or two blocks in a row), and a skipped erase could
  * lose the newest entry: counter values were reused after a reset. */
 TEST(random_worn_cells_and_crystal_failures_never_reuse_a_counter) {
-    const Faults faults = {true, true};
+    const Faults faults = {true, true, false};
     unsigned bad = 0;
     for (const ctr_dev* d : {&dev_door, &dev_door4, &dev_cam}) {
-        Totals t = runMany(*d, 50000, 500, faults);
+        Totals t = runMany(*d, d == &dev_cam ? 2050000 : 50000, 500, faults);
         bad += t.bad + t.saturated;
         CHECK_EQ(t.errors, 0);
         CHECK_EQ(t.rewrites, 0);
+        CHECK_EQ(t.stuck, 0);
     }
+    CHECK_EQ(bad, 0);
+}
+
+/* Erases that fail without a power cut and cells stuck at 0 (besides worn cells, a crystal that
+ * does not start and power cuts): no reuse, and the device recovers once the faults are gone. */
+TEST(random_failed_erases_never_reuse_a_counter_and_recover) {
+    const Faults faults = {true, true, true};
+    unsigned bad = 0, failed = 0;
+    for (const ctr_dev* d : {&dev_door, &dev_door4, &dev_cam}) {
+        Totals t = runMany(*d, d == &dev_cam ? 2090000 : 90000, 500, faults);
+        bad += t.bad + t.saturated;
+        failed += t.failedErases;
+        CHECK_EQ(t.errors, 0);
+        CHECK_EQ(t.rewrites, 0);
+        CHECK_EQ(t.stuck, 0);
+    }
+    CHECK(failed > 100);
     CHECK_EQ(bad, 0);
 }

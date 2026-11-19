@@ -85,10 +85,15 @@ The gateway applies a multi-stage authentication filter:
      read as a higher block. Entries are read back after writing, a slot that is not blank is
      never written, and the two pages are used in turn: the other page is erased only with the
      crystal running and only once the current page holds the newest entry, so an erase never
-     loses it. A boot skips one block (newest logged + 2), and a packet is sent only if its block
+     loses it (a page without a valid entry yet is erased again when its erase did not finish). A boot skips one block (newest logged + 2), and a packet is sent only if its block
      is at most the newest logged block + 1; otherwise (its entry could not be written) it is
      held and the entry retried before the next packet. So no counter value is ever reused
-     after a reset; above block 0xFEFFFF the device holds every packet instead of wrapping.
+     after a reset; above block 0xFEFFFF the device holds every packet instead of wrapping. The
+     camera takes no picture while its start packet (whose counter tags the chunks) would be
+     held. Not covered (each needs a fault outside the flash specification): an entry that reads
+     back and loses its charge later, and an erase that pre-programs cells to 0 (a cut one could
+     leave a valid-looking entry; it can only raise the counter, so the device skips ahead or
+     holds its packets, it does not reuse a counter).
      After a watchdog reset the device first sleeps ~30 s, so a fault that keeps resetting it
      cannot wear out the log pages. Reflashing erases the log, so the format change needs no
      migration.
