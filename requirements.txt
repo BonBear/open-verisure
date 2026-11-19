@@ -1,7 +1,7 @@
 # Python packages for the build, flash, key and test scripts (Windows and Linux):
 #   pip install -r requirements.txt
 pyserial>=3.5
-requests>=2.28
-cryptography>=41
-paho-mqtt>=2.0,<3
-platformio>=6.1
+requests>=2.34.2
+cryptography>=50.0.2
+paho-mqtt>=2.2.0,<3
+platformio>=6.2.0
