@@ -22,9 +22,11 @@ static __xdata uint32_t ctr_limit;
 /* ctr_page holds the newest entry (or the log has none): only then may the other page be
  * erased. False from a page switch until an entry in the new page reads back. */
 static __xdata bool ctr_safe;
-/* Early erases of a page without a valid entry since the boot (CTR_RETRY_MAX at most). */
+/* Early erases of a page without a valid entry since the boot (CTR_RETRY_MAX at most). The
+ * cap is per boot: a device in a reset loop (e.g. a battery that browns out under the erase
+ * current) can erase up to 1 + CTR_RETRY_MAX times per boot, hence a small cap. */
 static __xdata uint8_t ctr_retry;
-#define CTR_RETRY_MAX 8
+#define CTR_RETRY_MAX 3
 
 static const __code uint8_t *ctr_entry(uint8_t page, uint16_t i) {
     return (const __code uint8_t *)(CTR_PAGE_ADDR(page) + (i << 2));
@@ -114,9 +116,10 @@ static void flash_write4(uint16_t addr) {
  *  raise ctr_limit to block + 1.
  *  A page without a valid entry yet (ctr_safe false: the newest entry is in the other page) is
  *  erased again when it is full, or when its next slot is not blank (an erase that did not
- *  finish: weak supply, cells stuck at 0; at most CTR_RETRY_MAX times per boot, then only when
- *  full, so a dead page costs one erase per ~85 calls). The page with the newest entry is never
- *  erased.
+ *  finish: weak supply, cells stuck at 0; at most CTR_RETRY_MAX times per boot). Erasing it
+ *  when full has no cap: a page whose writes keep failing costs one erase per full walk (~85
+ *  held packets) for as long as it fails, the price of sending again once it works. The page
+ *  with the newest entry is never erased.
  *  @return false if no slot read back (worn page, weak supply), without the crystal (nothing
  *  is written, so no page is switched without its erase), or above CTR_BLOCK_MAX (the counter
  *  never wraps). */

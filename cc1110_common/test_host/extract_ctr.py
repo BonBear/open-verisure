@@ -12,8 +12,11 @@ directives pointing back at main.c,
     bf_send_picture() (with pic_ctr_ok()), after an #include of pic_stubs.h.
 It fails if the code no longer has the expected shape, or if main.c calls ctr_log() or
 ctr_use() anywhere else (the test model of when packets go out would then be incomplete). The
-one exception is ctr_use(s_ctr >> 8): the camera's check before a picture that its start
-packet will be sent (the same rule on the same counter, which transmit() then runs again).
+one exception is ctr_use(s_ctr >> 8) in the camera's pic_ctr_ok(): the check before a picture
+that its start packet will be sent (the same rule on the same counter, which transmit() then
+runs again). In the camera's main.c it also checks what pic_stubs.h assumes of code the tests
+do not compile: transmit() sets s_tx_held from the rule, cam_poll() returns at once after a
+held poll, and every bf_send_picture() call is guarded by pic_ok (pic_ctr_ok()).
 
 Usage: extract_ctr.py <main.c> <output.inc>
 """
@@ -64,6 +67,15 @@ def match_brace(text, open_pos):
 
 def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
+
+
+def body_of(text, name):
+    """(start, end) of the body of the one top-level definition of the static function name()."""
+    defs = list(re.finditer(r"^static\s+[\w\s]*?\b%s\s*\([^)]*\)\s*\{" % name, text,
+                            re.MULTILINE))
+    if len(defs) != 1:
+        die("expected one definition of %s(), found %d" % (name, len(defs)))
+    return defs[0].end(), match_brace(text, defs[0].end() - 1)
 
 
 def one(pattern, text, what, flags=re.MULTILINE):
@@ -121,13 +133,38 @@ def main():
     parts.append('static bool pkt_rule(uint32_t ctr) {\n#line %d "%s"\n    return %s;\n}\n'
                  % (line_of(text, rule.start()), src_name, rule.group(0)))
 
-    # every ctr_log() call must be in ctr_boot, and ctr_use() only the call above
+    # the camera: the tests model transmit(), cam_poll() and the alarm loop with stubs
+    # (pic_stubs.h), so check that the real code still does what those stubs assume
+    exempt = None
+    if pic:
+        tx = body_of(text, "transmit")
+        if not tx[0] < rule.start() < tx[1]:
+            die("the rule 'ctr_use(ctr >> 8)' is not in transmit()")
+        if not re.search(r"\bs_tx_held\s*=\s*!\s*ctr_use\s*\(\s*ctr\s*>>\s*8\s*\)\s*;",
+                         text[tx[0]:tx[1]]):
+            die("transmit() no longer sets 's_tx_held = !ctr_use(ctr >> 8);' (pic_stubs.h)")
+        poll = body_of(text, "cam_poll")
+        if not re.search(r"\btransmit\s*\([^;]*\);\s*if\s*\(\s*s_tx_held\s*\|\|",
+                         text[poll[0]:poll[1]]):
+            die("cam_poll() no longer returns at once after a held poll ('if (s_tx_held ||')")
+        calls = [m for m in re.finditer(r"\bbf_send_picture\s*\(", text)
+                 if not re.search(r"\bbool\s*$", text[:m.start()])]
+        if not calls or any(not re.search(r"\bpic_ok\s*&&\s*$", text[:m.start()])
+                            for m in calls):
+            die("every bf_send_picture() call must be guarded by 'pic_ok &&' (pic_ctr_ok())")
+        ok = body_of(text, "pic_ctr_ok")
+        m = re.search(r"\bctr_use\s*\(\s*s_ctr\s*>>\s*8\s*\)", text[ok[0]:ok[1]])
+        if not m:
+            die("pic_ctr_ok() no longer calls ctr_use(s_ctr >> 8)")
+        exempt = ok[0] + m.start()
+
+    # every ctr_log() call must be in ctr_boot, and ctr_use() only the call above (and, on the
+    # camera, the one in pic_ctr_ok())
     region_lines = range(line_of(text, start), line_of(text, region_end) + 1)
     stray = [line_of(text, m.start()) for m in re.finditer(r"\bctr_log\s*\(", text)
              if line_of(text, m.start()) not in region_lines]
     stray += [line_of(text, m.start()) for m in re.finditer(r"\bctr_use\s*\(", text)
-              if m.start() != rule.start()
-              and not re.match(r"ctr_use\(s_ctr >> 8\)", text[m.start():])]
+              if m.start() not in (rule.start(), exempt)]
     if stray:
         die("ctr_log()/ctr_use() is also called at line(s) %s of %s: extend the test model"
             % (", ".join(map(str, sorted(stray))), src_path))
