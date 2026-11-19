@@ -1,2 +1,4 @@
 # shell scripts run in WSL bash, which does not accept CRLF
 *.sh text eol=lf
+# make in WSL/Linux: recipes must not end in CR
+868Receiver/test_host/Makefile text eol=lf

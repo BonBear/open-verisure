@@ -11,7 +11,8 @@
 #include <esp_mac.h>
 #include <mbedtls/sha256.h>
 
-#if __has_include("secrets.h")
+// HOST_TEST: the host unit tests (868Receiver/test_host) never see a local secrets.h
+#if !defined(HOST_TEST) && __has_include("secrets.h")
 #include "secrets.h"
 #endif
 

@@ -448,3 +448,14 @@ bool cryptoReplayReset(const char* deviceId, uint32_t maxBlock) {
     }
     return found;
 }
+
+#ifdef HOST_TEST
+/* Host unit tests only (868Receiver/test_host), never in the firmware: forget the RAM state as a
+ * gateway restart does. NVS (the Preferences stub) keeps what was written. */
+void cryptoHostTestRestart() {
+    memset(s_devices, 0, sizeof(s_devices));
+    s_deviceCount = 0;
+    if (s_replayPrefsOpen) s_replayPrefs.end();
+    s_replayPrefsOpen = false;
+}
+#endif
