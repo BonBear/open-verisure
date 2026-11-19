@@ -26,6 +26,11 @@ The first release (draft for `v1.0.0`). Everything below is new.
 - Web portal and serial console: status, Wi-Fi/MQTT/master key settings, Wi-Fi scan, camera card;
   protected by a portal password (HTTP Basic, per-client lockout), CSRF and Host checks; a setup
   access point whose password is unique per gateway.
+- Firmware update over Wi-Fi: `POST /api/ota` (portal password, optional MD5) or
+  `868Receiver/ota_upload.py`; refused in setup-AP mode, and a new image that does not reach
+  Wi-Fi within 5 min rolls back to the previous one.
+- Diagnostics in Home Assistant: uptime, reset reason, free heap, and counters of received,
+  authenticated, rejected and replayed packets, stale picture chunks and the last rejected ID.
 - Frequency offset setting for CC1101 modules with an off crystal.
 - Built with espressif32 8.0.0 (Arduino core 3.3, ESP-IDF 5), SmartRC-CC1101 3.0.2.
 
@@ -33,6 +38,9 @@ The first release (draft for `v1.0.0`). Everything below is new.
 
 - Event-driven firmware: PM2 sleep, port interrupts for reed, shock and tamper, a 0.5 s tick
   (calibrated for the 36 kHz sleep clock), hourly heartbeat, watchdog, boot battery guard.
+- The 0.5 s tick runs on the internal RC oscillator and starts the crystal only before a packet:
+  its share of the idle current fell from ~21 uA to ~4.7 uA (3.0 V, measured over 9 h; heartbeat
+  drift ~+0.1 %).
 - Persistent packet counter in flash; the build script seeds a reflash from the gateway's counter.
 
 ### Camera (`MD_CAM/`, CC1110 + Blackfin)
@@ -50,6 +58,8 @@ The first release (draft for `v1.0.0`). Everything below is new.
   debug-locked factory chips, and a check that the gateway accepts the new firmware's counter.
 - `derive_key.py`: master key generation, device keys, check values.
 - `release/make_release.py`: the setup package (no secrets; `--check` builds everything from it).
+- Two CC flashers on one bench: an ESP32 DevKit for the door sensor and an ESP32-C3 Super Mini for
+  the camera (`documentation/hardware_cc_flasher.md`), each with its own mDNS name.
 - Windows and Linux.
 
 ### Quality
@@ -57,9 +67,17 @@ The first release (draft for `v1.0.0`). Everything below is new.
 - CI on every push and pull request: gateway and both CC1110 builds (no SDCC warnings allowed),
   a key guard against real keys in the repository, the KDF test vector, host unit and fuzz tests
   of the gateway's crypto, replay filter, portal, downlink and picture receiver, emulated-flash
-  tests of the CC1110 counter log, and CodeQL. Dependabot for actions and Python packages.
+  tests of the CC1110 counter log, pytest tests of the Python scripts, and CodeQL. `main` is
+  protected: changes land through pull requests with these checks green. Dependabot for actions
+  and Python packages.
 
 ### Known issues
 
-- See `TODO.md`: e.g. rare flash faults in the counter log (being fixed), the `--gateway-restart`
-  end-to-end check, the master key that was public in the history (change it before use).
+- Rare flash faults can make the counter log reuse a counter value (found by the emulated-flash
+  tests); the fix is in pull request #19 (bench-tested on both devices, an overnight camera test
+  pending).
+- Once, after a 90 s power cut, the camera stayed awake without sending until it was reset
+  (1 of 6 power cuts on 2026-11-19); pull request #22 starts the watchdog before the start-up so such a hang
+  resets the chip.
+- More in `TODO.md`: e.g. the `--gateway-restart` end-to-end check, and the master key that was
+  public in the history (change it before use).
