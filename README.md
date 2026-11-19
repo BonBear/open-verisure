@@ -110,7 +110,8 @@ CC1110, and for the camera the ADI Blackfin GCC toolchain. The scripts run on Wi
    ```bash
    pio run -d 868Receiver -t upload
    ```
-   Without Wi-Fi settings it opens the access point `Verisure-Gateway` (password `12345678`); set
+   Without Wi-Fi settings it opens the access point `Verisure-Gateway`; its password is unique per
+   gateway and shown on the serial console (at boot, every minute, and with `appass`). Set
    Wi-Fi and MQTT on its page, `http://192.168.4.1`. The first save also needs a web portal
    password (8-64 characters). Afterwards the page is at `http://verisure-gateway.local` and the
    browser asks for that password (any user name). For a gateway that is already on Wi-Fi without

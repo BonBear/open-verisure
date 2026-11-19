@@ -20,7 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # paths (files or directories) in the package; a missing one is skipped with a note
 INCLUDE = [
-    "README.md", "LICENSE", "SECURITY.md", "requirements.txt",
+    "README.md", "CHANGELOG.md", "LICENSE", "SECURITY.md", "requirements.txt",
     "derive_key.py", "cc1110_tools.py", "port_selector.py", "monitor.py",
     "868Receiver/README.md", "868Receiver/platformio.ini", "868Receiver/.gitignore", "868Receiver/src",
     "cc1110_common",

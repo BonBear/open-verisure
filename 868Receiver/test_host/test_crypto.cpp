@@ -10,6 +10,7 @@
 #include "test.h"
 #include "crypto.h"
 #include "image_receiver.h"
+#include "gateway_diag.h"
 #include <Preferences.h>
 #include <mbedtls/aes.h>
 
@@ -622,4 +623,78 @@ TEST(big_packet_after_replay_reset_and_boot) {
     CHECK(sendCtr(CAM, 0x0100));                           // boot packet of block 1
     CHECK(sendChunk(CAM, 0x0101));
     CHECK_EQ(s_chunks, 2);
+}
+
+/* ---- Diagnostics counters (gateway_diag.h) ------------------------------------------------- */
+TEST(diag_counts_authentication_results) {
+    uint8_t p[16], pkt[24];
+    CHECK(sendCtr(CAM, 0x0100));
+    CHECK_EQ(g_gatewayDiag.authOk, 1);
+    CHECK_EQ(g_gatewayDiag.authFail, 0);
+    CHECK_STR(g_gatewayDiag.lastRejectedId, "");
+
+    makePlain(p, "BADVS001", 0x100, 0x20);
+    p[10] = 'v';                                           // wrong key / no 'VS'
+    seal(pkt, "BADVS001", p);
+    CHECK(!rx(pkt));
+    CHECK_EQ(g_gatewayDiag.authFail, 1);
+    CHECK_STR(g_gatewayDiag.lastRejectedId, "BADVS001");
+
+    makePlain(p, CAM, 0x101, 0x20);
+    memcpy(&p[6], "XXXX", 4);                              // ID echo does not match
+    seal(pkt, CAM, p);
+    CHECK(!rx(pkt));
+    CHECK_EQ(g_gatewayDiag.authFail, 2);
+    CHECK_STR(g_gatewayDiag.lastRejectedId, CAM);
+
+    makePlain(p, "2K79A65-", 0x100, 0x20);                 // not alphanumeric: counted, ID not kept
+    seal(pkt, "2K79A65-", p);
+    CHECK(!rx(pkt));
+    CHECK_EQ(g_gatewayDiag.authFail, 3);
+    CHECK_STR(g_gatewayDiag.lastRejectedId, CAM);
+    CHECK_EQ(g_gatewayDiag.authOk, 1);
+    CHECK_EQ(g_gatewayDiag.replayDrop, 0);
+}
+
+TEST(diag_counts_replay_drops) {
+    CHECK(sendCtr(CAM, 0x0200));
+    CHECK(!sendCtr(CAM, 0x0200));                          // equal counter
+    CHECK(!sendOld(CAM, 0x0300));                          // fell back to the old format
+    CHECK(sendOld("OLDSEQ01", 5));
+    CHECK(!sendOld("OLDSEQ01", 5));                        // old format, same sequence
+    cryptoReplayReset("RESET001");
+    CHECK(!sendCtr("RESET001", 0x0105));                   // not a boot packet after 'replay reset'
+    CHECK_EQ(g_gatewayDiag.replayDrop, 4);
+    CHECK_EQ(g_gatewayDiag.authOk, 6);                     // replays are authentic, then dropped
+    CHECK_EQ(g_gatewayDiag.authFail, 0);
+    CHECK_STR(g_gatewayDiag.lastRejectedId, "RESET001");
+}
+
+TEST(diag_counts_session_table_full) {
+    char id[9];
+    for (int i = 0; i < 32; i++) {
+        makeId(id, 'D', i);
+        CHECK(sendCtr(id, 0x0100));
+    }
+    CHECK_EQ(g_gatewayDiag.sessionFull, 0);
+    CHECK(!sendCtr("D9999999", 0x0100));
+    CHECK(!sendCtr("D9999998", 0x0100));
+    CHECK_EQ(g_gatewayDiag.sessionFull, 2);
+    CHECK_EQ(g_gatewayDiag.replayDrop, 0);
+}
+
+TEST(diag_counts_picture_chunks) {
+    resetImageCounters();
+    CHECK(sendCtr(CAM, 0x1000));
+    CHECK(sendChunk(CAM, 0x1001));                         // taken
+    CHECK(sendChunk(CAM, 0x0FFF));                         // older picture: stale
+    CHECK(sendChunk(CAM, 0x1000 + 65));                    // too far ahead: stale
+    CHECK(sendChunk(CAM, 0x0FFF, 0x83, 1, 17));            // resend of an older picture: stale
+    CHECK_EQ(g_gatewayDiag.picStale, 3);
+    CHECK_EQ(g_gatewayDiag.authOk, 5);                     // the poll and 4 chunks
+    CHECK(!sendChunk(CAM, 0x1001, 0x84));                  // bad type: wrong key or not a chunk
+    CHECK(!sendChunk(CAM, 0x1001, 0x82, 0, 0x80));         // length 0
+    CHECK_EQ(g_gatewayDiag.authFail, 2);
+    CHECK_EQ(g_gatewayDiag.picStale, 3);
+    CHECK_STR(g_gatewayDiag.lastRejectedId, CAM);
 }

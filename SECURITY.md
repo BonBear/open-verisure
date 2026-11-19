@@ -11,7 +11,7 @@ This project handles wireless alarm hardware and radio transmissions. While we i
   python derive_key.py --generate-master
   ```
 * Save this key in `secrets.h` on the gateway and use it when generating device keys with `derive_key.py`.
-* Prefer `secrets.h` over typing the key on the setup access point's page: the access point `Verisure-Gateway` has the fixed password `12345678` and its page is plain HTTP, so anyone in Wi-Fi range who joins it can read what you send. If you do use it, do the setup where nobody else can listen.
+* Prefer `secrets.h` over typing the key on the setup access point's page: the access point `Verisure-Gateway` has a password unique to each gateway (derived from its MAC, or `DEFAULT_AP_PASS` in `secrets.h`; shown only on the serial console), but its page is plain HTTP, so anyone who knows or cracks that password and is in Wi-Fi range can read what you send. Do the setup where nobody else can listen.
 
 ### 2. Keep Credentials Local
 * `VerisureDoorSensor/config.h`, `MD_CAM/firmware/config.h` and `868Receiver/src/secrets.h` are git-ignored.
@@ -22,6 +22,7 @@ This project handles wireless alarm hardware and radio transmissions. While we i
 ### 3. Network Isolation
 * Place the ESP32-S2 Gateway and your MQTT broker on an isolated **IoT VLAN** or guest network without direct access to sensitive internal network shares.
 * **Web portal password:** the gateway's page and API (settings, master key, camera pictures) need the portal password (8-64 characters, HTTP Basic auth, any user name). It is set on the first save in the setup access point, with the serial command `portalpass <password>`, or with `DEFAULT_PORTAL_PASS` in `secrets.h`; only a salted hash is stored. Basic auth over plain HTTP sends the password readably with every request, so anyone on the same network can capture it: use the page only from a trusted LAN. Five wrong passwords lock the check for 30 s. Changes also need a POST with the header `X-Gateway: 1` from the gateway's own host (CSRF), and requests with a foreign `Host` are refused. `/api/replay` (a packet counter the build scripts read) stays public.
+* **Firmware update over Wi-Fi (OTA):** `POST /api/ota` installs a new gateway firmware. It is protected only by the web portal password (plus the `X-Gateway`/Host/Origin checks) over plain HTTP: whoever has or captures the password on the LAN can install any firmware, and with it read the master key. Images are **not signed**: the gateway only checks that the file is an ESP32-S2 application image and that it is intact (checksum, SHA-256, optional MD5 against transfer errors), not who built it. Update only from a trusted LAN, and keep the portal password secret. A new firmware that does not reach Wi-Fi within 5 minutes is rolled back, which protects against broken builds, not against malicious ones.
 * **MQTT is plain TCP:** the gateway has no TLS/MQTTS support, so the MQTT user name, password and all messages (including camera pictures) cross the network unencrypted. Use a broker account that is only for the gateway and keep the broker on the trusted LAN.
 
 ### 4. Physical Access
