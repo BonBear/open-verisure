@@ -7,6 +7,7 @@ cc1110_tools.py - Shared helpers of the CC1110 build-and-flash scripts
 * write_config()      config.h for a device ID from the master key in 868Receiver/src/secrets.h
 * counter_seed()      first packet counter block of a freshly flashed device (asks the gateway)
 * flash_serial()      flash a binary over the ESP_CC_Flasher's USB serial port
+* replay_counter(), wait_for_device()  check that the gateway accepts the flashed device
 """
 import os
 import re
@@ -44,6 +45,9 @@ def write_config(device_id: str, config_h: str, master_hex: Optional[str] = None
     key = bytes.fromhex(mk)
     print(f"[+] Master key check value {key_check_value(key)} "
           "(must match 'Master Key : set (check value ...)' in the gateway's status command)")
+    if key == bytes.fromhex(derive_key.DEFAULT_MASTER_KEY_HEX):
+        print("[!] WARNING: secrets.h has the PUBLIC example master key: anyone can make packets with it.")
+        print("    Generate your own: python derive_key.py --generate-master")
     derive_key.write_config_header(dev, derive_key.derive_device_key(key, dev), config_h)
     return dev
 
@@ -80,7 +84,37 @@ def counter_seed(gateway: str, device_id: str, no_seed: bool = False) -> int:
     return seed
 
 
-def flash_serial(port: str, bin_path: str) -> None:
+def replay_counter(gateway: str, device_id: str) -> Optional[int]:
+    """The gateway's last accepted counter of a device (GET /api/replay, public), 0 if it has
+    none yet, None if the gateway does not answer."""
+    try:
+        data = requests.get(f"{gateway}/api/replay", params={"id": device_id}, timeout=5).json()
+    except Exception:
+        return None
+    return int(data["counter"]) if data.get("known") else 0
+
+
+def wait_for_device(gateway: str, device_id: str, before: Optional[int], timeout: float = 90) -> bool:
+    """After flashing: wait until the gateway has accepted a packet of device_id with a counter
+    above 'before' (read before flashing). Only an authenticated packet moves that counter, so
+    this proves the new firmware's key and seed, unlike the device merely being listed."""
+    print(f"[*] Waiting up to {timeout:.0f} s for an authenticated packet from {device_id} at {gateway} ...")
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        now = replay_counter(gateway, device_id)
+        if now is not None and before is not None and now > before:
+            print(f"[+] {device_id} authenticated on the gateway (counter {before} -> {now})")
+            return True
+        time.sleep(2)
+    if before is None:
+        print(f"[!] Gateway {gateway} did not answer: check the gateway log for {device_id} yourself")
+    else:
+        print(f"[-] No authenticated packet from {device_id} within {timeout:.0f} s (wrong key or seed, "
+              "or out of range): check the gateway log")
+    return False
+
+
+def flash_serial(port: str, bin_path: str, allow_locked: bool = False) -> None:
     """Flash over the flasher's USB serial port (ESP_CC_Flasher src/serial_cmd.cpp), no Wi-Fi.
     DTR/RTS stay low so opening the port does not reset the ESP32. Exits on any failure."""
     import zlib
@@ -118,8 +152,11 @@ def flash_serial(port: str, bin_path: str) -> None:
             print("[-] Target is not responding with CC1110F32 (0104). Check wires/battery.")
             sys.exit(1)
         if int(parts[2], 16) & 0x04:
-            print("[-] Target has DEBUG_LOCKED=1 (locked reference board). Aborting.")
-            sys.exit(1)
+            if not allow_locked:
+                print("[-] The CC1110 is debug-locked (a factory device). Flashing erases the whole chip and")
+                print("    with it the factory firmware, for good (it cannot be read back): rerun with --erase.")
+                sys.exit(1)
+            print("[!] Debug-locked CC1110 (--erase): the chip erase before flashing wipes the factory firmware.")
         print(f"[*] Flashing {len(data)} bytes over {port}...")
         s.write(f"FLASH {len(data)} {zlib.crc32(data) & 0xFFFFFFFF:08x}\n".encode())
         if answer(5) != "#READY":

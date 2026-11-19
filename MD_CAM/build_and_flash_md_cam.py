@@ -8,8 +8,11 @@ gateway hears it.
     python MD_CAM/build_and_flash_md_cam.py --compile-only                     # build check only
 
 The device key is derived from the master key in 868Receiver/src/secrets.h into firmware/config.h
-(git-ignored). Before flashing, the gateway is asked for the camera's last packet counter
-(--gateway, --no-seed). Extra -D defines are passed to SDCC (bench builds).
+(git-ignored; the script stops without a key). Before flashing, the gateway is asked for the
+camera's last packet counter (--gateway, --no-seed); afterwards the script waits until the gateway
+has accepted a packet with a higher counter, which only a correctly keyed camera can send. A
+factory camera's CC1110 is debug-locked: the first flash needs --erase, which wipes the factory
+firmware for good. Extra -D defines are passed to SDCC (bench builds).
 """
 import argparse
 import os
@@ -42,35 +45,6 @@ BIN_PATH = os.path.join(BUILD_DIR, "main.bin")
 REMOTE_NAME = "md_cam.bin"
 
 
-def sync_key_from_gateway() -> bool:
-    """Derive config.h from the master key in secrets.h. Older gateways also returned their
-    active key in /api/status (in memory only, never printed); newer ones do not."""
-    mk_hex = derive_key.get_master_key_from_secrets() or derive_key.DEFAULT_MASTER_KEY_HEX
-    key_changed = False
-    try:
-        r = requests.get(f"{GATEWAY_HTTP}/api/status", timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            gw_mk = (data.get("config", {}).get("master_key") or "").strip().upper()
-            if len(gw_mk) == 32:
-                matches_secrets = (gw_mk == mk_hex.upper())
-                print(f"[+] Queried Gateway at {GATEWAY_HTTP}/api/status (NVS key matches secrets.h: {matches_secrets})")
-                if not matches_secrets:
-                    key_changed = True
-                mk_hex = gw_mk
-            else:
-                # newer gateways never send the key back (only "master_key_set")
-                print("[+] Gateway does not expose its master key; using the key from secrets.h")
-            sensors = data.get("sensors", [])
-            print(f"[+] Currently registered sensors on Gateway: {[s.get('id') for s in sensors]}")
-    except Exception as e:
-        print(f"[!] Could not query {GATEWAY_HTTP}/api/status ({e}), using secrets.h")
-
-    print(f"[+] Master key check value {cc1110_tools.key_check_value(bytes.fromhex(mk_hex))} "
-          "(must match 'Master Key : set (check value ...)' in the gateway's status command)")
-    dk = derive_key.derive_device_key(bytes.fromhex(mk_hex), DEVICE_ID)
-    derive_key.write_config_header(DEVICE_ID, dk, CONFIG_H)
-    return key_changed
 
 
 def compile_firmware(ctr_seed: int = 1) -> None:
@@ -126,6 +100,8 @@ def main():
     ap.add_argument("--no-seed", action="store_true",
                     help="flash without the gateway's counter seed (then 'replay reset <ID>' on the gateway)")
     ap.add_argument("--compile-only", action="store_true", help="build check only (unseeded, never flash it)")
+    ap.add_argument("--erase", action="store_true",
+                    help="allow flashing a debug-locked (factory) CC1110: wipes the factory firmware for good")
     args, extra = ap.parse_known_args()
     bad = [a for a in extra if not a.startswith("-D")]
     if bad:
@@ -151,17 +127,21 @@ def main():
         compile_firmware(1)
         print("[!] --compile-only: unseeded build (counter block 1), do not flash it")
         return
-    sync_key_from_gateway()
+    # config.h from the master key in secrets.h (exits without one; only its check value is shown)
+    cc1110_tools.write_config(DEVICE_ID, CONFIG_H)
     # a flashed build starts its packet counter above the gateway's last accepted one
     compile_firmware(cc1110_tools.counter_seed(GATEWAY_HTTP, DEVICE_ID, args.no_seed))
+    before = cc1110_tools.replay_counter(GATEWAY_HTTP, DEVICE_ID)
     if args.serial:
-        cc1110_tools.flash_serial(args.serial, BIN_PATH)
+        cc1110_tools.flash_serial(args.serial, BIN_PATH, allow_locked=args.erase)
     else:
-        flash_http()
-    verify_on_gateway()
+        flash_http(args.erase)
+    # the boot packet goes out at once; the camera's counter on the gateway must move past 'before'
+    if not cc1110_tools.wait_for_device(GATEWAY_HTTP, DEVICE_ID, before, timeout=150):
+        sys.exit(1)
 
 
-def flash_http():
+def flash_http(erase: bool = False):
     session = requests.Session()
     session.auth = HTTPBasicAuth(CC_USER, CC_PASS)
 
@@ -188,8 +168,19 @@ def flash_http():
         print("[-] Target is not responding with CC1110F32 (0104). Check wires/battery.")
         sys.exit(1)
     if (status_val & 0x04) != 0:
-        print("[-] Target has DEBUG_LOCKED=1 (this is the locked reference board!). Aborting to protect reference board.")
-        sys.exit(1)
+        if not erase:
+            print("[-] The CC1110 is debug-locked (a factory camera). Flashing erases the whole chip and")
+            print("    with it the factory firmware, for good (it cannot be read back): rerun with --erase.")
+            sys.exit(1)
+        print("[*] Debug-locked CC1110 (--erase): chip erase, which wipes the factory firmware...")
+        print(f"[+] {session.post(f'{CC_HOST}/erase_cc', timeout=15).text.strip()}")
+        time.sleep(0.5)
+        init_text = session.post(f"{CC_HOST}/cc_init", timeout=15).text.strip()
+        print(f"[+] After the erase: {init_text}")
+        m = re.search(r"Status:\s*([0-9a-fA-F]+)", init_text)
+        if "0104" not in init_text or not m or int(m.group(1), 16) & 0x04:
+            print("[-] The chip is still locked or not answering after the erase.")
+            sys.exit(1)
 
     # 3. Flash and verify
     print(f"[*] Flashing /{REMOTE_NAME} to CC1110F32...")
@@ -230,35 +221,6 @@ def flash_http():
         session.post(f"{CC_HOST}/cc_exit_dbg", timeout=5)
     except Exception:
         pass
-
-
-def verify_on_gateway():
-    # 4. Poll the gateway's /api/status until it has heard the camera
-    print(f"[*] Polling {GATEWAY_HTTP}/api/status for sensor {DEVICE_ID} telemetry...")
-    for _ in range(10):
-        time.sleep(1.5)
-        try:
-            r = requests.get(f"{GATEWAY_HTTP}/api/status", timeout=5)
-            if r.status_code == 200:
-                data = r.json()
-                for s in data.get("sensors", []):
-                    if s.get("id") == DEVICE_ID:
-                        p0_pu = s.get("p0", 0)
-                        p0_pd = s.get("p1", 0)
-                        p1_pu = s.get("p2", 0)
-                        p2_pk = s.get("rst", 0)
-                        print("\n" + "=" * 65)
-                        print(f"[SUCCESS] {DEVICE_ID} AUTHENTICATED ON GATEWAY & HOME ASSISTANT!")
-                        print(f"  Motion (PIR) : {'MOTION DETECTED [ALARM]' if s.get('magnet') else 'Clear (Idle)'}")
-                        print(f"  Tamper (SW3) : {'TAMPER!' if s.get('button') else 'Secured'}")
-                        print(f"  Battery      : {s.get('battery_mv')} mV ({s.get('battery_pct')}%)")
-                        print(f"  Signal       : RSSI {s.get('rssi')} dBm | LQI {s.get('lqi')} | Seq #{s.get('seq')}")
-                        print(f"  GPIO Scan    : P0_PU=0x{p0_pu:02X} P0_PD=0x{p0_pd:02X} | P1_PU=0x{p1_pu:02X} | P2=0x{p2_pk:02X}")
-                        print("=" * 65)
-                        return
-        except Exception:
-            pass
-    print("[!] Sensor not yet seen in /api/status; check Gateway logs.")
 
 
 if __name__ == "__main__":

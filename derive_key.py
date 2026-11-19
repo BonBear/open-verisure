@@ -236,8 +236,9 @@ def main():
     # the master key itself is never printed: its check value matches the gateway's status output
     print(f"[*] Master Key      : check value {key_check_value(master_bytes)} (gateway 'status' shows the same)")
     print(f"[*] Key Source      : {key_source}")
-    if key_source.startswith("Built-in"):
-        print("[!] WARNING: built-in example master key. Generate your own (--generate-master) and put it in secrets.h.")
+    if master_bytes == bytes.fromhex(DEFAULT_MASTER_KEY_HEX):
+        print("[!] WARNING: this is the PUBLIC example master key (anyone can make packets with it). "
+              "Generate your own (--generate-master) and put it in secrets.h.")
     if out_path:
         print("=" * 65)
         write_config_header(device_id, device_key, out_path)

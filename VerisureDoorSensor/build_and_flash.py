@@ -160,6 +160,9 @@ def get_latest_log_id(session: requests.Session, host: str) -> int:
         return 0
 
 
+FLASH_OK = object()   # flash_firmware() result when flashing worked but no receiver port is open
+
+
 def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_CC_HOST, force_erase: bool = False, wait_contact: bool = False) -> Optional[serial.Serial]:
     """
     Upload and flash binary image to CC1110 via ESP_CC_Flasher HTTP API.
@@ -167,11 +170,11 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
     Args:
         receiver_port (str, optional): Port to pre-open for live monitoring.
         cc_host (str): HTTP endpoint of CC Flasher.
-        force_erase (bool): Force chip erase to unlock protected CC1110.
+        force_erase (bool): Allow erasing a debug-locked (factory) CC1110, or erase anyway.
         wait_contact (bool): Loop until solid electrical contact with CC1110 is detected.
 
     Returns:
-        Optional[serial.Serial]: Pre-opened serial connection or None.
+        The pre-opened receiver port, FLASH_OK if flashing worked without one, or None on failure.
     """
     print("=" * 60)
     print(f"2. FLASHING CC1110 VIA ESP_CC_FLASHER ({cc_host})")
@@ -226,6 +229,10 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
             status_val = int(m.group(1), 16)
 
         is_locked = (status_val != 0xFF and status_val != 0 and (status_val & 0x04) != 0) or (status_val != 0 and status_val != 0xFF and "Device id: 0000" in init_text)
+        if is_locked and not force_erase:
+            print("[-] The CC1110 is debug-locked (a factory sensor). Flashing it erases the factory")
+            print("    firmware for good (it cannot be read back): rerun with --erase to do that.")
+            return None
         if is_locked or force_erase:
             print("[*] Chip is locked (factory security) or erase requested. Unlocking via chip erase...")
             try:
@@ -327,7 +334,7 @@ def flash_firmware(receiver_port: Optional[str] = None, cc_host: str = DEFAULT_C
     except Exception as e:
         print(f"[-] cc_exit_dbg error: {e}")
 
-    return s
+    return s if s else FLASH_OK
 
 
 def monitor_receiver(s: Optional[serial.Serial], port: Optional[str] = None, duration: int = 30) -> bool:
@@ -393,7 +400,8 @@ def parse_arguments():
     parser.add_argument("--skip-monitor", "-s", action="store_true",
                         help="Flash CC1110 without opening receiver serial monitor.")
     parser.add_argument("--erase", "-e", action="store_true",
-                        help="Perform full chip erase to unlock protected/factory CC1110 before flashing.")
+                        help="Allow flashing a debug-locked (factory) CC1110: the chip erase wipes the "
+                             "factory firmware for good. Needed the first time for a factory sensor.")
     parser.add_argument("--wait-contact", "-w", action="store_true",
                         help="Wait in real-time until physical electrical contact with CC1110 is detected, then flash instantly.")
     parser.add_argument("--serial", default=None,
@@ -426,7 +434,12 @@ def main():
 
     if args.serial:
         # ESP_CC_Flasher serial protocol (src/serial_cmd.cpp), shared with the camera
-        cc1110_tools.flash_serial(args.serial, BIN_FILE)
+        dev = cc1110_tools.config_device_id(CONFIG_H)
+        before = cc1110_tools.replay_counter(args.gateway, dev) if dev else None
+        cc1110_tools.flash_serial(args.serial, BIN_FILE, allow_locked=args.erase)
+        # the boot packet goes out at once: the gateway's counter for the sensor must move
+        if dev and not args.skip_monitor and not cc1110_tools.wait_for_device(args.gateway, dev, before, 60):
+            sys.exit(1)
         return
 
     # 2. Select receiver serial port if monitoring is enabled
@@ -444,9 +457,11 @@ def main():
 
     # 3. Flash CC1110
     ser = flash_firmware(receiver_port=receiver_port, cc_host=args.host, force_erase=args.erase, wait_contact=args.wait_contact)
-    if not ser:
+    if ser is None:
         print("\n[-] Flashing failed. Monitoring aborted.")
         sys.exit(1)
+    if ser is FLASH_OK:
+        ser = None
 
     # 4. Monitor receiver
     if not args.skip_monitor:
