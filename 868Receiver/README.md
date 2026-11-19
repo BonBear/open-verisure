@@ -35,6 +35,43 @@ unique per gateway: the serial console shows it at boot, every minute and with `
 set `DEFAULT_AP_PASS` in `secrets.h`; page `http://192.168.4.1`). Settings can be changed later in the web portal (stored
 in NVS).
 
+### Update over Wi-Fi (OTA)
+
+Once the gateway runs a firmware with OTA and is on Wi-Fi, later builds can be installed without
+USB:
+
+```bash
+pio run -d 868Receiver
+GATEWAY_PASS='<portal password>' python 868Receiver/ota_upload.py --host verisure-gateway.local
+# or: --password-file <file> (first line), --bin <other image>, --wait-valid
+```
+
+The script checks the image, uploads `.pio/build/lolin_s2_mini/firmware.bin` with its MD5,
+waits for the reboot and checks in `/api/status` that the gateway runs exactly this image. The
+password is taken only from `--password-file` or `GATEWAY_PASS`, never from the command line.
+The web page has the same upload (Firmware Update card).
+
+* The 4 MB flash has two 1.25 MB app slots (`app0`, `app1`, default partition table); the image
+  goes into the slot that is not running. Nothing is written before the access check (portal
+  password, `X-Gateway: 1`, Host/Origin) and the image header (an ESP32-S2 application image)
+  have passed. The whole image (checksum, SHA-256, the MD5 if given) is verified before the
+  gateway boots it; a wrong password, a truncated or foreign file, a wrong MD5 or a dropped
+  connection leave the running firmware in place.
+* **Rollback:** a new firmware first runs "pending verify". It confirms itself once it has run
+  30 s and is connected to Wi-Fi at that moment; if it restarts or crashes before that, or has no
+  Wi-Fi within 5 minutes, the gateway goes back to the previous firmware. A firmware that hangs
+  before that check stays "pending" until the next power cycle, which then rolls it back. This
+  only works if the NEW firmware contains this OTA code: an older build (before OTA) marks itself
+  valid at boot, so after updating to one, USB is the only way back. `/api/status` shows
+  `firmware.partition`, `.state` and `.md5`.
+* Refused: a new update while the running firmware is not confirmed yet, while the gateway is
+  rebooting into a just-written update, and in the setup access point (there it could not be
+  confirmed, and the portal may have no password yet). A refused request is answered at once and
+  its connection closed, so a stalled upload cannot hold the gateway.
+* The upload (~1 MB, ~10 s) blocks the main loop: the radio FIFO is still read for every
+  received piece, but the MQTT client and the rest of the loop wait, and flash erases can
+  delay a packet. If OTA ever leaves the gateway unreachable, flash it over USB as above.
+
 ## What it does
 
 * **Radio:** 868.950 MHz, 38.4 kBaud 2-FSK. The CC1101 receives fixed 58-byte frames with the
@@ -79,14 +116,15 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   list. API: `/api/status`, `/api/replay?id=<ID>` (a sensor's last accepted counter), `/api/radio`, `/api/scan`, `/api/save`, `/api/reboot`, `/api/reset`,
   `/api/camera.jpg` (newest 320x240 picture, colour or flash), `/api/camera_large.jpg` (640x480),
   `/api/camera_test?id=<ID>` (POST: publishes a small test JPEG to MQTT), `/api/picture?id=<ID>&cmd=D1`
-  (POST: picture request). With a camera the page shows its last picture and picture buttons.
+  (POST: picture request), `/api/ota` (POST: firmware update, the image as the raw body,
+  optional header `X-OTA-MD5`; see above). With a camera the page shows its last picture and picture buttons.
 * **Portal password and access rules:** the page and every API call except `/api/replay` need
   the web portal password (8-64 characters; the browser asks for it, HTTP Basic auth, any user
   name). It is chosen on the first save in the setup access point (required there), set with
   the serial command `portalpass <password>`, or taken from `DEFAULT_PORTAL_PASS` in `secrets.h`
   while none is stored; only a salted hash is kept in NVS. Without one the API only answers in
   the setup access point. Five wrong passwords from one client within 10 minutes lock that client out for 30 s. `/api/save`,
-  `/api/reboot`, `/api/reset`, `/api/camera_test` and `/api/picture` must be POSTs with the header
+  `/api/reboot`, `/api/reset`, `/api/camera_test`, `/api/picture` and `/api/ota` must be POSTs with the header
   `X-Gateway: 1` and no foreign `Origin`, and every request needs a `Host` that names the gateway
   (its IP or `verisure-gateway[.local]`). The password crosses the network as plain HTTP: see
   [SECURITY.md](../SECURITY.md).
@@ -113,4 +151,5 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
 | `mqtt_manager.cpp/h`, `ha_discovery.cpp/h` | MQTT client, discovery, commands |
 | `web_portal.cpp/h`, `serial_cli.cpp/h` | Web portal and serial console |
 | `config_manager.cpp/h`, `sensor_registry.cpp/h` | NVS settings, device cache |
+| `ota_update.cpp/h`, `ota_image.h` | Firmware update over Wi-Fi, image check, rollback |
 | `hardware_pins.h` | CC1101 SPI pins |

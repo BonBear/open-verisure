@@ -268,6 +268,8 @@ void initRadioRegisters() {
     enterRxMode();
 }
 
+static void radioService();
+
 void setup() {
     Serial.begin(115200);
     delay(2000);
@@ -321,6 +323,7 @@ void setup() {
 
     lastEventTime = millis();
     lastHeartbeat = lastEventTime;
+    webPortalSetBusyHook(radioService);   // an OTA upload blocks loop(): keep reading the radio
 }
 
 void loop() {
@@ -362,7 +365,15 @@ void loop() {
         delay(10);
         return;
     }
+    radioService();
+    delay(2);
+}
 
+/** Reads the radio FIFO and handles a complete frame. Called by loop() and, while an OTA upload
+ *  blocks loop(), by the web portal for every received piece of the upload. */
+static void radioService() {
+    if (!s_radioOnline) return;
+    unsigned long now = millis();
     byte rxBytesStatus = readStatusSafe(CC1101_RXBYTES);
     static byte frame[RX_FRAME_LEN];
     static byte frameLen = 0;
@@ -465,6 +476,4 @@ void loop() {
             partialStart = 0;
         }
     }
-
-    delay(2);
 }

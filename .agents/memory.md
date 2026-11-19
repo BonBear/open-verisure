@@ -162,6 +162,8 @@ It stores **verified technical insights**, **hardware limitations**, **known pit
 - [2026-11-16] [GATEWAY/DELTA_BASE]: An unusable delta (different base id after a gateway restart, or a failed splice) makes the gateway queue a full picture 0xD1 to the camera, at most once per 60 s (image_receiver.cpp requestNewBase). The gateway restarts with the CLI command reboot.
 
 ---
+- [2026-11-19] [GATEWAY/OTA]: Arduino-ESP32 3.3 `Update.end(true)` accepts an image shorter than announced (it sets the size to the bytes written): check `Update.isFinished()` first. A truncated image with a matching length is still caught in `esp_ota_set_boot_partition()` (image verify, UPDATE_ERROR_ACTIVATE). The S2 libs have CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE: override `extern "C" bool verifyRollbackLater()` to confirm a new app yourself; verified on the bench that a reboot while PENDING_VERIFY boots the previous slot.
+- [2026-11-19] [GATEWAY/WEBSERVER_RAW]: The 3.x WebServer streams any non-multipart POST body to the upload handler as HTTPRaw (RAW_START/WRITE/END/ABORTED, 1436 B pieces; `hasRaw()` tells raw from multipart). Collected headers and Content-Length are available at RAW_START; a dropped connection gives RAW_ABORTED and the main handler is not called. The whole upload runs inside `handleClient()`, so loop() is blocked (~10 s per MB incl. flash writes).
 
 ## 🛠️ Build, Toolchains, Scripts & Repo
 - [2026-11-18] [BUILD/PLATFORM_PIN]: Pin the PlatformIO platform and libraries: an unpinned platform fetched a new major version with a different, untested image. The gateway moved from espressif32@7.0.1 to 8.0.0 (Arduino core 3.x) with SmartRC-CC1101 3.0.2 pinned (GATEWAY/CORE3_SPI).
