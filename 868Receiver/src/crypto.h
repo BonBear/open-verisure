@@ -130,11 +130,12 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
 
 /**
  * @brief Forget a device's replay state (RAM and NVS), e.g. after reflashing erased its flash,
- *        which restarts its persistent counter. Afterwards only a boot packet of blocks 1..8 (an
- *        unseeded flash) is taken; seeding the flash above the old counter is the better way.
+ *        which restarts its persistent counter. Afterwards only a boot packet of blocks 1..maxBlock
+ *        (default 8, an unseeded flash) is taken; the state survives a gateway restart (NVS).
+ *        Seeding the flash above the old counter is the better way.
  * @return True if the device had replay state.
  */
-bool cryptoReplayReset(const char* deviceId);
+bool cryptoReplayReset(const char* deviceId, uint32_t maxBlock = 0);
 
 /**
  * @brief Last accepted persistent counter of a device (RAM or NVS), for the build script: a

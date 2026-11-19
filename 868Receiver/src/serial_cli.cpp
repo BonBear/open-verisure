@@ -38,7 +38,8 @@ static void printHelp() {
     Serial.println("  setmqtt <host> <port> [user] [pass] [topic] - Configure MQTT broker");
     Serial.println("  alarm [on|off]             - Show or set the alarm state sent to cameras");
     Serial.println("  drop <n>                   - Test: drop every n-th camera picture chunk (0 = off)");
-    Serial.println("  replay reset <ID>          - Forget a sensor's replay counter (after reflashing it)");
+    Serial.println("  replay reset <ID> [block]  - Forget a device's replay counter (after an unseeded reflash);");
+    Serial.println("                               then only its boot packet of blocks 1..block (default 8) is taken");
     Serial.println("  freqoffset [n]             - Show or set the CC1101 frequency correction (FSCTRL0 steps)");
     Serial.println("  portalpass [<password>|clear] - Show, set (8-64 characters) or clear the web portal password");
     Serial.println("  reset                      - Factory reset all NVS settings");
@@ -269,9 +270,17 @@ static void processCommand(char* cmd) {
         imageReceiverSetDrop((uint32_t)n);
         Serial.printf("[CLI] Dropping every %lu-th picture chunk%s\n", n, n ? "" : " (off)");
     } else if (strncmp(cmd, "replay reset ", 13) == 0) {
-        const char* id = cmd + 13;
-        bool had = cryptoReplayReset(id);
-        Serial.printf("[CLI] Replay state for \"%s\" %s\n", id, had ? "cleared" : "not found");
+        char id[9] = {0};
+        unsigned long block = 0;
+        int n = sscanf(cmd + 13, "%8s %lu", id, &block);
+        if (n < 1 || strlen(id) != 8) {
+            Serial.println("[CLI] Usage: replay reset <ID> [max block, default 8]");
+        } else {
+            bool had = cryptoReplayReset(id, (uint32_t)block);
+            Serial.printf("[CLI] Replay state for \"%s\" %s; waiting for a boot packet of blocks 1..%lu "
+                          "(power-cycle the device if it has booted already)\n",
+                          id, had ? "cleared" : "not found", block ? block : 8UL);
+        }
     } else if (strcmp(cmd, "alarm") == 0) {
         Serial.printf("[CLI] Alarm is %s\n", downlinkArmed() ? "ARMED" : "DISARMED");
     } else if (strcmp(cmd, "freqoffset") == 0 || strncmp(cmd, "freqoffset ", 11) == 0) {
@@ -293,7 +302,7 @@ static void processCommand(char* cmd) {
         Serial.printf("[CLI] Web portal password: %s\n", ConfigManager::hasPortalPassword() ? "set" : "NOT SET");
     } else if (strcmp(cmd, "portalpass clear") == 0) {
         ConfigManager::clearPortalPassword();
-        Serial.println("[CLI] Web portal password cleared: the web page is locked until a new one is set.");
+        Serial.println("[CLI] Web portal password cleared. On Wi-Fi the web page is locked until a new one is set; in the setup access point it is open; DEFAULT_PORTAL_PASS in secrets.h sets it again at the next boot.");
     } else if (strncmp(cmd, "portalpass ", 11) == 0) {
         // the password is never echoed
         if (ConfigManager::setPortalPassword(cmd + 11))

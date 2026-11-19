@@ -124,16 +124,18 @@ mirrors `contact` and is what the camera's Motion entity uses.
 
 ## 🌐 Gateway Web Dashboard & REST API
 
-The gateway hosts an embedded web server on port 80 (`http://<gateway-ip>`). It provides a dark-mode responsive interface for monitoring sensor telemetry and configuring network parameters.
+The gateway hosts an embedded web server on port 80 (`http://verisure-gateway.local` or `http://<gateway-ip>`). It provides a dark-mode responsive interface for monitoring sensor telemetry and configuring network parameters.
+
+Access: every endpoint except `GET /api/replay` needs the web portal password (HTTP Basic auth, any user name; set in the setup access point on the first save, with the serial command `portalpass <password>`, or with `DEFAULT_PORTAL_PASS` in `secrets.h`). Without a password the API only answers in the setup access point. Every `POST` needs the header `X-Gateway: 1` and no foreign `Origin` (CSRF protection), every request a `Host` that names the gateway (its IP or `verisure-gateway[.local]`), and 5 wrong passwords from one client within 10 minutes lock that client out for 30 s. Basic auth over plain HTTP can be read by anyone on the same network (see `SECURITY.md`).
 
 ### REST API Endpoints:
 * **`GET /api/status`:** Returns real-time JSON status for Wi-Fi, radio noise floor, MQTT broker link, and all registered sensors.
-* **`GET /api/replay?id=<ID>`:** The last accepted persistent packet counter of a sensor (`{"id","known","counter"}`); the door sensor's build script starts a reflashed sensor above it.
+* **`GET /api/replay?id=<ID>`:** (no password) The last accepted persistent packet counter of a device (`{"id","known","counter"}`); the build scripts start a reflashed device above it and check afterwards that the gateway accepts its new counter.
 * **`GET /api/radio`:** CC1101 chip version, part number and MARCSTATE (radio check).
 * **`GET /api/camera.jpg`, `GET /api/camera_large.jpg`:** The last camera picture (320x240) and the last 640x480 picture; 404 until one has arrived.
-* **`GET|POST /api/camera_test?id=<ID>`:** (`id` required) Publishes a tiny test JPEG on the camera's MQTT image topic (checks the Home Assistant camera entity without the camera).
+* **`POST /api/camera_test?id=<ID>`:** (`id` required) Publishes a tiny test JPEG on the camera's MQTT image topic (checks the Home Assistant camera entity without the camera).
 * **`GET /api/scan`:** Wi-Fi scan in the background: answers `202 {"scanning":true}` until it is done, then the networks with RSSI and encryption flags (ask again until a list comes back).
 * **`POST /api/picture?id=<ID>&cmd=D1..D6`:** Queues a picture request for a camera, like `picture/set` over MQTT (the camera's card on the web page uses it).
-* **`POST /api/save`:** Persists Wi-Fi SSID, password, MQTT broker host, port, credentials, topic prefix, and Master Key into ESP32-S2 NVS (Non-Volatile Storage). An empty password or key field keeps the saved value (they are never sent to the browser); a new SSID with an empty password is an open network.
+* **`POST /api/save`:** Persists Wi-Fi SSID, password, MQTT broker host, port, credentials, topic prefix, and Master Key into ESP32-S2 NVS (Non-Volatile Storage). An empty password or key field keeps the saved value (they are never sent to the browser), except that a new MQTT host with an empty MQTT password drops the stored one (it is never sent to another broker); a new SSID with an empty password is an open network. `portal_pass` (8-64 characters) sets the web portal password; it is required on the first save in the setup access point.
 * **`POST /api/reboot`:** Triggers a software restart of the gateway.
-* **`POST /api/reset`:** Resets NVS parameters to compiled defaults.
+* **`POST /api/reset`:** Resets NVS parameters to compiled defaults (Wi-Fi, MQTT, master key and the portal password; the replay counters stay).

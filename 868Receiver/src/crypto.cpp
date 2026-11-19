@@ -24,6 +24,7 @@ struct DeviceSession {
     bool ctrMode;           /**< Device sends a 32-bit counter that survives its resets (flag 0x20) */
     uint32_t lastCtr;       /**< Last accepted 32-bit counter (ctrMode) */
     bool needBoot;          /**< After 'replay reset': accept only a boot packet (low byte 0) */
+    uint32_t resetMaxCtr;   /**< needBoot: the highest boot packet counter taken (block limit) */
     unsigned long lastStore;/**< millis() of the last NVS write of lastCtr */
     bool storePending;      /**< lastCtr is newer than NVS (written by cryptoReplayFlush) */
     uint32_t picTag;        /**< Tag (start packet counter) of the newest accepted picture chunk */
@@ -122,6 +123,31 @@ static void ctrStore(const char* devId, uint32_t ctr) {
     if (replayPrefsOpen()) s_replayPrefs.putULong(devId, ctr);
 }
 
+/* After 'replay reset' the device waits for a boot packet; that state is kept in NVS under
+ * "R<ID>" (the highest counter taken), so a gateway restart in between does not leave the device
+ * with no floor at all (then any recorded packet would pass). Removed with the first boot packet. */
+static void resetKey(const char* devId, char key[10]) {
+    key[0] = 'R';
+    memcpy(key + 1, devId, 8);
+    key[9] = '\0';
+}
+
+static bool resetLoad(const char* devId, uint32_t* maxCtr) {
+    char k[10];
+    resetKey(devId, k);
+    if (!replayPrefsOpen() || !s_replayPrefs.isKey(k)) return false;
+    *maxCtr = s_replayPrefs.getULong(k, 0);
+    return true;
+}
+
+static void resetStore(const char* devId, uint32_t maxCtr, bool on) {
+    char k[10];
+    resetKey(devId, k);
+    if (!replayPrefsOpen()) return;
+    if (on) s_replayPrefs.putULong(k, maxCtr);
+    else if (s_replayPrefs.isKey(k)) s_replayPrefs.remove(k);
+}
+
 /**
  * @brief Find an existing session or allocate a new session record for a device.
  * @param deviceId Sensor node identifier.
@@ -137,7 +163,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId, bool onlyKnown = 
     // path has no real authentication before this point (a random frame passes its type and
     // length check about once in 200), so it must not fill the table with made-up IDs.
     uint32_t known;
-    if (onlyKnown && !ctrLoad(deviceId, &known)) return nullptr;
+    if (onlyKnown && !ctrLoad(deviceId, &known) && !resetLoad(deviceId, &known)) return nullptr;
     if (s_deviceCount < MAX_TRACKED_DEVICES) {
         DeviceSession* s = &s_devices[s_deviceCount++];
         strncpy(s->deviceId, deviceId, 8);
@@ -147,6 +173,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId, bool onlyKnown = 
         s->ctrMode = false;
         s->lastCtr = 0;
         s->needBoot = false;
+        s->resetMaxCtr = 0;
         s->lastStore = 0;
         s->storePending = false;
         s->picTag = 0;
@@ -157,15 +184,22 @@ static DeviceSession* getOrCreateSession(const char* deviceId, bool onlyKnown = 
             s->ctrMode = true;
             s->lastCtr = floor;
             s->hasLastSeq = true;
+        } else if (resetLoad(s->deviceId, &floor)) {   // 'replay reset' still waiting
+            s->ctrMode = true;
+            s->hasLastSeq = true;
+            s->needBoot = true;
+            s->resetMaxCtr = floor;
         }
         return s;
     }
     return nullptr; // Session table full
 }
 
-// 'replay reset' is for a sensor reflashed without a counter seed (--no-seed): it starts at block 1
-// and moves 2 blocks per boot, so its first boot packets are at most block 8
-#define REPLAY_RESET_MAX_CTR 0x800UL
+// 'replay reset' is for a device reflashed without a counter seed (--no-seed): it starts at block
+// 1 and moves 2 blocks per boot (a camera also 1 block per 256 packets, ~2 h of polls), so by
+// default only a boot packet of blocks 1..8 is taken: any recorded packet from before has a
+// higher block. 'replay reset <ID> <block>' raises the limit for a device that is further on.
+#define REPLAY_RESET_DEFAULT_BLOCK 8
 
 #define PIC_TAG_AHEAD  64      // a picture's start packet may be this far ahead of the last counter
 #define PIC_TAG_BEHIND 128      // ... or this far behind (a picture's polls and resend rounds: <~100)
@@ -302,11 +336,13 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
             // after 'replay reset' (the sensor was reflashed unseeded, its counter restarted at
             // block 1) only a boot packet of one of its first blocks is taken: any recorded boot
             // or block-start packet from before has a higher block and would lock the sensor out
-            if (sess->needBoot && ((ctr & 0xFF) != 0 || ctr > REPLAY_RESET_MAX_CTR)) {
-                Serial.printf("[Replay] Dropped \"%s\": after 'replay reset' only a boot packet of blocks 1..8 "
-                              "(an unseeded flash) is taken\n", devId);
+            if (sess->needBoot && ((ctr & 0xFF) != 0 || ctr > sess->resetMaxCtr)) {
+                Serial.printf("[Replay] Dropped \"%s\": counter %lu; after 'replay reset' only a boot packet of "
+                              "blocks 1..%lu is taken (power-cycle the device, or 'replay reset %s <block>')\n",
+                              devId, (unsigned long)ctr, (unsigned long)(sess->resetMaxCtr >> 8), devId);
                 return false;
             }
+            if (sess->needBoot) resetStore(devId, 0, false);
             bool store = !sess->ctrMode || sess->needBoot || (ctr >> 8) != (sess->lastCtr >> 8) ||
                          millis() - sess->lastStore >= CTR_STORE_MIN_MS;
             sess->ctrMode = true;
@@ -385,9 +421,11 @@ bool cryptoReplayFloor(const char* deviceId, uint32_t* ctr) {
     return ctrLoad(deviceId, ctr);
 }
 
-bool cryptoReplayReset(const char* deviceId) {
+bool cryptoReplayReset(const char* deviceId, uint32_t maxBlock) {
     bool found = false;
     if (strlen(deviceId) != 8) return false;
+    if (maxBlock == 0) maxBlock = REPLAY_RESET_DEFAULT_BLOCK;
+    if (maxBlock > 0xFEFFFF) maxBlock = 0xFEFFFF;
     for (size_t i = 0; i < s_deviceCount; i++) {
         if (strcmp(s_devices[i].deviceId, deviceId) == 0) found = true;
     }
@@ -395,14 +433,17 @@ bool cryptoReplayReset(const char* deviceId) {
         s_replayPrefs.remove(deviceId);
         found = true;
     }
-    // The next packet must be a boot packet in the counter format (see cryptoProcessPacket).
-    // Kept in RAM only: if the gateway restarts before it arrives, the device starts afresh.
+    // The next packet must be a boot packet in the counter format from block 1..maxBlock (see
+    // cryptoProcessPacket); kept in NVS too, so a gateway restart does not open the device.
+    uint32_t maxCtr = maxBlock << 8;
+    resetStore(deviceId, maxCtr, true);
     DeviceSession* s = getOrCreateSession(deviceId);
     if (s) {
         s->hasLastSeq = true;
         s->ctrMode = true;
         s->lastCtr = 0;
         s->needBoot = true;
+        s->resetMaxCtr = maxCtr;
         s->storePending = false;
     }
     return found;

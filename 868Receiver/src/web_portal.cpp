@@ -201,7 +201,7 @@ button.danger:hover { background: #b91c1c; }
       <div class="form-group">
         <label>MQTT Password</label>
         <div class="input-row">
-          <input type="password" id="mqtt_pass" name="mqtt_pass" placeholder="Optional; leave blank to keep the saved one">
+          <input type="password" id="mqtt_pass" name="mqtt_pass" placeholder="Optional; blank keeps the saved one (only while the host stays the same)">
           <button type="button" class="secondary" onclick="togglePass('mqtt_pass')">&#128065;</button>
         </div>
       </div>
@@ -286,6 +286,12 @@ let initialLoaded = false;
 async function fetchStatus() {
   try {
     const res = await fetch('/api/status');
+    if (res.status === 401 || res.status === 429) {
+      // a wrong or changed password: stop polling, or the page would lock this client out
+      clearInterval(statusTimer);
+      showWarnings(['Wrong or changed web portal password (or too many tries): reload the page to log in again.']);
+      return;
+    }
     if (res.status === 403) {
       const r = await res.json();
       if (r.error === 'no_portal_password')
@@ -465,7 +471,7 @@ async function rebootGateway() {
 }
 
 async function factoryReset() {
-  if (!confirm('WARNING: This will erase all stored settings (Wi-Fi, master key, MQTT) in NVS! Continue?')) return;
+  if (!confirm('WARNING: This erases the stored settings in NVS: Wi-Fi, MQTT, master key and the web portal password (the replay counters stay, and settings built into secrets.h come back). Without a portal password the page is locked until one is set on the serial console (portalpass) or in the setup access point. Continue?')) return;
   try {
     await post('/api/reset');
     showToast('NVS erased. Rebooting gateway...', false);
@@ -473,7 +479,7 @@ async function factoryReset() {
   } catch (err) {}
 }
 
-setInterval(fetchStatus, 2000);
+const statusTimer = setInterval(fetchStatus, 2000);
 fetchStatus();
 </script>
 </body>
@@ -518,8 +524,41 @@ static String jsonEscape(const String& in) {
 enum Access { ACCESS_PUBLIC, ACCESS_READ, ACCESS_WRITE };
 
 static const char* COLLECT_HEADERS[] = {"Authorization", "Origin", "X-Gateway"};
-static uint8_t s_authFails = 0;
-static unsigned long s_authLockUntil = 0;
+// Wrong passwords are counted per client IP: 5 within 10 min lock that client for 30 s. A login
+// by another client (the owner's open page polls every 2 s) does not reset an attacker's count,
+// and one client cannot lock out the others. Times use millis() differences (wrap-safe).
+#define AUTH_SLOTS      8
+#define AUTH_MAX_FAILS  5
+#define AUTH_LOCK_MS    30000UL
+#define AUTH_WINDOW_MS  600000UL
+struct AuthFailSlot {
+    uint32_t ip;
+    uint8_t fails;
+    bool locked;
+    unsigned long since;    // start of the failure window, or of the lock
+};
+static AuthFailSlot s_authSlots[AUTH_SLOTS];
+
+static AuthFailSlot* authSlot(IPAddress ip) {
+    uint32_t a = (uint32_t)ip;
+    AuthFailSlot* freeSlot = nullptr;
+    AuthFailSlot* victim = nullptr;
+    for (auto& s : s_authSlots) {
+        if (s.ip == a) return &s;
+        if (!s.locked && s.fails == 0) {
+            if (!freeSlot) freeSlot = &s;
+        } else if (!s.locked && (!victim || millis() - s.since > millis() - victim->since)) {
+            victim = &s;                      // the oldest unlocked failure window
+        }
+    }
+    // a free slot, else the oldest unlocked one; a lock is only dropped if all 8 slots are locked
+    AuthFailSlot* r = freeSlot ? freeSlot : (victim ? victim : &s_authSlots[0]);
+    r->ip = a;
+    r->fails = 0;
+    r->locked = false;
+    r->since = millis();
+    return r;
+}
 
 static String hostOnly(String h) {
     if (h.startsWith("[")) return h;          // IPv6 literal: not used here
@@ -580,18 +619,30 @@ static bool authorize(Access access) {
                       "gateway's serial console (portalpass <password>) or in the setup access point.\"}");
         return false;
     }
-    if (millis() < s_authLockUntil) {
-        s_server.send(429, "application/json", "{\"error\":\"locked\",\"message\":\"Too many wrong passwords, wait 30 s\"}");
-        return false;
+    AuthFailSlot* slot = authSlot(s_server.client().remoteIP());
+    if (slot->locked) {
+        if (millis() - slot->since < AUTH_LOCK_MS) {
+            s_server.send(429, "application/json", "{\"error\":\"locked\",\"message\":\"Too many wrong passwords, wait 30 s\"}");
+            return false;
+        }
+        slot->locked = false;                 // lock over: start counting again
+        slot->fails = 0;
     }
     if (passwordFromHeader()) {
-        s_authFails = 0;
+        slot->fails = 0;                      // only this client's count; others keep theirs
         return true;
     }
-    if (s_server.header("Authorization").length() && ++s_authFails >= 5) {
-        s_authFails = 0;
-        s_authLockUntil = millis() + 30000;
-        Serial.println("[WebPortal] 5 wrong portal passwords: locked for 30 s");
+    if (s_server.header("Authorization").length()) {
+        if (slot->fails == 0 || millis() - slot->since > AUTH_WINDOW_MS) {
+            slot->fails = 0;
+            slot->since = millis();           // a new window of failures
+        }
+        if (++slot->fails >= AUTH_MAX_FAILS) {
+            slot->locked = true;
+            slot->since = millis();
+            Serial.printf("[WebPortal] %u wrong portal passwords from %s: locked for 30 s\n",
+                          (unsigned)AUTH_MAX_FAILS, s_server.client().remoteIP().toString().c_str());
+        }
     }
     s_server.sendHeader("WWW-Authenticate", "Basic realm=\"Verisure Gateway\", charset=\"UTF-8\"");
     s_server.send(401, "application/json", "{\"error\":\"auth\"}");

@@ -84,7 +84,7 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   name). It is chosen on the first save in the setup access point (required there), set with
   the serial command `portalpass <password>`, or taken from `DEFAULT_PORTAL_PASS` in `secrets.h`
   while none is stored; only a salted hash is kept in NVS. Without one the API only answers in
-  the setup access point. Five wrong passwords lock the check for 30 s. `/api/save`,
+  the setup access point. Five wrong passwords from one client within 10 minutes lock that client out for 30 s. `/api/save`,
   `/api/reboot`, `/api/reset`, `/api/camera_test` and `/api/picture` must be POSTs with the header
   `X-Gateway: 1` and no foreign `Origin`, and every request needs a `Host` that names the gateway
   (its IP or `verisure-gateway[.local]`). The password crosses the network as plain HTTP: see
@@ -93,8 +93,9 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   `connect <ssid> [password]` (join Wi-Fi and save it), `setkey <32 hex characters>` (master key),
   `setmqtt <host> <port> [user] [pass] [topic]`, `alarm [on|off]`,
   `drop <n>` (test: drop every n-th picture chunk to exercise the resend),
-  `replay reset <ID>` (forget a sensor's counter after it was flashed without the gateway; then
-  only a boot packet of counter blocks 1..8, an unseeded flash, is taken),
+  `replay reset <ID> [block]` (forget a device's counter after it was flashed without the
+  gateway; then only its boot packet of counter blocks 1..block, default 8, is taken; the waiting
+  state survives a gateway restart),
   `freqoffset [n]` (CC1101 frequency correction in 1.587 kHz steps, default 0; see
   [hardware_gateway_esp32s2.md](../documentation/hardware_gateway_esp32s2.md)),
   `portalpass [<password>|clear]` (show, set or clear the web portal password), `reset` (erase

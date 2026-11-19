@@ -94,8 +94,12 @@ The gateway applies a multi-stage authentication filter:
      it, so the counter simply continues.
    * Without the gateway (or with an older build) the counter starts again at 256 and the gateway
      logs `[Replay] Dropped ... 'replay reset <ID>'`. That command on the gateway's serial console
-     clears the device's floor; the gateway then accepts only a boot packet (counter low byte 0) in
-     the new format from it, so a recorded packet from before the reflash cannot take its place.
+     clears the device's floor; the gateway then accepts only a boot packet (counter low byte 0) of
+     blocks 1..8 from it (an unseeded flash starts at block 1 and moves 2 blocks per boot), so a
+     recorded packet from before the reflash, whose block is higher, cannot take its place. The
+     waiting state is kept in NVS, so a gateway restart in between does not open the device. A
+     device that is past block 8 (rebooted several times, or a camera after ~15 h of polls) needs
+     a power cycle or `replay reset <ID> <block>` with a higher limit. Seeding is the better way.
    * Below 2.3 V at boot the sensor neither logs nor sends; it sleeps and measures again every
      minute, so a dying battery that resets on the TX current dip cannot wear out the log.
    * The camera's poll answers echo the poll's 32-bit counter, so a recorded answer never fits

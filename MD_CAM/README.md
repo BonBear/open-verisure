@@ -99,7 +99,7 @@ The script prints the master key's check value (KCV) so it can be compared with 
 `status` output without showing the key. Like the door sensor's script it asks the gateway for the
 camera's last packet counter first and stops if it cannot reach it: set `GATEWAY_HTTP=http://<ip>`
 when `verisure-gateway.local` does not resolve, or pass `--no-seed` (counter from block 1, then
-`replay reset <ID>` on the gateway).
+`replay reset <ID>` on the gateway's serial console before the device boots: the gateway then takes only its boot packet of blocks 1..8; power-cycle the device if it has booted already, or give a higher limit with `replay reset <ID> <block>`).
 
 ### Blackfin program (`blackfin/`)
 

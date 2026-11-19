@@ -82,8 +82,7 @@ your network (default `http://cc.local`). Generate the master key and set up the
    counter continues above it (flashing erases the counter log). If the gateway cannot be
    reached the script stops: pass its address with `--gateway http://<ip>` (when `.local`
    names do not resolve on your computer), or flash with `--no-seed` (counter from block 1) and
-   run `replay reset <ID>` on the gateway's serial console afterwards, or the gateway drops the
-   sensor's packets as replays. A sensor the gateway has never seen needs neither.
+   run `replay reset <ID>` on the gateway's serial console before the device boots: the gateway then takes only its boot packet of blocks 1..8; power-cycle the device if it has booted already, or give a higher limit with `replay reset <ID> <block>`; otherwise the gateway drops the sensor's packets as replays. A sensor the gateway has never seen needs neither.
 
    | Option | Effect |
    | :--- | :--- |
