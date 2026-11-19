@@ -65,6 +65,32 @@ jobs:
         run: python VerisureDoorSensor/build_and_flash.py --compile-only
       - name: Camera
         run: python MD_CAM/build_and_flash_md_cam.py --compile-only
+      - name: SDCC warnings as annotations
+        # The build scripts keep SDCC's output quiet; AGENTS.md asks for warning-free builds, so
+        # every warning is shown on the run and the PR (not an error yet: two known ones remain).
+        run: |
+          set -o pipefail
+          n=0
+          for spec in "VerisureDoorSensor:--model-small" "MD_CAM/firmware:--model-large"; do
+            dir=${spec%%:*}; model=${spec##*:}
+            out=$( cd "$dir" && sdcc -mmcs51 "$model" --code-size 0x7800 --xram-loc 0xF000 \
+                   --xram-size 0x0E00 -DCTR_SEED=1UL -c main.c -o "$RUNNER_TEMP/" 2>&1 ) || true
+            while IFS= read -r l; do
+              if [[ "$l" =~ ^([^:]+):([0-9]+):\ warning\ (.*)$ ]]; then
+                echo "::warning file=$dir/${BASH_REMATCH[1]},line=${BASH_REMATCH[2]}::SDCC warning ${BASH_REMATCH[3]}"
+                n=$((n+1))
+              fi
+            done <<< "$out"
+          done
+          echo "SDCC warnings: $n" >> "$GITHUB_STEP_SUMMARY"
+
+  secrets:
+    name: Key guard (no real keys in the repository)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Check tracked files
+        run: python3 .github/scripts/check_secrets.py
 
   key:
     name: Key derivation (derive_key.py)

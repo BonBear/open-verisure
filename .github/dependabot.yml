@@ -1,0 +1,24 @@
+# Weekly update pull requests. CI runs on each; nothing merges without a green build.
+# PlatformIO (868Receiver/platformio.ini) is not supported by Dependabot: its libraries are
+# pinned by hand (see TODO and the toolchain notes in .agents/memory.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "build(scripts)"
+    groups:
+      python:
+        patterns: ["*"]
