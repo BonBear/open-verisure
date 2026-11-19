@@ -55,6 +55,9 @@ If you have unused sensors, you can contribute by:
 * **Never commit secrets:** Never commit real Wi-Fi passwords, MQTT credentials, or production AES master keys to version control.
 * Always update `.example` template files if introducing new configuration options.
 
+### 4. Python Script Tests
+* `derive_key.py`, `cc1110_tools.py`, `release/make_release.py` and the key guard `.github/scripts/check_secrets.py` have pytest tests in `tests/`: run `python -m pytest tests` (after `pip install -r requirements.txt pytest`; Windows or Linux, a few seconds). They need no hardware, serial port or network (a fake gateway on 127.0.0.1, a fake serial port), use only public test keys and write every `secrets.h`/`config.h` to a temporary directory; CI runs them on every push.
+
 ---
 
 ## 🚀 Pull Request Workflow
@@ -70,6 +73,7 @@ If you have unused sensors, you can contribute by:
    * Verify that `868Receiver` builds with PlatformIO (`pio run -d 868Receiver`).
    * Run the gateway host unit tests (`make -C 868Receiver/test_host`).
    * Run the counter log host tests (`make -C cc1110_common/test_host`).
+   * Run the Python script tests (`python -m pytest tests`).
    * Verify live reception and MQTT discovery.
 4. **Commit with Clear Messages:**
    ```bash
