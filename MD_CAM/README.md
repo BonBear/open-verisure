@@ -5,12 +5,19 @@ and the PIR sees motion, the camera takes pictures and sends them over 868 MHz t
 [gateway](../868Receiver/README.md), which publishes them to Home Assistant as a camera entity.
 In the dark it takes grayscale pictures lit by its infrared flash.
 
-**Converting a factory camera** needs both processors programmed once: the Blackfin's boot flash
-over JTAG (header J5, an FT232H: the boot selector and `snap_link`, see
-[Blackfin program](#blackfin-program-blackfin)) and the CC1110 over its debug header J6 with the
-ESP_CC_Flasher ([CC1110 firmware](#cc1110-firmware-firmware)). The factory image program does not
-speak this firmware's link protocol, so flashing only the CC1110 is not enough. Back up the boot
-flash first (`jtag/bf_read_flash.sh`).
+**Converting a factory camera** needs both processors programmed once, in this order:
+
+1. The CC1110 over its debug header J6 with the ESP_CC_Flasher
+   ([CC1110 firmware](#cc1110-firmware-firmware)). A factory CC1110 is debug-locked, so this needs
+   `--erase`, which wipes the factory firmware for good (it cannot be read back). It must come
+   first: the Blackfin is only powered long enough for JTAG with `HOLD`, which only this
+   project's CC1110 firmware handles.
+2. The Blackfin's boot flash over JTAG (header J5, an FT232H): back it up first
+   (`jtag/bf_read_flash.sh`), then write `snap_link` and the boot selector
+   ([Blackfin program](#blackfin-program-blackfin)).
+
+The factory image program does not speak this firmware's link protocol, so flashing only the
+CC1110 is not enough.
 
 ## Hardware
 
@@ -34,7 +41,8 @@ flash first (`jtag/bf_read_flash.sh`).
   `D1` (full colour), `D2` (640x480), `D3` (delta), `D4` (IR flash, grayscale),
   `D5`/`D6` (as D3/D2 with light, flash picture in the dark).
 * **Alarm state** from Home Assistant (`verisure/alarm/set` ON/OFF) reaches the camera with the
-  answer to its next poll (every ~30 s and right after each picture).
+  answer to its next poll: every ~30 s while armed, ~120 s while disarmed and idle, and right
+  after each picture.
 * **Picture quality:** whole-frame capture (no motion smear), 2x2 averaging, lens shading
   correction, saturation, sharpening, JPEG Q65. Colour drift of the sensor (strong right after a
   cold start) is measured against the reference before each delta and compensated, so only real
@@ -45,9 +53,10 @@ flash first (`jtag/bf_read_flash.sh`).
 * **Power:** the Blackfin (~0.17–0.19 A at 3.0 V) is powered only for pictures and 15 s after
   (one D1 picture: Blackfin on ~18.7 s, 3.1–3.4 As ≈ 0.9 mAh from 3.0 to 2.55 V); the CC1110
   sleeps in PM2 otherwise. Disarmed and idle: 0.031 mA mean at 3.0 V (Otii 2026-11-17, floor
-  2 µA; one poll every ~109 s costs ~0.9 mAs ≈ 8 µA, the rest is the 0.5 s wake-ups). Armed and
-  idle (polls every 30 s): 0.054 mA mean, ~1.3 mAh a day (Otii overnight 2026-11-18, 5 h without
-  pictures; 0.021 mA between polls). Pictures
+  2 µA; a poll costs ~0.9 mAs, ≈ 8 µA at that build's poll every ~109 s, the rest is the sleep
+  timer wake-ups; since the sleep tick fix of 2026-11-18 disarmed polls come every 120 s). Armed
+  and idle (polls every 30 s): 0.054 mA mean, ~1.3 mAh a day (Otii overnight 2026-11-18, 5 h
+  without pictures; 0.021 mA between polls). Pictures
   dominate battery life: with ~3.5 Ah usable from three CR123A, idle alone would last for years,
   but each picture costs ~0.9 mAh (~4000 pictures per set of batteries). A watchdog restarts the
   CC1110 if it ever hangs.
@@ -82,8 +91,9 @@ python MD_CAM/build_and_flash_md_cam.py --serial <flasher port>                 
 python MD_CAM/build_and_flash_md_cam.py --compile-only                            # build check only, never flash it
 ```
 
-`--help` lists the options (`--gateway`, `--no-seed`, `--host`); they are the same as the door
-sensor's script, and both use `cc1110_tools.py` in the repository root.
+Options (`--help`): `--id`, `--serial`, `--host`, `--gateway`, `--no-seed`, `--compile-only` and
+`--erase` (needed for a debug-locked factory CC1110; the chip erase wipes the factory firmware for
+good). The door sensor's script has more; both use `cc1110_tools.py` in the repository root.
 
 The script prints the master key's check value (KCV) so it can be compared with the gateway's
 `status` output without showing the key. Like the door sensor's script it asks the gateway for the
@@ -99,7 +109,9 @@ Needs the ADI Blackfin GCC toolchain (`bfin-elf-gcc`), an FT232H on the JTAG hea
 ```bash
 cd MD_CAM/blackfin
 python build_ldr.py snap_link.c jpeg_enc.c      # -> build/snap_link.ldr (built with -O2)
-MSYS_NO_PATHCONV=1 bash jtag/bf_flash.sh         # writes it to the boot flash at 0x8000
+python build_ldr.py --elf-only flash_write.c    # -> build/flash_write.elf, used by bf_flash.sh
+python build_ldr.py --elf-only flash_read.c     # -> build/flash_read.elf, used by bf_read_flash.sh
+MSYS_NO_PATHCONV=1 bash jtag/bf_flash.sh         # writes snap_link.ldr to the boot flash at 0x8000
 ```
 
 The Blackfin must be powered while flashing (~90 s): publish `HOLD` to
@@ -114,6 +126,14 @@ The boot flash holds a small boot selector in sector 0 (`boot_select.S`, written
 (it always does). The factory firmware that used to be at 0x10000 was erased on 2026-11-16 after
 it had been backed up and checked against the chip (`jtag/bf_read_flash.sh` reads the boot
 flash).
+
+Writing the selector is **not scripted**. From the sources it takes
+`python build_ldr.py boot_select.S` (`build/boot_select.ldr`, at most 4 KB) and
+`python build_ldr.py --elf-only flash_sector0.c`, then a gdb session like the one in
+`jtag/bf_flash.sh`: load `build/flash_sector0.elf`, restore the LDR to 0xFF900000, set the
+length at 0xFF800014 and the confirmation word 0x5EC70000 at 0xFF800010, detach, and check for
+0xF1A55EC0 at 0xFF800000 and result 0 at 0xFF800004. It erases sector 0, the start of the factory
+image program, so back up the boot flash before.
 
 ## Test
 
