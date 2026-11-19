@@ -1,7 +1,7 @@
 # Actions are pinned to commit SHAs (tag in the comment) and the SDCC download is checksummed.
 # Build check for every push and pull request: the gateway firmware and its host unit tests, both
-# CC1110 firmwares and the host tests of their counter log, and the key derivation. It uses only the *.example configs (placeholder keys, no
-# credentials), so nothing secret is needed or produced. The builds are never flashed: the CC1110
+# CC1110 firmwares and the host tests of their counter log, the key derivation and the Python
+# script tests. It uses only the *.example configs (placeholder keys, no credentials), so nothing secret is needed or produced. The builds are never flashed: the CC1110
 # builds are unseeded (counter block 1).
 name: build
 
@@ -126,6 +126,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check tracked files
         run: python3 .github/scripts/check_secrets.py
+
+  python-tests:
+    name: Python script tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install the Python packages
+        run: pip install -r requirements.txt pytest
+      - name: Run the tests
+        # derive_key.py, cc1110_tools.py (fake gateway on 127.0.0.1, fake serial port),
+        # release/make_release.py (package from HEAD, no --check builds) and the key guard;
+        # only public test keys, every secrets.h/config.h is written to a temporary directory
+        run: python -m pytest tests -q
 
   key:
     name: Key derivation (derive_key.py)
