@@ -372,3 +372,21 @@ void imageReceiverLoop(void) {
         s_rsActive = false;
     }
 }
+
+#ifdef HOST_TEST
+/* Host unit tests only (868Receiver/test_host), never in the firmware: forget the pictures and the
+ * reassembly and resend state as a gateway restart does (the buffers stay allocated). */
+void imageReceiverHostTestRestart() {
+    jpegReset();
+    s_jpgLen = s_jpgLargeLen = s_jpgGrayLen = 0;
+    s_jpgMissing = s_jpgLargeMissing = s_jpgGrayMissing = 0;
+    s_grayNewest = false;
+    s_rsActive = false;
+    s_dropEvery = s_dropCount = 0;
+    s_noResend = false;
+    s_baseId = -1;
+    s_deltaCount = 0;
+    s_activeDeviceId[0] = '\0';
+    s_lastChunkTime = 0;
+}
+#endif

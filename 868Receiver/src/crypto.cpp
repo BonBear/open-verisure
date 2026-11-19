@@ -28,6 +28,7 @@ struct DeviceSession {
     unsigned long lastStore;/**< millis() of the last NVS write of lastCtr */
     bool storePending;      /**< lastCtr is newer than NVS (written by cryptoReplayFlush) */
     uint32_t picTag;        /**< Tag (start packet counter) of the newest accepted picture chunk */
+    bool hasPicTag;         /**< picTag is valid (a picture chunk was accepted since the session began) */
     unsigned long lastSeen; /**< Timestamp (millis) when last authenticated packet arrived */
 };
 
@@ -177,6 +178,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId, bool onlyKnown = 
         s->lastStore = 0;
         s->storePending = false;
         s->picTag = 0;
+        s->hasPicTag = false;
         s->lastSeen = 0;
         // A device that has sent the persistent counter keeps its floor across gateway restarts
         uint32_t floor;
@@ -243,7 +245,8 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
     bool resent = plain[2] == 0x83;
     if (plain[46] != (uint8_t)(tag >> 24) || plain[47] != (uint8_t)(tag >> 16) ||
         d > PIC_TAG_AHEAD || d < -PIC_TAG_BEHIND ||
-        (resent ? tag != sess->picTag : (int32_t)(tag - sess->picTag) < 0)) {
+        (resent ? !sess->hasPicTag || tag != sess->picTag
+                : sess->hasPicTag && (int32_t)(tag - sess->picTag) < 0)) {
         static unsigned long s_lastLog = 0;
         if (millis() - s_lastLog > 5000) {
             s_lastLog = millis();
@@ -254,6 +257,7 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
         return true;            // a valid but stale chunk: handled (dropped), not a 24-byte packet
     }
     sess->picTag = tag;
+    sess->hasPicTag = true;
     sess->lastSeen = millis();
     uint16_t idx = ((uint16_t)plain[3] << 8) | plain[4];
     if (resent)       // a chunk resent on request: patched into the last picture
@@ -445,6 +449,7 @@ bool cryptoReplayReset(const char* deviceId, uint32_t maxBlock) {
         s->needBoot = true;
         s->resetMaxCtr = maxCtr;
         s->storePending = false;
+        s->hasPicTag = false;   // the newest picture tag belongs to the old counter
     }
     return found;
 }
