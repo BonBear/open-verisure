@@ -67,7 +67,7 @@ jobs:
         run: python MD_CAM/build_and_flash_md_cam.py --compile-only
       - name: SDCC warnings as annotations
         # The build scripts keep SDCC's output quiet; AGENTS.md asks for warning-free builds, so
-        # every warning is shown on the run and the PR (not an error yet: two known ones remain).
+        # every warning is shown on the run and the PR, and any warning fails the job.
         run: |
           set -o pipefail
           n=0
@@ -83,6 +83,10 @@ jobs:
             done <<< "$out"
           done
           echo "SDCC warnings: $n" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n" -ne 0 ]; then
+            echo "::error::$n SDCC warning(s); the CC1110 firmware must build without warnings"
+            exit 1
+          fi
 
   secrets:
     name: Key guard (no real keys in the repository)

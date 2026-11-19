@@ -437,7 +437,7 @@ static void enter_pm2(void) {
     }
 
     // Give at least one 32 kHz period between wake-up and re-entering PM2
-    for (d = 0; d < 200; d++) {
+    for (d = 200; d != 0; d--) {    // counting down: SDCC loop reversal warns (158) on an up-count >= 128
         __asm nop __endasm;
     }
 
@@ -1192,10 +1192,12 @@ static void cam_alarm_loop(void) {
             if (ev_pic < 2)
                 ev_pic++;
         } else if (s_armed && BF_ARMED_IDLE_S && idle >= (uint32_t)BF_ARMED_IDLE_S * BF_TICKS_PER_S) {
+            // decided by the preprocessor, as for the tamper picture: a run-time test of the
+            // constant BF_IMG_CMD makes SDCC warn (110, condition always true or false)
+#if BF_AUTO_FLASH && BF_IMG_CMD == 0xD3
+            cmd = 0xD5;
+#else
             cmd = BF_IMG_CMD;
-#if BF_AUTO_FLASH
-            if (cmd == 0xD3)
-                cmd = 0xD5;
 #endif
         }
 
