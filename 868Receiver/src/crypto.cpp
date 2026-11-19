@@ -25,6 +25,7 @@ struct DeviceSession {
     uint32_t lastCtr;       /**< Last accepted 32-bit counter (ctrMode) */
     bool needBoot;          /**< After 'replay reset': accept only a boot packet (low byte 0) */
     unsigned long lastStore;/**< millis() of the last NVS write of lastCtr */
+    bool storePending;      /**< lastCtr is newer than NVS (written by cryptoReplayFlush) */
     uint32_t picTag;        /**< Tag (start packet counter) of the newest accepted picture chunk */
     unsigned long lastSeen; /**< Timestamp (millis) when last authenticated packet arrived */
 };
@@ -99,7 +100,9 @@ bool cryptoDecryptPayload(const uint8_t deviceKey[16], const uint8_t inCipher[16
  * after a reset. The gateway keeps the last accepted counter in NVS, written for every accepted
  * packet but at most every 2 s (a door sensor sends a few packets an hour, the camera a poll
  * every 30 s and every 2 s after a picture), so after a gateway restart only packets newer than
- * that are accepted. Only packets accepted less than 2 s before the restart can be replayed. */
+ * that are accepted. A packet that comes within 2 s of the last write is written by
+ * cryptoReplayFlush() (called from loop()) once the 2 s are over, so only packets accepted less
+ * than ~2 s before a restart can be replayed. */
 #define CTR_STORE_MIN_MS 2000
 static Preferences s_replayPrefs;
 static bool s_replayPrefsOpen = false;
@@ -124,12 +127,17 @@ static void ctrStore(const char* devId, uint32_t ctr) {
  * @param deviceId Sensor node identifier.
  * @return Pointer to DeviceSession or nullptr if table is full.
  */
-static DeviceSession* getOrCreateSession(const char* deviceId) {
+static DeviceSession* getOrCreateSession(const char* deviceId, bool onlyKnown = false) {
     for (size_t i = 0; i < s_deviceCount; i++) {
         if (strcmp(s_devices[i].deviceId, deviceId) == 0) {
             return &s_devices[i];
         }
     }
+    // onlyKnown: create a session only for a device with a replay floor in NVS. The picture chunk
+    // path has no real authentication before this point (a random frame passes its type and
+    // length check about once in 200), so it must not fill the table with made-up IDs.
+    uint32_t known;
+    if (onlyKnown && !ctrLoad(deviceId, &known)) return nullptr;
     if (s_deviceCount < MAX_TRACKED_DEVICES) {
         DeviceSession* s = &s_devices[s_deviceCount++];
         strncpy(s->deviceId, deviceId, 8);
@@ -140,6 +148,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId) {
         s->lastCtr = 0;
         s->needBoot = false;
         s->lastStore = 0;
+        s->storePending = false;
         s->picTag = 0;
         s->lastSeen = 0;
         // A device that has sent the persistent counter keeps its floor across gateway restarts
@@ -154,7 +163,11 @@ static DeviceSession* getOrCreateSession(const char* deviceId) {
     return nullptr; // Session table full
 }
 
-#define PIC_TAG_AHEAD  64       // a picture's start packet may be this far ahead of the last counter
+// 'replay reset' is for a sensor reflashed without a counter seed (--no-seed): it starts at block 1
+// and moves 2 blocks per boot, so its first boot packets are at most block 8
+#define REPLAY_RESET_MAX_CTR 0x800UL
+
+#define PIC_TAG_AHEAD  64      // a picture's start packet may be this far ahead of the last counter
 #define PIC_TAG_BEHIND 128      // ... or this far behind (a picture's polls and resend rounds: <~100)
 
 bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16]) {
@@ -188,7 +201,7 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
     // must belong to the newest picture seen or a newer one, and a resent chunk (0x83) to exactly
     // the newest picture (the one being completed), so an older recorded picture or its resent
     // chunks cannot come back. Camera data never moves the counter's replay window itself.
-    DeviceSession* sess = getOrCreateSession(devId);
+    DeviceSession* sess = getOrCreateSession(devId, true);
     if (!sess || !sess->ctrMode || !sess->hasLastSeq || sess->needBoot) return false;
     uint16_t num = ((uint16_t)plain[0] << 8) | plain[1];
     int16_t d = (int16_t)(num - (uint16_t)sess->lastCtr);
@@ -286,10 +299,12 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
                               devId, (unsigned long)ctr, (unsigned long)sess->lastCtr, devId);
                 return false;
             }
-            // after 'replay reset' (the sensor was reflashed, its counter restarted) only a boot
-            // packet is taken, not any recorded packet with a higher counter from before
-            if (sess->needBoot && (ctr & 0xFF) != 0) {
-                Serial.printf("[Replay] Dropped \"%s\": waiting for a boot packet after 'replay reset'\n", devId);
+            // after 'replay reset' (the sensor was reflashed unseeded, its counter restarted at
+            // block 1) only a boot packet of one of its first blocks is taken: any recorded boot
+            // or block-start packet from before has a higher block and would lock the sensor out
+            if (sess->needBoot && ((ctr & 0xFF) != 0 || ctr > REPLAY_RESET_MAX_CTR)) {
+                Serial.printf("[Replay] Dropped \"%s\": after 'replay reset' only a boot packet of blocks 1..8 "
+                              "(an unseeded flash) is taken\n", devId);
                 return false;
             }
             bool store = !sess->ctrMode || sess->needBoot || (ctr >> 8) != (sess->lastCtr >> 8) ||
@@ -301,6 +316,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
                 ctrStore(devId, ctr);
                 sess->lastStore = millis();
             }
+            sess->storePending = !store;   // written by cryptoReplayFlush() once 2 s are over
         } else {
             // a device that has sent the persistent counter never falls back to the old format
             // (a recorded old-format packet would otherwise pass with its reset flag)
@@ -348,6 +364,17 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     return true;
 }
 
+void cryptoReplayFlush() {
+    for (size_t i = 0; i < s_deviceCount; i++) {
+        DeviceSession* s = &s_devices[i];
+        if (s->storePending && millis() - s->lastStore >= CTR_STORE_MIN_MS) {
+            ctrStore(s->deviceId, s->lastCtr);
+            s->lastStore = millis();
+            s->storePending = false;
+        }
+    }
+}
+
 bool cryptoReplayFloor(const char* deviceId, uint32_t* ctr) {
     for (size_t i = 0; i < s_deviceCount; i++) {
         if (strcmp(s_devices[i].deviceId, deviceId) == 0 && s_devices[i].ctrMode) {
@@ -376,6 +403,7 @@ bool cryptoReplayReset(const char* deviceId) {
         s->ctrMode = true;
         s->lastCtr = 0;
         s->needBoot = true;
+        s->storePending = false;
     }
     return found;
 }

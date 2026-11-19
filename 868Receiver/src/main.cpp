@@ -354,6 +354,7 @@ void loop() {
     serialCliLoop();
     mqttLoop(cachedRssi, cachedMarc, packetCount);
     imageReceiverLoop();
+    cryptoReplayFlush();
 
     // 2. Process Radio Receiver FIFO
     if (!s_radioOnline) {
