@@ -397,7 +397,7 @@ static void enter_pm2(uint8_t shock_level, uint8_t last_reed, uint8_t last_tampe
         return;
     }
     // at least one 32 kHz period between a wake-up and the next PM2 entry
-    for (d = 0; d < 200; d++) {
+    for (d = 200; d != 0; d--) {    // counting down: SDCC loop reversal warns (158) on an up-count >= 128
         __asm nop __endasm;
     }
     SLEEP = (SLEEP & ~0x03) | 0x02; // MODE = PM2
