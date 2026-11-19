@@ -57,10 +57,17 @@ The web page has the same upload (Firmware Update card).
   have passed. The whole image (checksum, SHA-256, the MD5 if given) is verified before the
   gateway boots it; a wrong password, a truncated or foreign file, a wrong MD5 or a dropped
   connection leave the running firmware in place.
-* **Rollback:** a new firmware first runs "pending verify". It confirms itself after 30 s with
-  Wi-Fi; if it restarts or crashes before that, or has no Wi-Fi within 5 minutes, the gateway
-  goes back to the previous firmware. `/api/status` shows `firmware.partition`, `.state` and
-  `.md5`. A new update is refused until the running firmware has confirmed itself.
+* **Rollback:** a new firmware first runs "pending verify". It confirms itself once it has run
+  30 s and is connected to Wi-Fi at that moment; if it restarts or crashes before that, or has no
+  Wi-Fi within 5 minutes, the gateway goes back to the previous firmware. A firmware that hangs
+  before that check stays "pending" until the next power cycle, which then rolls it back. This
+  only works if the NEW firmware contains this OTA code: an older build (before OTA) marks itself
+  valid at boot, so after updating to one, USB is the only way back. `/api/status` shows
+  `firmware.partition`, `.state` and `.md5`.
+* Refused: a new update while the running firmware is not confirmed yet, while the gateway is
+  rebooting into a just-written update, and in the setup access point (there it could not be
+  confirmed, and the portal may have no password yet). A refused request is answered at once and
+  its connection closed, so a stalled upload cannot hold the gateway.
 * The upload (~1 MB, ~10 s) blocks the main loop: the radio FIFO is still read for every
   received piece, but the MQTT client and the rest of the loop wait, and flash erases can
   delay a packet. If OTA ever leaves the gateway unreachable, flash it over USB as above.

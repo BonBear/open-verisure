@@ -1030,9 +1030,21 @@ static void handleApiPicture() {
  * connection aborts the update. The running firmware stays in every error case. */
 static bool s_otaBody = false;          // this request's body came as a raw stream
 static bool s_otaAllowed = false;
+static bool s_otaReplied = false;       // refused at the start: reply sent, connection closed
 static void (*s_busyHook)() = nullptr;
 
 void webPortalSetBusyHook(void (*hook)()) { s_busyHook = hook; }
+
+/* A refused upload is answered at once and its connection closed, so the WebServer stops
+ * reading the body: otherwise a client announcing a huge Content-Length and sending a byte every
+ * few seconds would hold handleClient() (and so MQTT, Wi-Fi reconnect, the CLI) indefinitely,
+ * without any password (review 2026-11-19). */
+static void otaRefuse(int code, const String& body) {
+    s_server.send(code, "application/json", body);
+    s_otaReplied = true;
+    s_otaAllowed = false;
+    s_server.client().stop();
+}
 
 static void handleApiOtaBody() {
     if (!s_server.hasRaw()) return;     // multipart form: refused in handleApiOta
@@ -1040,20 +1052,35 @@ static void handleApiOtaBody() {
     switch (raw.status) {
         case RAW_START:
             s_otaBody = true;
+            s_otaReplied = false;
             s_deferReply = true;
             s_otaAllowed = authorize(ACCESS_WRITE);
             s_deferReply = false;
-            if (s_otaAllowed) otaBegin((size_t)max(0, s_server.clientContentLength()), s_server.header("X-OTA-MD5").c_str());
+            if (!s_otaAllowed) {
+                authReply(s_deferredCode, s_deferredBody, s_deferredAuthHeader);
+                s_otaReplied = true;
+                s_server.client().stop();
+            } else if (s_isApMode) {
+                // in the setup AP (maybe without a portal password yet) no update: it also
+                // could not be confirmed there (no station Wi-Fi) and would be rolled back
+                otaRefuse(403, "{\"ok\":false,\"error\":\"No firmware update in the setup access point\"}");
+            } else if (s_rebootAt) {
+                // an update was just activated: a second one would overwrite the selected slot
+                otaRefuse(409, "{\"ok\":false,\"error\":\"Rebooting into the new firmware, try again afterwards\"}");
+            } else if (!otaBegin((size_t)max(0, s_server.clientContentLength()), s_server.header("X-OTA-MD5").c_str())) {
+                otaRefuse(400, "{\"ok\":false,\"error\":\"" + jsonEscape(otaError()) + "\"}");
+            }
             break;
         case RAW_WRITE:
             if (s_otaAllowed) otaWrite(raw.buf, raw.currentSize);
             break;
         case RAW_END:
             break;
-        case RAW_ABORTED:               // connection lost: no reply, nothing activated
+        case RAW_ABORTED:               // connection lost (or closed by otaRefuse): nothing activated
             if (s_otaAllowed) otaAbort();
             s_otaBody = false;
             s_otaAllowed = false;
+            s_otaReplied = false;
             break;
     }
     // the upload blocks loop() until it is complete: keep reading the radio meanwhile
@@ -1067,6 +1094,10 @@ static void handleApiOta() {
         return;
     }
     s_otaBody = false;
+    if (s_otaReplied) {                 // already answered at the start
+        s_otaReplied = false;
+        return;
+    }
     if (!s_otaAllowed) {
         authReply(s_deferredCode, s_deferredBody, s_deferredAuthHeader);
         return;

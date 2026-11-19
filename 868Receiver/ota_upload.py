@@ -138,7 +138,7 @@ def main(argv=None):
 
     try:
         before = get_status(args.host, password)
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, http.client.HTTPException) as e:
         print(f"[!] Gateway {args.host} not reachable or refused: {e}")
         return 1
     fw = before.get("firmware", {})
@@ -155,8 +155,10 @@ def main(argv=None):
                                              "Content-Length": str(len(image)),
                                              "X-Gateway": "1", "X-OTA-MD5": md5},
                                     timeout=60)
-        except OSError as e:
-            print(f"\n[!] Upload failed: {e} (the running firmware stays)")
+        except (OSError, http.client.HTTPException) as e:
+            # a refused upload is answered at once and its connection closed by the gateway
+            print(f"\n[!] Upload refused or connection lost: {e} (the running firmware stays; check the "
+                  "password, and that the gateway is not in its setup access point)")
             return 1
     print(f"\n[*] Upload took {time.time() - t0:.1f} s: HTTP {status} {reply}")
     if status != 200 or not isinstance(reply, dict) or not reply.get("ok"):
@@ -172,8 +174,8 @@ def main(argv=None):
             after = get_status(args.host, password)
             if after.get("firmware", {}).get("md5") == md5:
                 break
-        except (OSError, RuntimeError, socket.timeout):
-            pass
+        except (OSError, RuntimeError, socket.timeout, http.client.HTTPException):
+            pass   # rebooting: connection refused or cut mid-response
         time.sleep(3)
     else:
         print(f"[!] The gateway did not come back with the new image within {args.timeout} s.")
