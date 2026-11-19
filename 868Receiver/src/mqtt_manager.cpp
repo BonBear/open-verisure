@@ -322,7 +322,8 @@ void mqttLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
             s_lastGatewayStatePub = now;
             const GatewayConfig& cfg = ConfigManager::get();
             String topic = String(cfg.mqttTopic) + "/gateway/state";
-            String payload = haStateBuildGatewayPayload(currentRssi, marcstate, totalPackets, sensorRegistryGetCount());
+            String payload = haStateBuildGatewayPayload(currentRssi, marcstate, totalPackets, sensorRegistryGetCount(),
+                                                        gatewayDiagSample());
             s_mqttClient.publish(topic.c_str(), payload.c_str(), false);
         }
     }

@@ -6,6 +6,7 @@
 #include "crypto.h"
 #include "mbedtls/aes.h"
 #include "image_receiver.h"
+#include "gateway_diag.h"
 #include <ctype.h>
 #include <string.h>
 #include <Preferences.h>
@@ -194,6 +195,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId, bool onlyKnown = 
         }
         return s;
     }
+    g_gatewayDiag.sessionFull++;
     return nullptr; // Session table full
 }
 
@@ -226,8 +228,12 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
     }
     memset(devKey, 0, sizeof(devKey));
     uint8_t len = plain[5] & 0x3F;
-    if ((plain[2] != 0x82 && plain[2] != 0x83) || len == 0 || len > 40)
+    if ((plain[2] != 0x82 && plain[2] != 0x83) || len == 0 || len > 40) {
+        g_gatewayDiag.authFail++;       // wrong key, or not a picture chunk
+        gatewayDiagNoteRejected(devId);
         return false;
+    }
+    g_gatewayDiag.authOk++;
     // Replay check: every chunk carries the 32-bit counter of its picture's start packet (0xB2),
     // low 16 bits in [0..1], high 16 bits in [46..47] (where 'VS' used to be; it is also the
     // integrity check of the last CBC block). The full value is rebuilt from the device's last
@@ -247,6 +253,7 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
         d > PIC_TAG_AHEAD || d < -PIC_TAG_BEHIND ||
         (resent ? !sess->hasPicTag || tag != sess->picTag
                 : sess->hasPicTag && (int32_t)(tag - sess->picTag) < 0)) {
+        g_gatewayDiag.picStale++;
         static unsigned long s_lastLog = 0;
         if (millis() - s_lastLog > 5000) {
             s_lastLog = millis();
@@ -267,6 +274,13 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
     return true;
 }
 
+/** An authenticated packet dropped by the replay filter: count it, remember the ID. */
+static bool replayDrop(const char* devId) {
+    g_gatewayDiag.replayDrop++;
+    gatewayDiagNoteRejected(devId);
+    return false;
+}
+
 bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const uint8_t masterKey[16], VerisureTelemetry* outTelem) {
     if (!rxBuf24 || !outTelem || !masterKey) return false;
 
@@ -279,7 +293,10 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     devId[8] = '\0';
     // IDs end up unescaped in MQTT topics and HA discovery JSON: alphanumeric only
     for (int i = 0; i < 8; i++) {
-        if (!isalnum((unsigned char)devId[i])) return false;
+        if (!isalnum((unsigned char)devId[i])) {
+            g_gatewayDiag.authFail++;
+            return false;
+        }
     }
 
     // 2. Derive unique Device Key from Master Key
@@ -300,14 +317,19 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     // 4. Authenticate Magic Bytes (plain[10..11] == 'V', 'S')
     // If the key is wrong or data was corrupted, AES diffusion produces random bytes
     if (plain[10] != 'V' || plain[11] != 'S') {
+        g_gatewayDiag.authFail++;
+        gatewayDiagNoteRejected(devId);
         return false;
     }
 
     // 5. Authenticate Device ID Echo (plain[6..9] == devId[0..3])
     // Prevents replay of a ciphertext from a different sensor with a modified header
     if (memcmp(&plain[6], devId, 4) != 0) {
+        g_gatewayDiag.authFail++;
+        gatewayDiagNoteRejected(devId);
         return false;
     }
+    g_gatewayDiag.authOk++;
 
     // 6. Parse telemetry fields from plaintext
     uint16_t seq = ((uint16_t)plain[0] << 8) | plain[1];
@@ -335,7 +357,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
                 Serial.printf("[Replay] Dropped \"%s\": counter %lu <= last %lu "
                               "(reflashed sensor? 'replay reset %s')\n",
                               devId, (unsigned long)ctr, (unsigned long)sess->lastCtr, devId);
-                return false;
+                return replayDrop(devId);
             }
             // after 'replay reset' (the sensor was reflashed unseeded, its counter restarted at
             // block 1) only a boot packet of one of its first blocks is taken: any recorded boot
@@ -344,7 +366,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
                 Serial.printf("[Replay] Dropped \"%s\": counter %lu; after 'replay reset' only a boot packet of "
                               "blocks 1..%lu is taken (power-cycle the device, or 'replay reset %s <block>')\n",
                               devId, (unsigned long)ctr, (unsigned long)(sess->resetMaxCtr >> 8), devId);
-                return false;
+                return replayDrop(devId);
             }
             if (sess->needBoot) resetStore(devId, 0, false);
             bool store = !sess->ctrMode || sess->needBoot || (ctr >> 8) != (sess->lastCtr >> 8) ||
@@ -362,7 +384,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
             // (a recorded old-format packet would otherwise pass with its reset flag)
             if (sess->ctrMode || sess->needBoot) {
                 Serial.printf("[Replay] Dropped \"%s\": packet without the persistent counter\n", devId);
-                return false;
+                return replayDrop(devId);
             }
             // Old format (camera, older door firmware): 16-bit seq that restarts at 0 after a
             // reset, so the power-on flag must let it through. Tamper gets no exception.
@@ -371,7 +393,7 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
                 // Reject duplicate or stale packets (diff <= 0)
                 int32_t diff = (int32_t)seq - (int32_t)sess->lastSeq;
                 if (diff <= 0 && diff > -32768) {
-                    return false; // Stale or replayed packet!
+                    return replayDrop(devId); // Stale or replayed packet!
                 }
             }
         }

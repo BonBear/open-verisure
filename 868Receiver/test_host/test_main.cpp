@@ -7,6 +7,7 @@
 #include "test.h"
 #include <Arduino.h>
 #include <Preferences.h>
+#include "gateway_diag.h"
 #include <string>
 #include <vector>
 
@@ -64,6 +65,7 @@ void testResetWorld() {
     hostNvsWipe();
     hostSetMillis(100000);
     cryptoHostTestRestart();
+    gatewayDiagClear();
 }
 
 int main(int argc, char** argv) {
