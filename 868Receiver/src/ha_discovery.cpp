@@ -78,6 +78,19 @@ static const HaEntityDef S_SENSOR_ENTITIES[] = {
         "diagnostic"
     },
     {
+        // the door sensor sets its low-battery flag below 2.4 V (VerisureDoorSensor/main.c)
+        "low_battery",
+        "binary_sensor",
+        "Low Battery",
+        "battery",
+        nullptr,
+        nullptr,
+        "{{ value_json.low_battery }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
         "rssi",
         "sensor",
         "Signal Strength",
