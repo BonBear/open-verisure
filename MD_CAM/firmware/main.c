@@ -94,8 +94,8 @@ void p1_isr(void) __interrupt(P1INT_VECTOR) {
 /** @brief Busy-wait ms delay calibrated for 27 MHz (takes 2x longer on 13.5 MHz RCOSC). */
 /* Watchdog (WDCTL, 32 kHz clock, also runs in PM2): resets the chip if it is not fed for
  * ~1 s, e.g. if the CPU never wakes from PM2 again (seen once on 2026-11-16: no poll after
- * the first, only a power cycle helped). Started in cam_alarm_loop; fed in delay_ms, after
- * every sleep and per picture chunk. Feeding before it is started has no effect. */
+ * the first, only a power cycle helped). Started first thing in main(); fed in delay_ms, after
+ * every sleep, in the flash routines and per picture chunk. Feeding before it is started has no effect. */
 #define WDT_FEED() do { WDCTL = 0xA8; WDCTL = 0x58; } while (0)
 
 void delay_ms(uint16_t ms) {
@@ -1097,7 +1097,7 @@ static void cam_alarm_loop(void) {
 #if BF_SLEEP_IDLE
     sleep_timer_init();
 #endif
-    WDCTL = 0x08;                   // watchdog on, ~1 s (32768 periods of 32 kHz); cannot be stopped
+    // the watchdog runs since the start of main() (~1 s, 32768 periods of 32 kHz)
     for (;;) {
         // tamper: a change counts after two equal samples in a row (0.5 s apart with the
         // Blackfin off). The gap before the next 0xB5 starts at TAMPER_MIN_GAP and doubles with
@@ -1293,6 +1293,12 @@ static void battery_guard(void) {
 
 void main(void) {
     s_rst_cause = (SLEEP >> 3) & 0x03;   // 0 power-on, 1 external, 2 watchdog
+    // watchdog on first (~1 s; cannot be stopped): the start-up (clock, battery guard, counter
+    // log, radio) feeds it in delay_ms, after every sleep and in the flash routines, so a hang
+    // there (e.g. an unbounded flash wait) resets the chip instead of leaving it awake for good.
+    // Seen once on the camera, 2026-11-19: after a power-on it stayed at 6.4 mA without a packet.
+    // delay_ms runs ~2.75x slower while it feeds, so the start-up delays now take longer.
+    WDCTL = 0x08;
 
     setup_gpio();
     clock_xosc();
