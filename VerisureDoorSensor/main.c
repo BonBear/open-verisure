@@ -807,9 +807,11 @@ void main(void) {
     bool first_packet = true;
 
     // Idle in PM2 between events (it used to poll the inputs every ms in a busy loop, ~6.9 mA).
-    // As in the camera, the CPU runs on the crystal while awake and on the HS RCOSC only around
-    // PM2 (running awake on the RCOSC and starting the crystal just for the transmission left
-    // the radio silent: no TX current, nothing at the gateway).
+    // A wake-up that sends nothing (most 0.5 s ticks) stays on the HS RCOSC: starting the crystal
+    // took ~4 ms at 5.4 mA per tick, ~24 of the 26 uA idle (2026-11-19). Before a packet the
+    // CPU switches to the crystal (clock_xosc) and stays on it for the whole packet, ADC, flash
+    // and radio, as before. (Keeping the CPU on the RCOSC and starting the crystal only for the
+    // transmission left the radio silent: no TX current, nothing at the gateway.)
     WDCTL = 0x08;                    // watchdog on, ~1 s; cannot be stopped
     sleep_timer_init();
 
@@ -860,6 +862,8 @@ void main(void) {
         }
 
         if (send_immediate || is_heartbeat) {
+            clock_xosc();   // crystal for the ADC, flash timing and radio
+
             // Sample current hardware sensor states for telemetry packet
             uint8_t reed_val = P1_7;
             bool is_open = (reed_val != 0);
@@ -958,15 +962,22 @@ void main(void) {
             if (send_immediate) {
                 delay_ms(60);
             }
+            clock_rcosc();
         }
 
-        clock_rcosc();
-        enter_pm2(p1_2_prev, last_reed, last_tamper);
+        enter_pm2(p1_2_prev, last_reed, last_tamper);   // CPU on the HS RCOSC here
         WDT_FEED();
         // pull-ups back on for reed and tamper before they are read (enter_pm2 drops them
-        // for a closed switch); a few us for the pin to rise if the switch has opened
+        // for a closed switch). Without the crystal start there is no 4 ms gap any more, so
+        // wait a little for the pin to rise if the switch has opened: a stale low would drop
+        // the pull-up again and the opening would never be seen.
         P1INP &= ~0x80;
         P0INP &= ~0x02;
-        clock_xosc();
+        {
+            uint8_t d;
+            for (d = 0; d < 100; d++) {
+                __asm nop __endasm;
+            }
+        }
     }
 }
