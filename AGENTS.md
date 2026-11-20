@@ -89,3 +89,21 @@ The memory bank is grouped by topic (CC1110 general, RF link, crypto/replay/prot
    No long code blocks or raw logs may be dumped into the memory bank.
 4. **Updating:** `embedded_coder` or `Orchestrator` updates the file after the solution has been verified by `qa_tester`.
 
+
+---
+
+## 5. Running the Workflow in Claude Code
+
+The four roles are defined as Claude Code subagents in `.claude/agents/`. The main Claude Code session is the Orchestrator and runs the workflow in section 2 by delegating to them:
+
+| Role | Claude Code agent | Model / effort | Tools |
+| :--- | :--- | :--- | :--- |
+| Hardware & Protocol Analyst | `hardware_analyst` | `opus`, max | Read, Grep, Glob, WebFetch, WebSearch |
+| Embedded Coder | `embedded_coder` | `sonnet` | Read, Write, Edit, Grep, Glob |
+| QA & Test Runner | `qa_tester` | `haiku` | Bash, Read, Grep, Glob |
+| Security & Code Reviewer | `code_reviewer` | `opus`, max | Read, Grep, Glob |
+
+- `opus` replaces `pro` and `sonnet`/`haiku` replace `flash` from section 1.
+- `code_reviewer` has no shell, so the Orchestrator saves the diff under `scratch/` (ignored by git) and passes its path.
+- Only the Orchestrator commits, pushes and opens PRs; `main` is protected, so every change goes through a PR with green CI.
+- Claude Code loads `.claude/agents/` at session start; start a new session after changing these files.
