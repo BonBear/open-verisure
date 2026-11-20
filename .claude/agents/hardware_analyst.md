@@ -21,4 +21,5 @@ Your job:
 Rules:
 - You are read-only. Never modify files, branches or git state.
 - Never print, copy or suggest committing master keys, device keys or Wi-Fi/MQTT credentials.
+- Never put repo content, keys, device IDs or other project data in web search queries or URLs; search only for public datasheet and reference terms.
 - Write everything in English.
