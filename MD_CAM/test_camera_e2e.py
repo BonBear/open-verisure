@@ -16,9 +16,9 @@ Checks:
   2. picture/set D1 -> a full 320x240 JPEG with no missing chunks (or
      completed by the gateway's resend: "complete after resend")
   3. picture/set D3 right after -> a delta (queued during D1's delivery; the poll after the
-     picture carries D1's ACK, so the ACK rule holds D3 back and it reaches a still-powered
-     Blackfin only when D1 needed a resend, whose 0xF0 answers clear the ACK; otherwise it is
-     taken cold and is a full picture; see TODO.md)
+     picture carries D1's ACK, so the gateway holds D3 back, but the camera polls again ~2 s
+     after a poll whose ACK was answered without a command, so D3 reaches it while the
+     Blackfin still holds the reference, within BF_KEEP_ON_S)
   4. a poll follows right after a picture (the camera polls after every picture)
   5. alarm/set ON reaches the camera (armed 1), alarm/set OFF too (armed 0)
   6. the full picture came in 56-byte packets (type 0x82: 40 bytes each, so ~len/40 chunks)
@@ -181,11 +181,10 @@ def main() -> int:
 
     # 2-8. picture chain. The Blackfin stays on only BF_KEEP_ON_S (15 s) after a picture. Each
     # command is published as soon as the previous one has been delivered, so it can reach the
-    # camera with the poll right after that picture while the reference for deltas is still in
-    # the Blackfin's SDRAM. The ACK rule usually prevents that: a command goes out first on a
-    # poll without the ACK bit, and the poll after a picture carries the previous command's ACK.
-    # Only resend rounds (0xF0 answers clear the ACK) let it out in time; otherwise the camera
-    # takes it cold (see TODO.md, "Command queued during delivery").
+    # camera while the reference for deltas is still in the Blackfin's SDRAM. A command goes out
+    # first on a poll without the ACK bit, and the poll after a picture carries the previous
+    # command's ACK, so that poll gets no command; the camera then polls again ~2 s later
+    # (an ACK answered without a command), and the queued command reaches it within BF_KEEP_ON_S.
     chain = ["D1", "D3", "D4", "D3", "D5", "D6"]
     m = log.mark()
     publish(f"{dev}/picture/set", chain[0])

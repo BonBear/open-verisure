@@ -140,7 +140,10 @@ carried the poll's 16-bit seq and a 16-bit challenge.) The gateway answers only 
 counter format. `cmd`: 0 = none, 0xD1–0xD6 = take a picture, 0xE8 = HOLD (service: Blackfin on
 for ~10 min without a picture, for JTAG flashing; MQTT `HOLD`), 0xF0 = resend: chunk `first + i`
 for every bit i set in `map` (byte 10 bit 0 = i 0, little endian); `first` and `map` are 0
-otherwise.
+otherwise. The gateway sends a new command only in the answer to a poll without the ACK bit, so
+after an answer to an ACK poll that carried no command the camera polls once more after ~2 s
+(`BF_ACK_POLL_TICKS`): after a good picture, a command queued meanwhile arrives while the
+Blackfin still holds the delta reference (within `BF_KEEP_ON_S`).
 
 ## 5. MQTT (base topic `verisure`)
 
@@ -157,7 +160,9 @@ Home Assistant gets the buttons "Take 640x480 picture" (D2) and "Take flash pict
 
 - Blackfin off: the CC1110 sleeps in PM2 (0.5 s sleep timer or a PIR edge), watchdog ~1 s.
 - Poll every ~30 s (`BF_POLL_S`) while armed, during motion or with the Blackfin on; every
-  ~120 s (`BF_POLL_DISARMED_S`) when disarmed and idle; and right after every picture or resend.
+  ~120 s (`BF_POLL_DISARMED_S`) when disarmed and idle; right after every picture or resend;
+  every ~2 s while a picture waits for its acknowledgement; and once ~2 s after an ACK poll
+  that was answered without a command (the gateway may hold a queued command for that poll).
   Motion always polls first, so it gets a fresh alarm state; a picture requested from Home
   Assistant while disarmed waits up to ~2 minutes for the next poll.
 - Tamper: a change is sent at once (0xB5); every packet carries the state. Repeated changes back
