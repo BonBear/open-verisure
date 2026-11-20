@@ -105,5 +105,6 @@ The four roles are defined as Claude Code subagents in `.claude/agents/`. The ma
 
 - `opus` replaces `pro` and `sonnet`/`haiku` replace `flash` from section 1.
 - `code_reviewer` has no shell, so the Orchestrator saves the diff under `scratch/` (ignored by git) and passes its path.
+- `qa_tester`'s limits are enforced, not only prompted: `.claude/settings.json` runs `.claude/hooks/qa_bash_guard.py` before every Bash call, and when the caller is `qa_tester` it blocks git commands other than read-only ones, `pio` upload targets, `build_and_flash*.py` without `--compile-only`, OTA, esptool, the bench flashers and nested shells. Other agents and the main session are not affected. Tests: `tests/test_qa_bash_guard.py`.
 - Only the Orchestrator commits, pushes and opens PRs; `main` is protected, so every change goes through a PR with green CI.
 - Claude Code loads `.claude/agents/` at session start; start a new session after changing these files.

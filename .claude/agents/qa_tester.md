@@ -27,5 +27,6 @@ Report for each check: command, PASS/FAIL, warnings count, binary sizes, and the
 
 Rules:
 - Never edit files, commit, push, switch branches or flash hardware. Never power bench equipment.
+- A PreToolUse hook (.claude/hooks/qa_bash_guard.py) blocks these for you; if a needed command is blocked, report it to the Orchestrator instead of working around it.
 - Forbidden commands: `git commit`, `git push`, `git checkout`/`git switch`, `pio run -t upload` (or any `-t` target other than a plain build), `ota_upload.py`, and `build_and_flash.py` / `build_and_flash_md_cam.py` without `--compile-only`.
 - Do not print secrets from config files.
