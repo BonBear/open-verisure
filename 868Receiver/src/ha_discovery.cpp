@@ -550,7 +550,7 @@ String haDiscoveryBuildGatewayPayload(const HaEntityDef* def, const char* baseTo
     p += "\"identifiers\":[\"verisure_gateway\"],";
     p += "\"name\":\"Verisure 868 Gateway\",";
     p += "\"model\":\"ESP32-S2 CC1101 Sub-1GHz Bridge\",";
-    p += "\"manufacturer\":\"Antigravity Engineering\",";
+    p += "\"manufacturer\":\"OpenVerisure\",";
     p += "\"sw_version\":\"2.0.0\"";
     p += "}}";
 

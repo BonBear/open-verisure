@@ -1,5 +1,5 @@
 # ====================================================================
-# Git Ignore for Antigravity: Embedded RF (TI CC1110 & ESP32 / CC1101)
+# Git Ignore for OpenVerisure: Embedded RF (TI CC1110 & ESP32 / CC1101)
 # ====================================================================
 
 # --- PlatformIO & ESP-IDF Build Artifacts ---
