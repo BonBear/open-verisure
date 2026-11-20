@@ -712,7 +712,8 @@ static void transmit_big_chunk(uint8_t type, uint16_t chunk_idx, uint8_t chunk_l
 #define BF_ACK_MAX_S 30          // after a picture: wait at most this long for the gateway's acknowledgement
                                  // (a poll answer without a resend request) before the next alarm
                                  // picture or switching the Blackfin off; meanwhile poll every
-#define BF_ACK_POLL_TICKS (2 * BF_TICKS_PER_S)   // ~2 s, so a lost poll or answer costs 2 s, not the picture
+#define BF_ACK_POLL_TICKS (2 * BF_TICKS_PER_S)   // ~2 s, so a lost poll or answer costs 2 s, not the picture;
+                                 // also the one-shot recheck poll after an ACK poll (s_ack_recheck)
 #define BF_KEEP_ON_S 15        // Blackfin stays powered this long after a picture (~0.14 A), so its
                                  // SDRAM keeps the delta reference and a 0xD3 request within that
                                  // time is sent as a delta; 0 = power off right after each picture
@@ -860,7 +861,10 @@ static bool bf_send_picture(uint8_t cmd, bool motion) {
  * bat_load_code) and listens BF_RX_WINDOW for the gateway's answer (868Receiver/src/downlink.h):
  * 8 bytes device ID + AES(device key, 'D' 'L' counter[4] armed cmd first[2] map[4] 'V' 'S').
  * The answer must echo the poll's 32-bit counter, which never repeats (persistent counter),
- * so a recorded answer never fits a later poll.
+ * so a recorded answer never fits a later poll. The gateway sends a new command only in the answer
+ * to a poll without the ACK bit, so after an answer to an ACK poll that carried no command the
+ * camera polls once more after BF_ACK_POLL_TICKS (s_ack_recheck): a command queued meanwhile
+ * then arrives while the Blackfin still holds the delta reference.
  * ============================================================================ */
 static __xdata uint8_t rx_buf[PACKET_LEN + 2];
 static __xdata uint8_t s_dl_plain[16];
@@ -868,6 +872,10 @@ static __xdata uint32_t s_poll_ctr;  // counter of the last poll, echoed by the 
 static __xdata uint8_t s_dl_cmd;     // picture requested by the gateway, 0 = none
 static bool s_armed = BF_ARMED_AT_BOOT;
 static bool s_cmd_ack;               // report in polls that a command arrived, until answered
+static bool s_ack_recheck;           // the last poll carried the ACK and was answered without a command or
+                                     // resend request: the gateway may hold a queued command back for an
+                                     // ACK-free poll, so poll once more after BF_ACK_POLL_TICKS (cleared
+                                     // at the start of every cam_poll, so it never repeats)
 
 static void aes_decrypt_block(const uint8_t *in, uint8_t *out) {
     uint8_t i;
@@ -946,6 +954,7 @@ static bool cam_poll(bool motion, bool bf_on) {
     if (s_armed) state |= 0x01;
     if (bf_on) state |= 0x02;
     if (s_cmd_ack) state |= 0x04;
+    s_ack_recheck = false;           // recomputed from a valid answer only
     state |= bat_load_code() << 3;   // bits 7:3: battery voltage under load
     s_poll_ctr = transmit(motion, false, 0xBA, state);
     if (s_tx_held || !radio_receive_dma(BF_RX_WINDOW))   // held poll: no answer to wait for
@@ -961,6 +970,7 @@ static bool cam_poll(bool motion, bool bf_on) {
         if (s_dl_plain[2 + i] != (uint8_t)(s_poll_ctr >> (24 - 8 * i)))
             return false;
     // the gateway has seen this poll (and with it any acknowledgement)
+    s_ack_recheck = (state & 0x04) != 0;   // cleared below if the answer carries a command or resend
     s_cmd_ack = false;
     if (s_dl_plain[6] <= 1)
         s_armed = s_dl_plain[6] != 0;
@@ -968,7 +978,9 @@ static bool cam_poll(bool motion, bool bf_on) {
         s_dl_plain[7] == BF_CMD_HOLD) {
         s_dl_cmd = s_dl_plain[7];
         s_cmd_ack = true;
+        s_ack_recheck = false;
     } else if (s_dl_plain[7] == BF_CMD_RESEND) {
+        s_ack_recheck = false;
         // resend request: first chunk in [8..9], bitmap of the 32 chunks from it in [10..13]
         s_rs_first = ((uint16_t)s_dl_plain[8] << 8) | s_dl_plain[9];
         s_rs_map = (uint32_t)s_dl_plain[10] | ((uint32_t)s_dl_plain[11] << 8) |
@@ -1165,7 +1177,7 @@ static void cam_alarm_loop(void) {
             }
             hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
         }
-        if (poll >= (pic_open ? BF_ACK_POLL_TICKS :
+        if (poll >= (pic_open || s_ack_recheck ? BF_ACK_POLL_TICKS :
                      (s_armed || active || bf_on) ? BF_POLL_S * BF_TICKS_PER_S :
                      BF_POLL_DISARMED_S * BF_TICKS_PER_S)) {
             poll = 0;
@@ -1290,7 +1302,8 @@ static void cam_alarm_loop(void) {
             active = false;
             transmit(false, false, 0xB9, 0);
         }
-        if (bf_on && !s_dl_cmd && !keep && !pic_open && (!active || !s_armed)) {
+        // not before a pending recheck poll: a command queued meanwhile should find the reference
+        if (bf_on && !s_dl_cmd && !keep && !pic_open && !s_ack_recheck && (!active || !s_armed)) {
             bf_power_off();
             bf_on = false;
             s_bat_load_mv = s_bat_load_min;   // from now on in the battery % and the low flag
