@@ -101,6 +101,12 @@ bool downlinkRequestResend(const char* deviceId, uint16_t first, uint32_t map) {
     return true;
 }
 
+void downlinkCancelResend(const char* deviceId) {
+    if (!deviceId) return;
+    PendingCommand* p = findPending(deviceId);
+    if (p) p->resendMap = 0;        // the slot is free again when no command is queued
+}
+
 bool downlinkResendPending(const char* deviceId) {
     if (!deviceId) return false;
     expirePending();
@@ -123,15 +129,22 @@ uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16
     // more poll.
     if (p->cmd && p->sent && (cameraState & DOWNLINK_STATE_ACK))
         p->cmd = 0;             // delivered with an earlier answer
-    if (p->cmd && (p->sent || !(cameraState & DOWNLINK_STATE_ACK))) {
-        p->sent = true;
-        return p->cmd;
-    }
-    if (p->resendMap) {        // also while a new command waits for an ACK-free poll
+    // A pending resend request goes before ANY command, also one already sent. The camera takes
+    // an answer without a resend request as the acknowledgement of the open picture, so a command
+    // first would end that picture with holes (and break the delta base). This is ACK-safe: the
+    // ACK check above ran first, the camera sets the ACK bit only for 0xD1..0xD6/0xE8 and a
+    // 0xF0 answer clears it, and a sent command without ACK in the poll was not received. A
+    // command cannot starve: the rounds are bounded by RS_MAX_ROUNDS / RS_TOTAL_MS in
+    // image_receiver.cpp, which also cancels a request it gives up (downlinkCancelResend).
+    if (p->resendMap) {
         if (first) *first = p->resendFirst;
         if (map) *map = p->resendMap;
         p->resendMap = 0;       // once: the gateway asks again for what is still missing
         return DOWNLINK_CMD_RESEND;
+    }
+    if (p->cmd && !(cameraState & DOWNLINK_STATE_ACK)) {
+        p->sent = true;
+        return p->cmd;
     }
     return 0;
 }
