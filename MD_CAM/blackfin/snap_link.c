@@ -280,6 +280,8 @@ static unsigned long sdram_init(void)
     SSYNC();
     R32(EBIU_SDGCTL) = 0xC0911109UL;
     SSYNC();
+    /* SDRAM starts at address 0 on the BF512: this read is intended, not a null pointer */
+    /* cppcheck-suppress nullPointer */
     (void)R16(0x00000000);          /* first access starts the power-up sequence */
     SSYNC();
     for (i = 0; i < SDRAM_TEST_WORDS; i++)

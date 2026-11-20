@@ -35,6 +35,7 @@ MD_CAM/firmware/config.h
 868Receiver/src/secrets.h
 !868Receiver/src/secrets.h.example
 MD_CAM/cc_local_index.html
+.env
 
 # --- Python Environment & Caches ---
 __pycache__/

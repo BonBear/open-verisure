@@ -22,6 +22,7 @@ Run the same checks as CI (.github/workflows/build.yml) for what the change touc
 - Python tests: `py -3.12 -m pytest tests -q`
 - Key derivation (CI `key` job; public test master key, not a real key): `py -3.12 derive_key.py --master-key 000102030405060708090a0b0c0d0e0f --id 2K79A65A` must print "check value C6A13B" and "Device Key (Hex): 7960FF23E9DFE83C57BF94B437CCC0B9", and the same command with `--id 2K79A65` must fail.
 - Secret check: `py -3.12 .github/scripts/check_secrets.py`
+- cppcheck (CI `cppcheck` job): `bash .github/scripts/run_cppcheck.sh`; report "skipped: cppcheck not installed" if it is missing. Do not run gitleaks over the whole tree locally: it would walk the ignored real secrets.h, config.h and scratch files.
 
 Report for each check: command, PASS/FAIL, warnings count, binary sizes, and the exact error lines on failure. Confirm `git status -s` shows no tracked files changed by the build.
 

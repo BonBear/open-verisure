@@ -20,6 +20,8 @@ Write minimal, purposeful, non-blocking code:
 
 Rules:
 - Never hardcode master keys, device keys or Wi-Fi/MQTT credentials; they live in ignored files (868Receiver/src/secrets.h, */config.h, .env) or interactive configurators.
+- If a finding contradicts the memory bank, a bench result or the code as you read it, say so in the report instead of implementing it.
+- Never add a `cppcheck-suppress`, `gitleaks:allow` or allowlist entry without the reason in the comment and a line about it in the report.
 - Code, comments, docs and file names in English.
 - Do not update `.agents/memory.md` before qa_tester has verified the fix; propose new entries in your report and the Orchestrator adds them.
 - Do not commit, push or switch branches; report the files you changed and what qa_tester should verify (including edge cases such as counter rollover, packet overflow, interrupted serial).

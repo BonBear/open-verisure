@@ -20,7 +20,7 @@ for p in (ROOT, os.path.join(ROOT, "release"), os.path.join(ROOT, ".github", "sc
 # public CI test master key 00..0f and the device key of 2K79A65A under it
 TEST_MASTER_HEX = "000102030405060708090A0B0C0D0E0F"
 TEST_DEVICE_ID = "2K79A65A"
-TEST_DEVICE_KEY_HEX = "7960FF23E9DFE83C57BF94B437CCC0B9"
+TEST_DEVICE_KEY_HEX = "7960FF23E9DFE83C57BF94B437CCC0B9"  # gitleaks:allow (public test vector)
 TEST_CHECK_VALUE = "C6A13B"
 
 

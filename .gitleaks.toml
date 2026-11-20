@@ -1,0 +1,28 @@
+# gitleaks configuration (CI job "gitleaks"): the default rules plus an allowlist for public values
+# and a project rule for the gateway's default passwords.
+title = "OpenVerisure"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public test vectors, never real keys"
+regexes = [
+  '''(?i)000102030405060708090a0b0c0d0e0f''',   # public test master key (derive_key test vector)
+]
+
+# DEFAULT_WIFI_PASS / DEFAULT_MQTT_PASS / DEFAULT_PORTAL_PASS / DEFAULT_AP_PASS with a value, also
+# in a commented-out line. The placeholders of 868Receiver/src/secrets.h.example are allowed.
+[[rules]]
+id = "project-default-password"
+description = "Credential default in a #define DEFAULT_*_PASS line"
+regex = '''#define\s+DEFAULT_(?:WIFI|MQTT|PORTAL|AP)_PASS\s+"([^"]+)"'''
+secretGroup = 1
+
+[rules.allowlist]
+description = "Placeholders in secrets.h.example"
+regexes = [
+  '''your-wifi-password''',
+  '''change-me-please''',
+  '''change-me-too''',
+]
