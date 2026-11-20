@@ -68,9 +68,9 @@ The web page has the same upload (Firmware Update card).
   rebooting into a just-written update, and in the setup access point (there it could not be
   confirmed, and the portal may have no password yet). A refused request is answered at once and
   its connection closed, so a stalled upload cannot hold the gateway.
-* The upload (~1 MB, ~10 s) blocks the main loop: the radio FIFO is still read for every
-  received piece, but the MQTT client and the rest of the loop wait, and flash erases can
-  delay a packet. If OTA ever leaves the gateway unreachable, flash it over USB as above.
+* The upload (~1 MB, ~10 s) blocks the main loop: the radio task keeps reading the FIFO and
+  the received frames are handled for every piece, but the MQTT client and the rest of the
+  loop wait, and flash writes and erases pause every task (a packet can be lost then). If OTA ever leaves the gateway unreachable, flash it over USB as above.
 
 ## What it does
 
@@ -139,12 +139,24 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   [hardware_gateway_esp32s2.md](../documentation/hardware_gateway_esp32s2.md)),
   `portalpass [<password>|clear]` (show, set or clear the web portal password), `reset` (erase
   all NVS settings), `reboot`. The master key is never printed, only its check value.
+  `radio` shows the radio task's counters and `radio reset` clears them. Only in the
+  evaluation env `lolin_s2_mini_eval` (`-D RADIO_EVAL=1`): `loopblock <ms>` (block loop() once),
+  `radiostall <ms>` (the radio task skips FIFO servicing once) and `polldelay <ms>` (delay the
+  camera poll answers).
+* **`/api/status` `radio_diag`** (radio task counters since boot): `frames`, `fifo_overflows`,
+  `partial_drops`, `queue_drops`, `queue_high_water` (of 256), `max_gap_us` and `gap_gt_5ms/10ms/20ms`
+  (time between FIFO reads), `tx_done`, `tx_late`, `tx_timeouts`, `tx_aborted_rx`,
+  `max_tx_latency_us`, `slow_status_reads` (status reads > 5 ms), `status_unstable`, `rx_restarts`,
+  `rx_reinits`, `stack_free` (bytes), and from loop(): `poll_answers`, `poll_late`,
+  `max_poll_answer_age_us`, `max_drain_gap_ms`. `poll_answers` counts answers queued, `tx_done`
+  those the radio finished sending.
 
 ## Source files
 
 | File | Content |
 | :--- | :--- |
-| `main.cpp` | CC1101 setup, RX loop with software CRC, poll answers |
+| `main.cpp` | Frame handling in loop() (software CRC, crypto, poll answers), drains the radio task's queue |
+| `radio_task.h/.cpp` | CC1101 owner: FreeRTOS task that polls the RX FIFO, queues frames, sends the poll answers (design at the top of the header) |
 | `crypto.cpp/h` | Key derivation, AES, packet parsing, replay filter |
 | `downlink.cpp/h` | Alarm state and queued picture commands for the cameras |
 | `image_receiver.cpp/h`, `jpeg_splice.cpp/h` | Picture reassembly and delta splicing |

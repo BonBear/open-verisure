@@ -13,8 +13,7 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <DNSServer.h>
-#include <SPI.h>
-#include <ELECHOUSE_CC1101_SRC_DRV.h>
+#include "radio_task.h"
 #include "esp_wifi.h"
 #include <mbedtls/base64.h>
 
@@ -765,6 +764,10 @@ static void handleApiStatus() {
     json += "\"marcstate\":\"0x" + String(s_cachedMarc, HEX) + "\",";
     json += "\"total_packets\":" + String(s_cachedPackets) + "},";
 
+    json += "\"radio_diag\":{";   // radio task counters since boot (radio_task.h)
+    radioDiagAppendJson(json);
+    json += "},";
+
     json += "\"diag\":{";       // counters since boot (gateway_diag.h)
     gatewayDiagAppendJson(json, gatewayDiagSample());
     json += "},";
@@ -822,16 +825,18 @@ static void handleApiStatus() {
 
 static void handleApiRadio() {
     if (!authorize(ACCESS_READ)) return;
-    byte ver = ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION);
-    byte part = ELECHOUSE_cc1101.SpiReadStatus(CC1101_PARTNUM);
-    byte marc = ELECHOUSE_cc1101.SpiReadStatus(CC1101_MARCSTATE);
+    // cached by the radio task (it owns the SPI bus): VERSION/PARTNUM from the last init or
+    // probe, MARCSTATE from the last sample (at most RADIO_STATUS_INTERVAL_MS old while idle)
+    const bool online = g_radioStatus.online;
+    const uint8_t ver = g_radioStatus.version;
+    const uint8_t part = g_radioStatus.partnum;
+    const uint8_t marc = g_radioStatus.marcState;
 
     String json = "{";
     json += "\"chip_version\":\"0x" + String(ver, HEX) + "\",";
     json += "\"chip_partnum\":\"0x" + String(part, HEX) + "\",";
     json += "\"marcstate\":\"0x" + String(marc, HEX) + "\",";
-    json += "\"miso_pin_level\":" + String(digitalRead(PIN_MISO)) + ",";
-    json += "\"spi_ok\":" + String((ver == 0x04 || ver == 0x14) ? "true" : "false") + "}";
+    json += "\"spi_ok\":" + String((online && (ver == 0x04 || ver == 0x14)) ? "true" : "false") + "}";
 
     s_server.send(200, "application/json", json);
 }

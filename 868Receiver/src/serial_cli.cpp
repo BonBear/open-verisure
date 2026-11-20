@@ -13,13 +13,9 @@
 #include "crypto.h"
 #include "image_receiver.h"
 #include "gateway_diag.h"
+#include "radio_task.h"
 #include <WiFi.h>
-#include <SPI.h>
-#include <ELECHOUSE_CC1101_SRC_DRV.h>
 #include "esp_wifi.h"
-
-void initRadioRegisters();   // main.cpp: the full CC1101 register set, then RX
-void radioSpiAttach();       // main.cpp: give the SPI pins back to the SPI peripheral
 
 static char s_cmdBuf[128];
 static int s_cmdLen = 0;
@@ -44,6 +40,12 @@ static void printHelp() {
     Serial.println("  freqoffset [n]             - Show or set the CC1101 frequency correction (FSCTRL0 steps)");
     Serial.println("  portalpass [<password>|clear] - Show, set (8-64 characters) or clear the web portal password");
     Serial.println("  appass                     - Show the setup access point's password (unique per gateway)");
+    Serial.println("  radio [reset]              - Show (or clear) the radio task diagnostics");
+#ifdef RADIO_EVAL
+    Serial.println("  loopblock <ms>             - Eval: block loop() once for <ms>");
+    Serial.println("  radiostall <ms>            - Eval: the radio task skips FIFO servicing once for <ms> (max 3000)");
+    Serial.println("  polldelay <ms>             - Eval: delay every camera poll answer by <ms> before it is queued (0 = off)");
+#endif
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
@@ -54,59 +56,19 @@ static void runTestSpi() {
     Serial.printf("Pins: SCK=GPIO%d, MISO=GPIO%d, MOSI=GPIO%d, CS=GPIO%d\n",
                   PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
 
-    pinMode(PIN_CS, OUTPUT);
-    pinMode(PIN_MISO, INPUT_PULLUP);
-
-    digitalWrite(PIN_CS, HIGH);
-    delay(5);
-    int miso_high = digitalRead(PIN_MISO);
-
-    digitalWrite(PIN_CS, LOW);
-    delay(10);
-    int miso_low = digitalRead(PIN_MISO);
-    digitalWrite(PIN_CS, HIGH);
+    // The radio task owns the SPI bus: it runs the pin test and the SRES sequence (radio_task.cpp,
+    // radioDoTestSpi) and returns the readings; it also restores the radio registers afterwards.
+    RadioTestSpiResult r;
+    if (!radioRequestTestSpi(&r, 1000)) {
+        Serial.println("[-] ERROR: the radio task did not answer (not running or busy).\n");
+        return;
+    }
+    const int miso_high = r.misoHigh, miso_low = r.misoLow;
+    const byte sres_st = r.sresSt, st_part = r.partSt, val_part = r.part;
+    const byte st_ver = r.verSt, val_ver = r.ver, st_marc = r.marcSt, val_marc = r.marc;
 
     Serial.printf("CS HIGH (with Pullup) -> MISO: %d (Expected: 1 when CC1101 is deselected)\n", miso_high);
     Serial.printf("CS LOW                -> MISO: %d (MUST be 0 when CC1101 responds!)\n", miso_low);
-
-    radioSpiAttach();   // pinMode() above took MISO from the SPI peripheral (core 3.x)
-
-    // Manual CC1101 Power-On-Reset Sequence (TI Datasheet 19.1.2)
-    digitalWrite(PIN_CS, HIGH);
-    delayMicroseconds(50);
-    digitalWrite(PIN_CS, LOW);
-    delayMicroseconds(50);
-    digitalWrite(PIN_CS, HIGH);
-    delayMicroseconds(50);
-    digitalWrite(PIN_CS, LOW);
-    delay(5); // Wait for SO/MISO to go low
-
-    SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
-    byte sres_st = SPI.transfer(0x30); // CC1101_SRES
-    digitalWrite(PIN_CS, HIGH);
-    delay(10);
-
-    // Read PARTNUM (0x30 | 0xC0 = 0xF0) and VERSION (0x31 | 0xC0 = 0xF1)
-    digitalWrite(PIN_CS, LOW);
-    delayMicroseconds(50);
-    byte st_part = SPI.transfer(0x30 | 0xC0);
-    byte val_part = SPI.transfer(0x00);
-    digitalWrite(PIN_CS, HIGH);
-    delayMicroseconds(20);
-
-    digitalWrite(PIN_CS, LOW);
-    delayMicroseconds(50);
-    byte st_ver = SPI.transfer(0x31 | 0xC0);
-    byte val_ver = SPI.transfer(0x00);
-    digitalWrite(PIN_CS, HIGH);
-
-    // Read MARCSTATE (0x35 | 0xC0 = 0xF5)
-    digitalWrite(PIN_CS, LOW);
-    delayMicroseconds(50);
-    byte st_marc = SPI.transfer(0x35 | 0xC0);
-    byte val_marc = SPI.transfer(0x00);
-    digitalWrite(PIN_CS, HIGH);
-    SPI.endTransaction();
 
     Serial.printf("After SRES Reset:\n");
     Serial.printf("  SRES Status: 0x%02X (CHIP_RDYn=%d, STATE=%d)\n", sres_st, (sres_st >> 7) & 1, (sres_st >> 4) & 7);
@@ -114,14 +76,38 @@ static void runTestSpi() {
     Serial.printf("  VERSION    : 0x%02X (Status: 0x%02X, expected: 0x04 or 0x14)\n", val_ver, st_ver);
     Serial.printf("  MARCSTATE  : 0x%02X (Status: 0x%02X, 0x01=IDLE, 0x0D=RX)\n", val_marc, st_marc);
 
+    // SRES put every register back to its reset value (433 MHz, IDLE): the task restores the radio
+    // only after a valid VERSION, otherwise it takes it offline (and probes for it every 2 s)
     if (val_ver == 0x04 || val_ver == 0x14) {
-        Serial.println("[+] SPI and CC1101 communication OK!\n");
+        Serial.println("[+] SPI and CC1101 communication OK!");
+        Serial.println("[+] Radio registers restored, back in RX.\n");
     } else {
-        Serial.println("[-] ERROR: CC1101 did not respond correctly over SPI.\n");
+        Serial.println("[-] ERROR: CC1101 did not respond correctly over SPI.");
+        Serial.println("[-] Radio offline: the registers are restored once the module answers again.\n");
     }
-    // SRES put every register back to its reset value (433 MHz, IDLE): restore the radio
-    initRadioRegisters();
-    Serial.println("[+] Radio registers restored, back in RX.\n");
+}
+
+/** Radio task diagnostics (all values are cached/counted by the task; no SPI access here). */
+static void printRadioDiag() {
+    const RadioDiag& d = g_radioDiag;
+    const RadioLoopDiag& l = g_radioLoopDiag;
+    Serial.printf("  Radio        : %s | version 0x%02X | MARCSTATE 0x%02X | RSSI %d dBm\n",
+                  g_radioStatus.online ? "online" : "OFFLINE", g_radioStatus.version,
+                  g_radioStatus.marcState, (int)g_radioStatus.rssiDbm);
+    Serial.printf("  Radio RX     : frames %lu | FIFO overflows %lu | partial drops %lu | queue drops %lu (high water %lu/%d)\n",
+                  (unsigned long)d.frames, (unsigned long)d.fifoOverflows, (unsigned long)d.partialDrops,
+                  (unsigned long)d.queueDrops, (unsigned long)d.queueHighWater, RADIO_QUEUE_DEPTH);
+    Serial.printf("                 task gap max %lu us | >5 ms %lu | >10 ms %lu | >20 ms %lu | drain gap max %lu ms\n",
+                  (unsigned long)d.maxGapUs, (unsigned long)d.gapOver5ms, (unsigned long)d.gapOver10ms,
+                  (unsigned long)d.gapOver20ms, (unsigned long)l.maxDrainGapMs);
+    Serial.printf("  Radio TX     : done %lu | late %lu | timeouts %lu | aborted RX %lu | max latency %lu us\n",
+                  (unsigned long)d.txDone, (unsigned long)d.txLate, (unsigned long)d.txTimeouts,
+                  (unsigned long)d.txAbortedRx, (unsigned long)d.maxTxLatencyUs);
+    Serial.printf("                 poll answers %lu | skipped late %lu | max answer age %lu us\n",
+                  (unsigned long)l.pollAnswers, (unsigned long)l.pollLate, (unsigned long)l.maxPollAnswerAgeUs);
+    Serial.printf("  Radio health : slow status reads (>5 ms) %lu | unstable status reads %lu | RX restarts %lu | re-inits %lu | task stack free %lu B\n",
+                  (unsigned long)d.slowStatusReads, (unsigned long)d.statusUnstable, (unsigned long)d.rxRestarts,
+                  (unsigned long)d.rxReinits, (unsigned long)d.stackFreeMin);
 }
 
 static void printStatus() {
@@ -149,6 +135,7 @@ static void printStatus() {
     Serial.printf("                 stale picture chunks %lu | session table full %lu | last rejected %s\n",
                   (unsigned long)d.picStale, (unsigned long)d.sessionFull,
                   d.lastRejectedId[0] ? d.lastRejectedId : "-");
+    printRadioDiag();
     Serial.printf("  Sensors      : %d registered\n", sensorRegistryGetCount());
 
     int count = sensorRegistryGetCount();
@@ -209,6 +196,31 @@ static void processCommand(char* cmd) {
         printStatus();
     } else if (strcmp(cmd, "testspi") == 0) {
         runTestSpi();
+    } else if (strcmp(cmd, "radio") == 0) {
+        Serial.println();
+        printRadioDiag();
+        Serial.println();
+    } else if (strcmp(cmd, "radio reset") == 0) {
+        radioDiagReset();
+        Serial.println("[CLI] Radio diagnostics cleared.");
+#ifdef RADIO_EVAL
+    } else if (strncmp(cmd, "loopblock ", 10) == 0) {
+        unsigned long ms = strtoul(cmd + 10, nullptr, 10);
+        if (ms > 10000) ms = 10000;
+        Serial.printf("[CLI] Blocking loop() for %lu ms (max 10000)\n", ms);
+        Serial.flush();
+        delay(ms);
+    } else if (strncmp(cmd, "radiostall ", 11) == 0) {
+        unsigned long ms = strtoul(cmd + 11, nullptr, 10);
+        if (ms > 3000) ms = 3000;
+        radioEvalStall((uint32_t)ms);
+        Serial.printf("[CLI] Radio task skips FIFO servicing once for %lu ms (max 3000)\n", ms);
+    } else if (strncmp(cmd, "polldelay ", 10) == 0) {
+        unsigned long ms = strtoul(cmd + 10, nullptr, 10);
+        if (ms > 500) ms = 500;
+        g_radioEvalPollDelayMs = (uint32_t)ms;
+        Serial.printf("[CLI] Poll answers delayed by %lu ms (max 500)%s\n", ms, ms ? "" : " (off)");
+#endif
     } else if (strcmp(cmd, "scan") == 0) {
         runScan();
     } else if (strncmp(cmd, "connect ", 8) == 0) {
@@ -307,8 +319,12 @@ static void processCommand(char* cmd) {
             } else {
                 ConfigManager::setFreqOffset((int8_t)n);
                 ConfigManager::save();
-                initRadioRegisters();
-                Serial.printf("[CLI] Frequency offset set to %ld (%+.1f kHz) and saved.\n", n, n * 1.587);
+                // the radio task writes FSCTRL0 (it owns the SPI bus); the new value is in RAM already
+                const bool wasOnline = g_radioStatus.online;
+                const bool applied = radioRequestReinit(200);
+                const char* note = !applied ? " (radio not re-initialized: task busy or not running)"
+                                 : !wasOnline ? " (radio offline: used when the module is detected)" : "";
+                Serial.printf("[CLI] Frequency offset set to %ld (%+.1f kHz) and saved%s.\n", n, n * 1.587, note);
             }
         }
     } else if (strcmp(cmd, "appass") == 0) {
