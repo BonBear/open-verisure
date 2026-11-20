@@ -1025,6 +1025,7 @@ static void bf_resend(uint16_t first, uint32_t map) {
 static uint8_t s_boot_tries;    // pings until snap_link answered (BF_IMG_TIMING reports it)
 
 static void bf_power_on(void) {
+    clock_xosc();    // cam_sleep leaves the CPU on the HS RCOSC; the boot timing needs the crystal
     s_bf_powered = true;
     P0DIR |= 0x85;   // P0_0, P0_2 (1.2V), P0_7 (aux) = outputs
     P0_0 = 0;
@@ -1096,13 +1097,18 @@ static void bf_power_off(void) {
 // P1_7, instead of busy-waiting on the crystal (board ~22 mA awake, ~3 mA in PM2 as measured
 // with the earlier low-power build). Returns the loop ticks that passed: a whole timer period
 // after a tick, 1 after a PIR edge (exact time unknown; the loop reads P1_7 right away).
+// The CPU stays on the HS RCOSC after the wake-up: starting the crystal at every tick cost
+// ~4 ms at 5.4 mA (~24 uA, measured on the door sensor 2026-11-19), and most ticks only read
+// the tamper switch and count. Whatever needs the crystal switches to it first: transmit()
+// (so cam_poll too), bf_power_on() and battery_guard(); bf_on is only set by bf_power_on(),
+// so the delay_ms() path with the Blackfin on runs on the crystal.
 static uint16_t cam_sleep(void) {
     g_tick = 0;
     g_pir_edge = 0;
-    clock_rcosc();
+    if (!(CLKCON & 0x40))   // on the crystal: switch (clock_rcosc would start it otherwise)
+        clock_rcosc();
     enter_pm2();
     WDT_FEED();
-    clock_xosc();
     return g_tick ? (uint16_t)(BF_TICKS_PER_S / 2) : 1;   // one 0.5 s tick
 }
 #endif
@@ -1321,7 +1327,10 @@ static void cam_alarm_loop(void) {
 
 static void battery_guard(void) {
     uint8_t i;
-    while (read_battery_idle_mv() < BOOT_MIN_MV) {
+    for (;;) {
+        clock_xosc();                // cam_sleep leaves the HS RCOSC on; ADC and ctr_boot use the crystal
+        if (read_battery_idle_mv() >= BOOT_MIN_MV)
+            break;
         for (i = 0; i < 2 * BOOT_RECHECK_S; i++)
             cam_sleep();             // 0.5 s sleep-timer ticks (or a PIR edge)
     }
