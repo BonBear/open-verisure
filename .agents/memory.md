@@ -30,6 +30,7 @@ It stores **verified technical insights**, **hardware limitations**, **known pit
 - [2026-11-19] [BUILD/SDCC_W110]: Warning 110 ("conditional flow changed by optimizer") means a run-time `if` on a value SDCC proved constant (e.g. `cmd = BF_IMG_CMD; if (cmd == 0xD3)`); make such config-dependent choices with `#if` instead.
 
 ---
+- [2026-11-19] [CC1110/COUNTER_LOG]: Flash faults (cut write/erase, worn cells) only leave bits at 1, so a log entry check must be unidirectional-error-proof: an XOR check byte let a cut second word read as block 0xFEFFFF; the 0-bit count (Berger code) never passes. Also: never send a block above newest logged + 1, never log or switch pages without the crystal, never erase the other page before the current one holds the newest entry.
 
 ## 📡 RF Link (CC1110 / CC1101, 868.950 MHz)
 - [2026-10-24] [MD_CAM/RF]: The camera (Board #1 = 2NCEKS3T unlocked, Board #2 = 2NCEKT3X locked reference) uses a 27.000 MHz crystal (Y1) and the same radio setup as the door sensor: FREQ=0x202EEF, MDMCFG4=0x8A, MDMCFG3=0x75, FSCAL0=0x1F (must stay 0x1F). The old "set is_por_reset on external reset too" trick for the replay filter is replaced by the persistent counter (GATEWAY/REPLAY_COUNTER); is_por is now set only on a power-on reset.
@@ -40,6 +41,7 @@ It stores **verified technical insights**, **hardware limitations**, **known pit
 - [2026-11-17] [GATEWAY/ANTENNA]: The CC1101 module's helical spring antenna cost ~27 dB; a straight 22 AWG wire (~8.0 cm) raised the camera from -85 to -57 dBm and cured lost polls and 34-59 % chunk loss that looked like Blackfin regulator noise. Check the antenna before blaming firmware for range problems.
 
 ---
+- [2026-11-20] [RF/GATEWAY_TOO_CLOSE]: A gateway antenna right next to the camera (gateway fell over on the bench) overloads the CC1101: camera packets at -17/-18 dBm arrive with a 20-50 kHz frequency error that changes per packet and fail the CRC, while far devices still pass. The camera then keeps its Blackfin on resending (~175 mA for 6-8 min) and idles higher (~0.13 mA). Keep the gateway >= 0.5 m away (60 cm: -38 dBm, -1.6 kHz, all accepted). A strong invalid-CRC packet with a wandering frequency error means receiver overload, not a device fault.
 
 ## 🔐 Crypto, Replay & Protocol
 - [2026-10-22] [AES/KDF]: The CC1110 uses its hardware AES-128 coprocessor. Device key = AES-128-ECB(master key, 8-character device ID from the casing, zero-padded to 16 bytes) (derive_key.py).
@@ -52,6 +54,7 @@ It stores **verified technical insights**, **hardware limitations**, **known pit
 - [2026-11-15] [GATEWAY/KCV]: The gateway never prints the master key; boot and the CLI command status show a check value = first 3 bytes of AES(key, 0^16), to compare with the same calculation on secrets.h. The alarm switch follows CLI and MQTT (verisure/alarm/set ON/OFF, anything else ignored); state is published retained on verisure/alarm/state.
 
 ---
+- [2026-11-20] [CTR/BENCH_PR19]: The counter-log fix (PR #19) passed the bench: door sensor (seeded flash, block rollover in one run, 5 resets, 8 power cuts, 14 overnight packets) and camera (7+ pictures with distinct tags, 5 resets, 17 power cuts of 90 s), no rejected or replayed packet at the gateway.
 
 ## 🚪 Door Sensor (VerisureDoorSensor)
 - [2026-10-22] [SENSOR/GPIO]: The reed switch is on P1_7, Shock/Vibration on P1_2, and Tamper on P0_1 (reed and tamper close to GND).
@@ -95,6 +98,7 @@ It stores **verified technical insights**, **hardware limitations**, **known pit
 - [2026-11-16] [MD_CAM/CC1110_CLEANUP]: The CC1110 firmware has only the camera flow (main -> cam_alarm_loop); ~1900 lines of test code (SPI sweep, U3 dump, Blackfin probes/SPI boot, pin walk, BF_JTAG_HOLD, BF_IMG_LINK raw tiles, 0x80 packets, UART ISR, camera_image.h) were removed: they are in git history at commit 9e4f689 and earlier.
 - [2026-11-16] [MD_CAM/E2E_TEST]: MD_CAM/test_camera_e2e.py tests camera -> gateway -> MQTT (poll, D1, poll after picture, D3 delta, alarm on/off, --gateway-restart new base). Reads MQTT credentials from secrets.h without printing them and masks 32-hex in the gateway log. Needs the camera powered and the gateway on USB; it queues each picture command as soon as the previous one is delivered (one queued picture per camera).
 - [2026-10-29] [MD_CAM/CAMERA_PIPELINE]: Superseded: the first "picture over RF" (8-byte 0x80 frames) was the built-in test picture from camera_image.h; the first real picture came 2026-11-12 via the Blackfin (see the image pipeline section). U3 dumps showing `1C 31 13` repeated meant the flash was stuck in RDID because /CS was never toggled.
+- [2026-11-19] [MD_CAM/COUNTER_HOLD]: When the counter rule holds a packet (block not loggable), callers must not act as if it was sent: a held 0xB2 start packet must stop the picture (chunks are tagged with its counter), a held poll must skip the listening window; transmit() reports this in s_tx_held.
 
 ---
 
@@ -190,3 +194,4 @@ It stores **verified technical insights**, **hardware limitations**, **known pit
 - [2026-11-16] [MD_CAM/JTAG_SCRIPTS]: MD_CAM/blackfin/jtag/ (jtag_common.sh, gdbproxy.sh, bf_flash.sh in 16 KB parts, bf_read.sh, bf_read_flash.sh, bf_set.sh). Run from Git Bash with MSYS_NO_PATHCONV=1 and WSL-form paths (/mnt/c/...), otherwise gdbproxy never starts and gdb gets 'connection refused'. The Blackfin must stay powered (HOLD first). gdb binary dumps fail with this gdbproxy; x/256xw works (~8 min for 32 KB).
 - [2026-11-15] [TOOLS/JTAG_FTDI_SIO]: USB path faults (urJTAG stuck after "Setting TCK frequency", "libusb_init() failed", "unable to claim", no IDCODE while usbipd shows Attached, gdbproxy "Couldn't connect to suitable USB device"): keep WSL alive with a long-running process (a `sleep 3600` keep-alive runs out and WSL detaches the FT232H), run `usbipd attach --wsl --busid <id>` again (also after killing gdbproxy), then unbind/rmmod ftdi_sio.
 - [2026-11-14] [MD_CAM/JTAG_LOCKUP]: IDCODE 0xFFFFFFFF or garbage (e.g. 0xF7F7D0F0): first try a power cycle (seen after snap_link ran a long time), then check the TDO wire (AD2) and the supply positive, which came loose several times. When JTAG is flaky bfin-gdbproxy resets the Blackfin and crashes, erasing loaded code: close it (killall -9 bfin-gdbproxy) once a long-running program is loaded. The correct IDCODE is 0x227E80CB.
+- [2026-11-20] [LAB/PS3005D_MCP_RESTART]: A restart of the PS3005D MCP server switched the supply's output off overnight (the door sensor lost power unnoticed): after a tool restart check get_status and switch the output on again.

@@ -4,10 +4,11 @@
  *        which runs a device's real ctr_boot and packet rule and checks the no-reuse invariant.
  *
  * "Possibly sent": both firmwares send a packet right after the counter rule (door sensor main
- * loop, camera transmit()) whether or not its block could be logged. So once the rule returns
- * without a power cut, its counter value counts as sent (on the air, maybe received by the
- * gateway, maybe recorded), and every later counter value, in this boot or any later one, must
- * be greater. A power cut inside the rule (during a log write) means the packet was not sent.
+ * loop, camera transmit()) when the rule (ctr_use) allows it, and hold it otherwise (nothing
+ * sent, the counter stays). So once the rule returns true without a power cut, its counter value
+ * counts as sent (on the air, maybe received by the gateway, maybe recorded), and every later
+ * counter value, in this boot or any later one, must be greater. A power cut inside the rule
+ * (during a log write) means the packet was not sent.
  */
 
 #pragma once
@@ -23,12 +24,17 @@
 #include "emu.h"
 #include "test.h"
 
+/** The check byte of an entry: the number of 0 bits in b0, b1, b2 (as ctr_check()). */
+inline uint8_t entryCheck(uint8_t b0, uint8_t b1, uint8_t b2) {
+    return (uint8_t)(24 - __builtin_popcount(b0) - __builtin_popcount(b1) - __builtin_popcount(b2));
+}
+
 /** The 4 bytes of a log entry as ctr_log() writes them. */
 inline void entryBytes(uint32_t block, uint8_t e[4]) {
     e[0] = (uint8_t)block;
     e[2] = (uint8_t)(block >> 8);
     e[3] = (uint8_t)(block >> 16);
-    e[1] = (uint8_t)(e[0] ^ e[2] ^ e[3] ^ 0xA5);
+    e[1] = entryCheck(e[0], e[2], e[3]);
 }
 
 inline uint8_t* entryPtr(unsigned page, unsigned i) { return &emu_flash[page * EMU_PAGE_SIZE + i * 4]; }
@@ -91,7 +97,8 @@ struct Sim {
     uint32_t maxSent = 0;     // the highest one
     bool on = false;          // booted, not cut since
     uint32_t ctr = 0;         // counter of the next packet
-    uint8_t pkts = 0;         // packets since this boot (the door sensor's boot_pkts)
+    uint8_t pkts = 0;         // packets sent since this boot (the door sensor's boot_pkts)
+    unsigned held = 0;        // packets the rule did not allow (nothing sent)
     unsigned violations = 0;
     unsigned saturated = 0;   // of them: with a block above CTR_BLOCK_MAX (the log is stuck)
     std::string trace;        // what happened, for the report of the first violation
@@ -146,12 +153,19 @@ struct Sim {
     }
 
     /** The counter rule and the packet. @p sent: the radio sends it (false: e.g. no crystal;
-     *  its counter value is used up all the same). @return false if the power was cut. */
+     *  its counter value is used up all the same). A held packet (the rule says no) is not
+     *  sent and keeps its counter value. @return false if the power was cut. */
     bool packet(bool sent = true) {
-        if (!d.packet(ctr, pkts)) {
+        bool allowed = false;
+        if (!d.packet(ctr, &allowed)) {
             on = false;
             note("pkt %08X:CUT ", ctr);
             return false;
+        }
+        if (!allowed) {
+            held++;
+            note("pkt %08X:HELD ", ctr);
+            return true;
         }
         if (sent) {
             if (have && ctr <= maxSent)

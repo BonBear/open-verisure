@@ -15,6 +15,8 @@
 
 uint8_t emu_flash[EMU_FLASH_SIZE];
 uint8_t emu_stuck1[EMU_FLASH_SIZE];
+uint8_t emu_stuck0[EMU_FLASH_SIZE];
+unsigned emu_erase_fail;
 struct emu_stats emu_stats;
 char emu_last_error[256];
 
@@ -69,6 +71,8 @@ void emu_init(void) {
     }
     memset(emu_flash, 0xFF, sizeof(emu_flash));
     memset(emu_stuck1, 0, sizeof(emu_stuck1));
+    memset(emu_stuck0, 0, sizeof(emu_stuck0));
+    emu_erase_fail = 0;
     memset(&emu_stats, 0, sizeof(emu_stats));
     emu_last_error[0] = 0;
     s_cut_armed = false;
@@ -76,7 +80,8 @@ void emu_init(void) {
 }
 
 unsigned emu_state_size(void) {
-    return sizeof(emu_flash) + sizeof(emu_stuck1) + sizeof(emu_stats);
+    return sizeof(emu_flash) + sizeof(emu_stuck1) + sizeof(emu_stuck0) + sizeof(emu_erase_fail) +
+           sizeof(emu_stats);
 }
 
 void emu_save(void *buf) {
@@ -85,6 +90,10 @@ void emu_save(void *buf) {
     b += sizeof(emu_flash);
     memcpy(b, emu_stuck1, sizeof(emu_stuck1));
     b += sizeof(emu_stuck1);
+    memcpy(b, emu_stuck0, sizeof(emu_stuck0));
+    b += sizeof(emu_stuck0);
+    memcpy(b, &emu_erase_fail, sizeof(emu_erase_fail));
+    b += sizeof(emu_erase_fail);
     memcpy(b, &emu_stats, sizeof(emu_stats));
 }
 
@@ -94,6 +103,10 @@ void emu_restore(const void *buf) {
     b += sizeof(emu_flash);
     memcpy(emu_stuck1, b, sizeof(emu_stuck1));
     b += sizeof(emu_stuck1);
+    memcpy(emu_stuck0, b, sizeof(emu_stuck0));
+    b += sizeof(emu_stuck0);
+    memcpy(&emu_erase_fail, b, sizeof(emu_erase_fail));
+    b += sizeof(emu_erase_fail);
     memcpy(&emu_stats, b, sizeof(emu_stats));
 }
 
@@ -143,6 +156,8 @@ void emu_cut_word_at(unsigned op, uint8_t keep_lo, uint8_t keep_hi) {
 
 void emu_cut_clear(void) { s_cut_armed = false; }
 
+void emu_seed(uint32_t seed) { s_rng = seed ? seed : 0x9E3779B9u; }
+
 bool emu_cut_armed(void) { return s_cut_armed; }
 
 static void power_cut(void) {
@@ -175,23 +190,36 @@ static uint8_t rnd_bits(unsigned density) {
     }
 }
 
+/** A part of an erase: cells only move towards 1 (not the ones stuck at 0). Either the page is
+ *  erased up to some point, or random bits all over it have reached 1, or both. */
+static void erase_part(uint8_t *p, const uint8_t *stuck0) {
+    unsigned style = rnd() % 3, density = rnd() % 3;
+    unsigned upto = (style != 1) ? rnd() % EMU_PAGE_SIZE : 0;
+    for (unsigned i = 0; i < EMU_PAGE_SIZE; i++) {
+        if (i < upto)
+            p[i] = 0xFF;
+        else if (style != 0 || i == upto)
+            p[i] |= rnd_bits(density);
+        p[i] &= (uint8_t)~stuck0[i];
+    }
+}
+
 static void erase_page(unsigned page) {
     uint8_t *p = &emu_flash[page * EMU_PAGE_SIZE];
+    const uint8_t *s0 = &emu_stuck0[page * EMU_PAGE_SIZE];
     emu_stats.last_erase_op = emu_stats.ops;
     if (op_start()) {
-        /* A cut erase: cells only move towards 1. Either the page is erased up to some point,
-         * or random bits all over it have reached 1, or both. */
-        unsigned style = rnd() % 3, density = rnd() % 3;
-        unsigned upto = (style != 1) ? rnd() % EMU_PAGE_SIZE : 0;
-        for (unsigned i = 0; i < EMU_PAGE_SIZE; i++) {
-            if (i < upto)
-                p[i] = 0xFF;
-            else if (style != 0 || i == upto)
-                p[i] |= rnd_bits(density);
-        }
+        erase_part(p, s0);
         power_cut();
     }
-    memset(p, 0xFF, EMU_PAGE_SIZE);
+    if (emu_erase_fail) {
+        emu_erase_fail--;
+        emu_stats.failed_erases++;
+        erase_part(p, s0);
+        return;
+    }
+    for (unsigned i = 0; i < EMU_PAGE_SIZE; i++)
+        p[i] = (uint8_t)~s0[i];
     emu_stats.erases++;
 }
 

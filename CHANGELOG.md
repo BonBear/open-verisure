@@ -43,6 +43,13 @@ The first release (draft for `v1.0.0`). Everything below is new.
   drift ~+0.1 %).
 - Persistent packet counter in flash; the build script seeds a reflash from the gateway's counter.
 
+### Door sensor and camera (counter log)
+
+- The flash log of the packet counter never reuses a counter value, also after a power cut during
+  a flash write, a failed erase, worn cells or a missing crystal: each entry carries a 0-bit
+  count check, a packet goes out only if its block is logged, and a camera picture starts only
+  if its start packet is sent (emulated-flash tests in CI, bench-tested on both devices).
+
 ### Camera (`MD_CAM/`, CC1110 + Blackfin)
 
 - New Blackfin program (`snap_link`): capture from the OV7955, JPEG encoding, colour and
@@ -73,9 +80,6 @@ The first release (draft for `v1.0.0`). Everything below is new.
 
 ### Known issues
 
-- Rare flash faults can make the counter log reuse a counter value (found by the emulated-flash
-  tests); the fix is in pull request #19 (bench-tested on both devices, an overnight camera test
-  pending).
 - Once, after a 90 s power cut, the camera stayed awake without sending until it was reset
   (1 of 6 power cuts on 2026-11-19); pull request #22 starts the watchdog before the start-up so such a hang
   resets the chip.
