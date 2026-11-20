@@ -130,6 +130,15 @@ public:
      * DEFAULT_PORTAL_PASS in secrets.h (used while NVS has none).
      */
     static bool hasPortalPassword();
+
+    /**
+     * Password of the setup access point 'Verisure-Gateway': DEFAULT_AP_PASS from secrets.h
+     * (8-63 characters) or else 10 characters derived from this chip's factory MAC, so every
+     * gateway has its own. Shown on the serial console (boot, every minute in AP mode, and the
+     * command "appass"), never on the page.
+     * @param out at least 64 bytes
+     */
+    static void apPassword(char* out);
     /** @return false if the password is shorter than 8 or longer than 64 characters. */
     static bool setPortalPassword(const char* pw);
     /** @brief Constant-time check of a password against the stored hash. */

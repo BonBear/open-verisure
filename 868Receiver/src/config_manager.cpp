@@ -72,6 +72,10 @@
 #define DEFAULT_PORTAL_PASS ""
 #endif
 
+#ifndef DEFAULT_AP_PASS
+#define DEFAULT_AP_PASS ""
+#endif
+
 static Preferences s_prefs;
 static GatewayConfig s_config;
 static uint8_t s_portalHash[32];
@@ -219,6 +223,28 @@ static void portalHash(const char* pw, uint8_t out[32]) {
     mbedtls_sha256_update(&ctx, (const uint8_t*)pw, strlen(pw));
     mbedtls_sha256_finish(&ctx, out);
     mbedtls_sha256_free(&ctx);
+}
+
+void ConfigManager::apPassword(char* out) {
+    size_t n = strlen(DEFAULT_AP_PASS);
+    if (n >= 8 && n <= 63) {
+        strcpy(out, DEFAULT_AP_PASS);
+        return;
+    }
+    // 10 characters from SHA-256(label, factory MAC); no 0/O/1/l/i so it can be typed from the log
+    static const char alphabet[] = "abcdefghjkmnpqrstuvwxyz23456789";   // 31 characters
+    uint8_t mac[6] = {0}, h[32];
+    esp_efuse_mac_get_default(mac);
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts(&ctx, 0);
+    static const char label[] = "verisure-gateway-setup-ap:";
+    mbedtls_sha256_update(&ctx, (const uint8_t*)label, sizeof(label) - 1);
+    mbedtls_sha256_update(&ctx, mac, sizeof(mac));
+    mbedtls_sha256_finish(&ctx, h);
+    mbedtls_sha256_free(&ctx);
+    for (int i = 0; i < 10; i++) out[i] = alphabet[h[i] % (sizeof(alphabet) - 1)];
+    out[10] = '\0';
 }
 
 bool ConfigManager::hasPortalPassword() {

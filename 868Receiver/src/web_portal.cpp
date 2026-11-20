@@ -8,6 +8,7 @@
 #include "downlink.h"
 #include "ha_discovery.h"
 #include "portal_util.h"     // hostOnly, jsonGetString, jsonGetInt
+#include "ota_update.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
@@ -241,6 +242,21 @@ button.danger:hover { background: #b91c1c; }
       <button type="submit">Save & Reboot</button>
     </div>
   </form>
+
+  <!-- Firmware update over Wi-Fi -->
+  <div class="card">
+    <h2>&#11014;&#65039; Firmware Update</h2>
+    <div id="fw-info" style="color:var(--text-muted); font-size:13px; margin-bottom:10px;"></div>
+    <div class="input-row">
+      <input type="file" id="fw-file" accept=".bin,application/octet-stream">
+      <button type="button" onclick="uploadFirmware()">Upload &amp; Reboot</button>
+    </div>
+    <div id="fw-msg" style="font-size:13px; margin-top:8px;"></div>
+    <small style="color: var(--text-muted); font-size: 11px;">
+      The gateway's <code>firmware.bin</code> (<code>.pio/build/lolin_s2_mini/</code>). It is checked before it is
+      activated; a new firmware that does not reach Wi-Fi within 5 minutes is rolled back.
+    </small>
+  </div>
 </div>
 
 <div id="toast" class="toast"></div>
@@ -263,6 +279,46 @@ function post(url, json) {
     opts.body = JSON.stringify(json);
   }
   return fetch(url, opts);
+}
+
+// The firmware upload, like post() with X-Gateway, but with upload progress (XMLHttpRequest)
+function upload(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', url);
+    x.setRequestHeader('X-Gateway', '1');
+    x.setRequestHeader('Content-Type', 'application/octet-stream');
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+    x.onload = () => resolve({ status: x.status, text: x.responseText });
+    x.onerror = () => reject(new Error('network error'));
+    x.send(file);
+  });
+}
+
+async function uploadFirmware() {
+  const f = document.getElementById('fw-file').files[0];
+  const msg = document.getElementById('fw-msg');
+  if (!f) { msg.textContent = 'Choose a firmware .bin file first.'; return; }
+  if (!confirm('Install ' + f.name + ' (' + f.size + ' bytes) and reboot the gateway?')) return;
+  msg.style.color = 'var(--text)';
+  try {
+    const r = await upload('/api/ota', f, (n, t) => {
+      msg.textContent = n < t ? 'Uploading... ' + Math.floor(100 * n / t) + ' %' : 'Checking the image...';
+    });
+    let reply = {};
+    try { reply = JSON.parse(r.text); } catch (e) {}
+    if (r.status === 200 && reply.ok) {
+      msg.style.color = 'var(--success)';
+      msg.textContent = 'Firmware installed, the gateway reboots. Reloading in 15 s...';
+      setTimeout(() => { location.reload(); }, 15000);
+    } else {
+      msg.style.color = 'var(--danger)';
+      msg.textContent = 'Update refused (HTTP ' + r.status + '): ' + (reply.error || r.text) + '. The running firmware is unchanged.';
+    }
+  } catch (err) {
+    msg.style.color = 'var(--danger)';
+    msg.textContent = 'Upload failed (connection lost). The running firmware is unchanged.';
+  }
 }
 
 function showWarnings(list) {
@@ -322,6 +378,9 @@ async function fetchStatus() {
     document.getElementById('radio-rssi').innerText = data.radio.rssi + ' dBm';
     document.getElementById('radio-packets').innerText = data.radio.total_packets;
     document.getElementById('sensor-count').innerText = data.sensors.length;
+    if (data.firmware)
+      document.getElementById('fw-info').textContent = 'Running: slot ' + data.firmware.partition + ' (' +
+        data.firmware.state + '), MD5 ' + data.firmware.md5;
 
     // Prefill form on initial load
     if (!initialLoaded && data.config) {
@@ -524,7 +583,7 @@ static String jsonEscape(const String& in) {
  * Basic auth over plain HTTP can be read by anyone on the same network: see SECURITY.md. */
 enum Access { ACCESS_PUBLIC, ACCESS_READ, ACCESS_WRITE };
 
-static const char* COLLECT_HEADERS[] = {"Authorization", "Origin", "X-Gateway"};
+static const char* COLLECT_HEADERS[] = {"Authorization", "Origin", "X-Gateway", "X-OTA-MD5"};
 // Wrong passwords are counted per client IP: 5 within 10 min lock that client for 30 s. A login
 // by another client (the owner's open page polls every 2 s) does not reset an attacker's count,
 // and one client cannot lock out the others. Times use millis() differences (wrap-safe).
@@ -594,28 +653,46 @@ static bool passwordFromHeader() {
     return ok;
 }
 
-/** @return true if the request may go on; otherwise the error reply has been sent. */
+/* /api/ota checks access when the body starts, before the upload is read; its reply can only be
+ * sent after the body, so authorize() then keeps the reply here instead of sending it. */
+static bool s_deferReply = false;
+static int s_deferredCode = 0;
+static const char* s_deferredBody = "";
+static bool s_deferredAuthHeader = false;
+
+static void authReply(int code, const char* body, bool authHeader = false) {
+    if (s_deferReply) {
+        s_deferredCode = code;
+        s_deferredBody = body;
+        s_deferredAuthHeader = authHeader;
+        return;
+    }
+    if (authHeader) s_server.sendHeader("WWW-Authenticate", "Basic realm=\"Verisure Gateway\", charset=\"UTF-8\"");
+    s_server.send(code, "application/json", body);
+}
+
+/** @return true if the request may go on; otherwise the error reply has been sent (or deferred). */
 static bool authorize(Access access) {
     if (!hostAllowed()) {
-        s_server.send(403, "application/json", "{\"error\":\"bad_host\"}");
+        authReply(403, "{\"error\":\"bad_host\"}");
         return false;
     }
     if (access == ACCESS_WRITE && (s_server.header("X-Gateway") != "1" || !originAllowed())) {
-        s_server.send(403, "application/json", "{\"error\":\"csrf\",\"message\":\"POST with the header X-Gateway: 1 from this host\"}");
+        authReply(403, "{\"error\":\"csrf\",\"message\":\"POST with the header X-Gateway: 1 from this host\"}");
         return false;
     }
     if (access == ACCESS_PUBLIC) return true;
     if (!ConfigManager::hasPortalPassword()) {
         if (s_isApMode) return true;          // first setup in the setup access point
-        s_server.send(403, "application/json",
-                      "{\"error\":\"no_portal_password\",\"message\":\"No web portal password is set. Set one on the "
-                      "gateway's serial console (portalpass <password>) or in the setup access point.\"}");
+        authReply(403,
+                  "{\"error\":\"no_portal_password\",\"message\":\"No web portal password is set. Set one on the "
+                  "gateway's serial console (portalpass <password>) or in the setup access point.\"}");
         return false;
     }
     AuthFailSlot* slot = authSlot(s_server.client().remoteIP());
     if (slot->locked) {
         if (millis() - slot->since < AUTH_LOCK_MS) {
-            s_server.send(429, "application/json", "{\"error\":\"locked\",\"message\":\"Too many wrong passwords, wait 30 s\"}");
+            authReply(429, "{\"error\":\"locked\",\"message\":\"Too many wrong passwords, wait 30 s\"}");
             return false;
         }
         slot->locked = false;                 // lock over: start counting again
@@ -637,8 +714,7 @@ static bool authorize(Access access) {
                           (unsigned)AUTH_MAX_FAILS, s_server.client().remoteIP().toString().c_str());
         }
     }
-    s_server.sendHeader("WWW-Authenticate", "Basic realm=\"Verisure Gateway\", charset=\"UTF-8\"");
-    s_server.send(401, "application/json", "{\"error\":\"auth\"}");
+    authReply(401, "{\"error\":\"auth\"}", true);
     return false;
 }
 
@@ -689,6 +765,10 @@ static void handleApiStatus() {
     json += "\"marcstate\":\"0x" + String(s_cachedMarc, HEX) + "\",";
     json += "\"total_packets\":" + String(s_cachedPackets) + "},";
 
+    json += "\"diag\":{";       // counters since boot (gateway_diag.h)
+    gatewayDiagAppendJson(json, gatewayDiagSample());
+    json += "},";
+
     json += "\"mqtt\":{";
     json += "\"connected\":" + String(mqttIsConnected() ? "true" : "false") + ",";
     json += "\"status\":\"" + jsonEscape(mqttGetStatusString()) + "\"},";
@@ -704,6 +784,8 @@ static void handleApiStatus() {
     json += "\"master_key_example\":" + String(ConfigManager::masterKeyIsExample() ? "true" : "false") + ",";
     json += "\"portal_password_set\":" + String(ConfigManager::hasPortalPassword() ? "true" : "false") + "},";
 
+    json += "\"firmware\":{\"md5\":\"" + otaFirmwareMd5() + "\",\"partition\":\"" + otaRunningPartition() +
+            "\",\"state\":\"" + otaAppState() + "\"},";
     json += "\"armed\":" + String(downlinkArmed() ? "true" : "false") + ",";
     json += "\"sensors\":[";
     int count = sensorRegistryGetCount();
@@ -940,8 +1022,98 @@ static void handleApiPicture() {
     s_server.send(200, "application/json", "{\"ok\":true}");
 }
 
+/* POST /api/ota: firmware update. The image is the raw request body (Content-Type
+ * application/octet-stream, Content-Length required), optional header X-OTA-MD5: <32 hex>.
+ * The WebServer hands the body over in ~1.4 kB pieces (handleApiOtaBody) and calls handleApiOta
+ * after the last one. Access is checked on the first piece, before anything is written; a refused
+ * upload is read to its end (and ignored) so that the client still gets the error reply. A dropped
+ * connection aborts the update. The running firmware stays in every error case. */
+static bool s_otaBody = false;          // this request's body came as a raw stream
+static bool s_otaAllowed = false;
+static bool s_otaReplied = false;       // refused at the start: reply sent, connection closed
+static void (*s_busyHook)() = nullptr;
+
+void webPortalSetBusyHook(void (*hook)()) { s_busyHook = hook; }
+
+/* A refused upload is answered at once and its connection closed, so the WebServer stops
+ * reading the body: otherwise a client announcing a huge Content-Length and sending a byte every
+ * few seconds would hold handleClient() (and so MQTT, Wi-Fi reconnect, the CLI) indefinitely,
+ * without any password (review 2026-11-19). */
+static void otaRefuse(int code, const String& body) {
+    s_server.send(code, "application/json", body);
+    s_otaReplied = true;
+    s_otaAllowed = false;
+    s_server.client().stop();
+}
+
+static void handleApiOtaBody() {
+    if (!s_server.hasRaw()) return;     // multipart form: refused in handleApiOta
+    HTTPRaw& raw = s_server.raw();
+    switch (raw.status) {
+        case RAW_START:
+            s_otaBody = true;
+            s_otaReplied = false;
+            s_deferReply = true;
+            s_otaAllowed = authorize(ACCESS_WRITE);
+            s_deferReply = false;
+            if (!s_otaAllowed) {
+                authReply(s_deferredCode, s_deferredBody, s_deferredAuthHeader);
+                s_otaReplied = true;
+                s_server.client().stop();
+            } else if (s_isApMode) {
+                // in the setup AP (maybe without a portal password yet) no update: it also
+                // could not be confirmed there (no station Wi-Fi) and would be rolled back
+                otaRefuse(403, "{\"ok\":false,\"error\":\"No firmware update in the setup access point\"}");
+            } else if (s_rebootAt) {
+                // an update was just activated: a second one would overwrite the selected slot
+                otaRefuse(409, "{\"ok\":false,\"error\":\"Rebooting into the new firmware, try again afterwards\"}");
+            } else if (!otaBegin((size_t)max(0, s_server.clientContentLength()), s_server.header("X-OTA-MD5").c_str())) {
+                otaRefuse(400, "{\"ok\":false,\"error\":\"" + jsonEscape(otaError()) + "\"}");
+            }
+            break;
+        case RAW_WRITE:
+            if (s_otaAllowed) otaWrite(raw.buf, raw.currentSize);
+            break;
+        case RAW_END:
+            break;
+        case RAW_ABORTED:               // connection lost (or closed by otaRefuse): nothing activated
+            if (s_otaAllowed) otaAbort();
+            s_otaBody = false;
+            s_otaAllowed = false;
+            s_otaReplied = false;
+            break;
+    }
+    // the upload blocks loop() until it is complete: keep reading the radio meanwhile
+    if (s_busyHook) s_busyHook();
+}
+
+static void handleApiOta() {
+    if (!s_otaBody) {
+        if (!authorize(ACCESS_WRITE)) return;
+        s_server.send(415, "application/json", "{\"ok\":false,\"error\":\"Send the image as the raw request body (Content-Type: application/octet-stream)\"}");
+        return;
+    }
+    s_otaBody = false;
+    if (s_otaReplied) {                 // already answered at the start
+        s_otaReplied = false;
+        return;
+    }
+    if (!s_otaAllowed) {
+        authReply(s_deferredCode, s_deferredBody, s_deferredAuthHeader);
+        return;
+    }
+    s_otaAllowed = false;
+    if (!otaFinish()) {
+        s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"" + jsonEscape(otaError()) + "\"}");
+        return;
+    }
+    s_server.send(200, "application/json", "{\"ok\":true,\"message\":\"Firmware written and verified, rebooting\"}");
+    s_rebootAt = millis() + 1500;
+}
+
 void webPortalInit() {
     sensorRegistryInit();
+    otaInit();
     ConfigManager::begin();
     const GatewayConfig& cfg = ConfigManager::get();
 
@@ -968,10 +1140,15 @@ void webPortalInit() {
     } else {
         Serial.println("[Wi-Fi] No Wi-Fi SSID configured. Starting Access Point 'Verisure-Gateway'...");
         WiFi.mode(WIFI_AP);
-        WiFi.softAP("Verisure-Gateway", "12345678");
+        // every gateway has its own AP password (see ConfigManager::apPassword): with a common
+        // one, anyone who recorded the setup could read the settings typed on the page
+        char apPass[64];
+        ConfigManager::apPassword(apPass);
+        WiFi.softAP("Verisure-Gateway", apPass);
         s_dnsServer.start(53, "*", WiFi.softAPIP());
         s_isApMode = true;
-        Serial.printf("[Wi-Fi] AP started! IP: %s (Password: 12345678)\n", WiFi.softAPIP().toString().c_str());
+        Serial.printf("[Wi-Fi] AP started! IP: %s (Password: %s)\n", WiFi.softAPIP().toString().c_str(), apPass);
+        memset(apPass, 0, sizeof(apPass));
     }
 
     // Web routes (access rules: authorize())
@@ -988,6 +1165,7 @@ void webPortalInit() {
     s_server.on("/api/camera_large.jpg", HTTP_GET, handleApiCameraLargeJpg);
     s_server.on("/api/camera_test", HTTP_POST, handleApiCameraTest);
     s_server.on("/api/picture", HTTP_POST, handleApiPicture);
+    s_server.on("/api/ota", HTTP_POST, handleApiOta, handleApiOtaBody);
 
     // Captive portal probes
     s_server.on("/generate_204", HTTP_GET, handleRoot);
@@ -1009,6 +1187,15 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
 
     if (s_isApMode) {
         s_dnsServer.processNextRequest();
+        // repeat the AP password on the serial console for whoever opens it after the boot
+        static unsigned long lastApHint = 0;
+        if (millis() - lastApHint >= 60000UL) {
+            lastApHint = millis();
+            char apPass[64];
+            ConfigManager::apPassword(apPass);
+            Serial.printf("[Wi-Fi] Setup access point 'Verisure-Gateway', password: %s, page http://192.168.4.1\n", apPass);
+            memset(apPass, 0, sizeof(apPass));
+        }
     }
 
     // Non-blocking Wi-Fi monitor & reconnect: WiFi.begin() returns at once, so the radio FIFO is
@@ -1018,6 +1205,7 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
     static unsigned long lastAttempt = millis();
     const unsigned long reconnectInterval = 20000;   // the driver's auto-reconnect usually wins
 
+    otaLoop(status == WL_CONNECTED);
     if (status == WL_CONNECTED) {
         if (!wasConnected) {
             wasConnected = true;

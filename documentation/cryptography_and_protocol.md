@@ -78,12 +78,25 @@ The gateway applies a multi-stage authentication filter:
      and every 256 packets, so the counter never goes back, not even after a reset.
    * The gateway accepts a packet only if its counter is greater than the last accepted one.
      There is no exception for resets or tamper.
-   * The log entries carry a check byte, are read back after writing and are skipped when a
-     power loss cut a write or an erase short; the two pages are used in turn, so an erase never
-     loses the newest entry. A boot skips one block (newest logged + 2), and a block whose entry
-     could not be written is retried before each of its packets, so packets sent in an unlogged
-     block are never reused after a reset. After a watchdog reset the device first sleeps ~30 s,
-     so a fault that keeps resetting it cannot wear out the log pages.
+   * The log entries are 4 bytes `[b0, check, b1, b2]` (block = b2:b1:b0, at most 0xFEFFFF);
+     since 2026-11-19 the check byte is the number of 0 bits in b0, b1 and b2 (a Berger code; it
+     was `b0 ^ b1 ^ b2 ^ 0xA5`). A power loss during a write or an erase, and a worn cell, only
+     leave bits at 1, which such a check always catches, so a cut entry is skipped and never
+     read as a higher block. Entries are read back after writing, a slot that is not blank is
+     never written, and the two pages are used in turn: the other page is erased only with the
+     crystal running and only once the current page holds the newest entry, so an erase never
+     loses it (a page without a valid entry yet is erased again when its erase did not finish). A boot skips one block (newest logged + 2), and a packet is sent only if its block
+     is at most the newest logged block + 1; otherwise (its entry could not be written) it is
+     held and the entry retried before the next packet. So no counter value is ever reused
+     after a reset; above block 0xFEFFFF the device holds every packet instead of wrapping. The
+     camera takes no picture while its start packet (whose counter tags the chunks) would be
+     held. Not covered (each needs a fault outside the flash specification): an entry that reads
+     back and loses its charge later, and an erase that pre-programs cells to 0 (a cut one could
+     leave a valid-looking entry; it can only raise the counter, so the device skips ahead or
+     holds its packets, it does not reuse a counter).
+     After a watchdog reset the device first sleeps ~30 s, so a fault that keeps resetting it
+     cannot wear out the log pages. Reflashing erases the log, so the format change needs no
+     migration.
    * The gateway keeps the last accepted counter per device in NVS (namespace `replay`), written
      for every accepted packet but at most every 2 s, so the floor survives a gateway restart.
      Only packets accepted less than 2 s before a gateway restart can be replayed after it.

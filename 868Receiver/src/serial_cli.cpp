@@ -12,6 +12,7 @@
 #include "downlink.h"
 #include "crypto.h"
 #include "image_receiver.h"
+#include "gateway_diag.h"
 #include <WiFi.h>
 #include <SPI.h>
 #include <ELECHOUSE_CC1101_SRC_DRV.h>
@@ -42,6 +43,7 @@ static void printHelp() {
     Serial.println("                               then only its boot packet of blocks 1..block (default 8) is taken");
     Serial.println("  freqoffset [n]             - Show or set the CC1101 frequency correction (FSCTRL0 steps)");
     Serial.println("  portalpass [<password>|clear] - Show, set (8-64 characters) or clear the web portal password");
+    Serial.println("  appass                     - Show the setup access point's password (unique per gateway)");
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
     Serial.println("-----------------------------------\n");
@@ -136,6 +138,17 @@ static void printStatus() {
     cryptoKeyCheckValue(cfg.masterKey, kcv);
     Serial.printf("  Master Key   : set (check value %s)\n", kcv);   // never print the key
     Serial.printf("  Freq. offset : %d (FSCTRL0, x 1.587 kHz)\n", cfg.freqOffset);
+    const GatewayDiagSample ds = gatewayDiagSample();
+    const GatewayDiag& d = g_gatewayDiag;
+    Serial.printf("  Last reset   : %s\n", ds.resetReason);
+    Serial.printf("  Free heap    : %lu B (minimum %lu B)\n", (unsigned long)ds.freeHeap,
+                  (unsigned long)ds.minFreeHeap);
+    Serial.printf("  RX (boot)    : CRC OK %lu | auth OK %lu | auth rejected %lu | replay dropped %lu\n",
+                  (unsigned long)d.rxCrcOk, (unsigned long)d.authOk, (unsigned long)d.authFail,
+                  (unsigned long)d.replayDrop);
+    Serial.printf("                 stale picture chunks %lu | session table full %lu | last rejected %s\n",
+                  (unsigned long)d.picStale, (unsigned long)d.sessionFull,
+                  d.lastRejectedId[0] ? d.lastRejectedId : "-");
     Serial.printf("  Sensors      : %d registered\n", sensorRegistryGetCount());
 
     int count = sensorRegistryGetCount();
@@ -298,6 +311,11 @@ static void processCommand(char* cmd) {
                 Serial.printf("[CLI] Frequency offset set to %ld (%+.1f kHz) and saved.\n", n, n * 1.587);
             }
         }
+    } else if (strcmp(cmd, "appass") == 0) {
+        char apPass[64];
+        ConfigManager::apPassword(apPass);
+        Serial.printf("[CLI] Setup access point 'Verisure-Gateway' password: %s\n", apPass);
+        memset(apPass, 0, sizeof(apPass));
     } else if (strcmp(cmd, "portalpass") == 0) {
         Serial.printf("[CLI] Web portal password: %s\n", ConfigManager::hasPortalPassword() ? "set" : "NOT SET");
     } else if (strcmp(cmd, "portalpass clear") == 0) {

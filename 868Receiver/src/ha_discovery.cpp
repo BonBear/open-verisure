@@ -78,6 +78,19 @@ static const HaEntityDef S_SENSOR_ENTITIES[] = {
         "diagnostic"
     },
     {
+        // the door sensor sets its low-battery flag below 2.4 V (VerisureDoorSensor/main.c)
+        "low_battery",
+        "binary_sensor",
+        "Low Battery",
+        "battery",
+        nullptr,
+        nullptr,
+        "{{ value_json.low_battery }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
         "rssi",
         "sensor",
         "Signal Strength",
@@ -218,6 +231,139 @@ static const HaEntityDef S_GATEWAY_ENTITIES[] = {
         "measurement",
         "sensors",
         "{{ value_json.sensors }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    // Diagnostics since the last boot (gateway_diag.h): counters restart at 0 after a reboot
+    {
+        "uptime",
+        "sensor",
+        "Uptime",
+        "duration",
+        "total_increasing",
+        "s",
+        "{{ value_json.uptime }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "reset_reason",
+        "sensor",
+        "Last Reset Reason",
+        nullptr,
+        nullptr,
+        nullptr,
+        "{{ value_json.reset_reason }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "free_heap",
+        "sensor",
+        "Free Heap",
+        "data_size",
+        "measurement",
+        "B",
+        "{{ value_json.free_heap }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "min_free_heap",
+        "sensor",
+        "Minimum Free Heap",
+        "data_size",
+        "measurement",
+        "B",
+        "{{ value_json.min_free_heap }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "rx_crc_ok",
+        "sensor",
+        "Packets CRC OK",
+        nullptr,
+        "total_increasing",
+        "pkts",
+        "{{ value_json.rx_crc_ok }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "auth_ok",
+        "sensor",
+        "Packets Authenticated",
+        nullptr,
+        "total_increasing",
+        "pkts",
+        "{{ value_json.auth_ok }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "auth_fail",
+        "sensor",
+        "Packets Rejected (Authentication)",
+        nullptr,
+        "total_increasing",
+        "pkts",
+        "{{ value_json.auth_fail }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "replay_drop",
+        "sensor",
+        "Packets Dropped (Replay)",
+        nullptr,
+        "total_increasing",
+        "pkts",
+        "{{ value_json.replay_drop }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "pic_stale",
+        "sensor",
+        "Picture Chunks Dropped (Stale)",
+        nullptr,
+        "total_increasing",
+        "chunks",
+        "{{ value_json.pic_stale }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "session_full",
+        "sensor",
+        "Session Table Full",
+        nullptr,
+        "total_increasing",
+        "events",
+        "{{ value_json.session_full }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "last_rejected_id",
+        "sensor",
+        "Last Rejected Device",
+        nullptr,
+        nullptr,
+        nullptr,
+        "{{ value_json.last_rejected_id }}",
         nullptr,
         nullptr,
         "diagnostic"
@@ -411,12 +557,14 @@ String haDiscoveryBuildGatewayPayload(const HaEntityDef* def, const char* baseTo
     return p;
 }
 
-String haStateBuildGatewayPayload(int radioRssi, uint8_t marcstate, uint32_t totalPackets, int activeSensors) {
+String haStateBuildGatewayPayload(int radioRssi, uint8_t marcstate, uint32_t totalPackets, int activeSensors,
+                                  const GatewayDiagSample& diag) {
     String p = "{";
     p += "\"radio_rssi\":" + String(radioRssi) + ",";
     p += "\"marcstate\":" + String(marcstate) + ",";
     p += "\"packets\":" + String(totalPackets) + ",";
-    p += "\"sensors\":" + String(activeSensors);
+    p += "\"sensors\":" + String(activeSensors) + ",";
+    gatewayDiagAppendJson(p, diag);
     p += "}";
     return p;
 }
