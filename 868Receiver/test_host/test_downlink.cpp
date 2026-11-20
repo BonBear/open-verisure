@@ -90,6 +90,72 @@ TEST(downlink_resend_request_goes_out_once) {
     CHECK_EQ(downlinkCommandForPoll("CAMERA01", 0, &first, &map), 0);
 }
 
+// Bench 2026-11-20: a new picture command must not go out before a pending resend request, or the
+// camera takes the answer as the acknowledgement of the open picture and it ends with holes.
+TEST(downlink_resend_goes_before_an_unsent_command) {
+    downlinkInit();
+    CameraModel c;
+    REQUIRE(downlinkRequestPicture("CAMERA01", 0xD3));
+    REQUIRE(downlinkRequestResend("CAMERA01", 184, 0x3));
+    uint16_t first = 0;
+    uint32_t map = 0;
+    CHECK_EQ(downlinkCommandForPoll("CAMERA01", 0, &first, &map), DOWNLINK_CMD_RESEND);
+    CHECK_EQ(first, 184);
+    CHECK_EQ(map, 0x3);
+    CHECK_EQ(c.poll(), 0xD3);           // the next ACK-free poll gets the command
+    CHECK_EQ(c.poll(), 0);
+}
+
+// Also a command already sent (no ACK yet: the camera did not receive it) waits for the resend.
+TEST(downlink_resend_goes_before_a_sent_command) {
+    downlinkInit();
+    CameraModel c;
+    REQUIRE(downlinkRequestPicture("CAMERA01", 0xD3));
+    CHECK_EQ(c.poll(true), 0xD3);       // sent, answer lost: no ACK yet
+    REQUIRE(downlinkRequestResend("CAMERA01", 24, 0x1));
+    uint16_t first = 0;
+    uint32_t map = 0;
+    CHECK_EQ(downlinkCommandForPoll("CAMERA01", 0, &first, &map), DOWNLINK_CMD_RESEND);
+    CHECK_EQ(first, 24);
+    CHECK_EQ(map, 0x1);
+    CHECK_EQ(c.poll(), 0xD3);           // the next ACK-free poll gets the command
+    CHECK_EQ(c.poll(), 0);              // its ACK clears it
+}
+
+// The bench sequence of 2026-11-20 (D1 full picture with holes, D3 queued meanwhile).
+TEST(downlink_bench_sequence_resend_rounds_before_the_queued_command) {
+    downlinkInit();
+    CameraModel c;
+    uint16_t first = 0;
+    uint32_t map = 0;
+    REQUIRE(downlinkRequestPicture("CAMERA01", 0xD1));
+    CHECK_EQ(c.poll(), 0xD1);           // delivered, the camera's ACK is set
+    REQUIRE(downlinkRequestPicture("CAMERA01", 0xD3));   // replaces D1 in the slot
+    REQUIRE(downlinkRequestResend("CAMERA01", 24, 0x3));
+    CHECK_EQ(downlinkCommandForPoll("CAMERA01", DOWNLINK_STATE_ACK, &first, &map), DOWNLINK_CMD_RESEND);
+    CHECK_EQ(first, 24);
+    CHECK_EQ(map, 0x3);
+    c.ack = false;                      // a 0xF0 answer clears the camera's ACK
+    REQUIRE(downlinkRequestResend("CAMERA01", 184, 0x3));   // round 2
+    CHECK_EQ(c.poll(), DOWNLINK_CMD_RESEND);
+    CHECK_EQ(c.poll(), 0xD3);           // no ACK in the poll: the command goes out now
+    CHECK_EQ(c.poll(), 0);              // the poll with D3's ACK clears it
+}
+
+TEST(downlink_cancel_resend_keeps_the_command_and_frees_the_slot) {
+    downlinkInit();
+    CameraModel c;
+    REQUIRE(downlinkRequestPicture("CAMERA01", 0xD3));
+    REQUIRE(downlinkRequestResend("CAMERA01", 10, 0x1));
+    downlinkCancelResend("CAMERA01");
+    CHECK(!downlinkResendPending("CAMERA01"));
+    CHECK_EQ(c.poll(), 0xD3);           // the command is untouched
+    downlinkInit();
+    REQUIRE(downlinkRequestResend("CAMERA01", 10, 0x1));
+    downlinkCancelResend("CAMERA01");
+    CHECK_EQ(c.poll(), 0);              // nothing left to send
+}
+
 TEST(downlink_rejects_unknown_commands) {
     downlinkInit();
     CHECK(!downlinkRequestPicture("CAMERA01", 0xD0));

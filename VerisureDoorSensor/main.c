@@ -117,8 +117,8 @@ volatile __xdata uint16_t g_tx_fail = 0;
  *       where a longer wait is harmless.
  */
 /* Watchdog (WDCTL, 32 kHz clock, also runs in PM2): resets the chip if it is not fed for ~1 s,
- * e.g. if the CPU never wakes from PM2 again. Started in main(); fed after every sleep and in
- * delay_ms. Feeding before it is started has no effect. */
+ * e.g. if the CPU never wakes from PM2 again. Started first thing in main(); fed after every
+ * sleep, in delay_ms and in the flash routines. Feeding before it is started has no effect. */
 #define WDT_FEED() do { WDCTL = 0xA8; WDCTL = 0x58; } while (0)
 
 void delay_ms(uint16_t ms) {
@@ -752,6 +752,12 @@ void main(void) {
     uint8_t rst_cause = (boot_sleep >> 3) & 0x03;
     bool is_button_reset = (rst_cause == 0x01);
     bool is_por_reset    = (rst_cause == 0x00);
+    // watchdog on first (~1 s; cannot be stopped): the start-up (clock, battery guard, counter
+    // log, radio) feeds it in delay_ms, after every sleep and in the flash routines, so a hang
+    // there (e.g. an unbounded flash wait) resets the chip instead of leaving it awake for good.
+    // Seen once on the camera (same start-up), 2026-11-19: after a power-on it stayed at 6.4 mA without a packet.
+    // delay_ms runs ~2.75x slower while it feeds, so the start-up delays now take longer.
+    WDCTL = 0x08;
 
     // 1. Initialize GPIO pins immediately
     setup_gpio();
@@ -812,8 +818,7 @@ void main(void) {
     // CPU switches to the crystal (clock_xosc) and stays on it for the whole packet, ADC, flash
     // and radio, as before. (Keeping the CPU on the RCOSC and starting the crystal only for the
     // transmission left the radio silent: no TX current, nothing at the gateway.)
-    WDCTL = 0x08;                    // watchdog on, ~1 s; cannot be stopped
-    sleep_timer_init();
+    sleep_timer_init();             // the watchdog runs since the start of main()
 
     while (1) {
         bool send_immediate = false;

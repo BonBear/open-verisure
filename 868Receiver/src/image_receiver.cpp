@@ -115,6 +115,14 @@ static void requestNewBase(void) {
 
 static bool rsHave(uint16_t i) { return (s_rsHave[i >> 3] >> (i & 7)) & 1; }
 
+// End the resend (completed or given up): also drop a request still queued in the downlink, so
+// it does not go out later, ahead of a queued command, and ask for chunks of a picture the
+// gateway no longer completes.
+static void rsCancel(void) {
+    if (s_rsActive) downlinkCancelResend(s_rsDevice);
+    s_rsActive = false;
+}
+
 // Ask for the missing chunks among the 32 from the first missing one (a bitmap, so chunks the
 // gateway already has are not sent again; with the end not seen yet the chunks after the
 // known data count as missing), or finish.
@@ -140,7 +148,7 @@ static void rsRequestNext(void) {
     if (first == 0xFFFF) {               // complete: store and publish it as a normal picture
         Serial.printf("[ImageReceiver] Picture from %s complete after resend: %u bytes, %u round(s), %lu ms\n",
                       s_rsDevice, (unsigned int)s_rsLen, s_rsRounds, millis() - s_rsStart);
-        s_rsActive = false;
+        rsCancel();
         if (s_lastIdx >= 0) return;      // a new picture is coming in (cannot happen: it cancels)
         memcpy(s_imgBuf, s_rsImg, s_rsLen);
         s_haveCount = s_rsChunks;
@@ -151,12 +159,12 @@ static void rsRequestNext(void) {
         return;
     }
     if (!map) {                          // nothing addressable (picture at JPEG_MAX_CHUNKS)
-        s_rsActive = false;
+        rsCancel();
         return;
     }
     if (++s_rsRounds > RS_MAX_ROUNDS || millis() - s_rsStart > RS_TOTAL_MS) {
         Serial.printf("[ImageReceiver] Resend for %s stopped after %u rounds\n", s_rsDevice, s_rsRounds - 1);
-        s_rsActive = false;
+        rsCancel();
         return;
     }
     s_rsReqEnd = last;
@@ -302,7 +310,7 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
                                bool isFirst, bool isLast, const uint8_t* data) {
     if (!deviceId || !data || chunkLen == 0 || chunkLen > JPEG_CHUNK || chunkIdx >= JPEG_MAX_CHUNKS ||
         (size_t)chunkIdx * JPEG_CHUNK + chunkLen > MAX_IMAGE_SIZE) return;
-    if (s_rsActive) s_rsActive = false;   // a new picture: the stored one may change (deltas)
+    rsCancel();                           // a new picture: the stored one may change (deltas)
     if (s_dropEvery && ++s_dropCount % s_dropEvery == 0) return;   // test
     if (!s_imgBuf) {
         s_imgBuf = allocBig(MAX_IMAGE_SIZE);
@@ -369,7 +377,7 @@ void imageReceiverLoop(void) {
     // now - s_rsTime would wrap and give it up at once (seen when a picture's end was lost)
     if (s_rsActive && millis() - s_rsTime > RS_TIMEOUT_MS) {
         Serial.printf("[ImageReceiver] Resend for %s given up (no answer)\n", s_rsDevice);
-        s_rsActive = false;
+        rsCancel();
     }
 }
 

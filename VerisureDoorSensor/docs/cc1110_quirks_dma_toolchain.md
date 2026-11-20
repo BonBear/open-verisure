@@ -38,7 +38,7 @@ To guarantee that `RFD` never suffers an underflow, TI's reference code uses DMA
 
 ---
 
-## 2. Toolchain & Automation in Antigravity
+## 2. Toolchain & Automation in OpenVerisure
 
 ### 2.1 SDCC Compilation
 `build_and_flash.py` compiles with `--model-small` and these memory limits for the CC1110F32 (32 KB flash, 4 KB XRAM). Code is limited to `--code-size 0x7800` because flash pages 30-31 (`0x7800`-`0x7FFF`) hold the persistent packet counter log (see "Persistent packet counter" in `main.c`); the linker then fails instead of placing code there.

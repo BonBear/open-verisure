@@ -89,3 +89,22 @@ The memory bank is grouped by topic (CC1110 general, RF link, crypto/replay/prot
    No long code blocks or raw logs may be dumped into the memory bank.
 4. **Updating:** `embedded_coder` or `Orchestrator` updates the file after the solution has been verified by `qa_tester`.
 
+
+---
+
+## 5. Running the Workflow in Claude Code
+
+The four roles are defined as Claude Code subagents in `.claude/agents/`. The main Claude Code session is the Orchestrator and runs the workflow in section 2 by delegating to them:
+
+| Role | Claude Code agent | Model / effort | Tools |
+| :--- | :--- | :--- | :--- |
+| Hardware & Protocol Analyst | `hardware_analyst` | `opus`, max | Read, Grep, Glob, WebFetch, WebSearch |
+| Embedded Coder | `embedded_coder` | `sonnet` | Read, Write, Edit, Grep, Glob |
+| QA & Test Runner | `qa_tester` | `haiku` | Bash, Read, Grep, Glob |
+| Security & Code Reviewer | `code_reviewer` | `opus`, max | Read, Grep, Glob |
+
+- `opus` replaces `pro` and `sonnet`/`haiku` replace `flash` from section 1.
+- `code_reviewer` has no shell, so the Orchestrator saves the diff under `scratch/` (ignored by git) and passes its path.
+- `qa_tester`'s limits are enforced, not only prompted: `.claude/settings.json` runs `.claude/hooks/qa_bash_guard.py` before every Bash call, and when the caller is `qa_tester` it blocks git commands other than read-only ones, `pio` upload targets, `build_and_flash*.py` without `--compile-only`, OTA, esptool, the bench flashers and nested shells. Other agents and the main session are not affected. Tests: `tests/test_qa_bash_guard.py`.
+- Only the Orchestrator commits, pushes and opens PRs; `main` is protected, so every change goes through a PR with green CI.
+- Claude Code loads `.claude/agents/` at session start; start a new session after changing these files.

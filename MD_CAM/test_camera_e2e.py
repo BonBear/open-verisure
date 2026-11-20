@@ -13,9 +13,12 @@ never printed. Lines on the gateway log that could show a key (32 hex digits) ar
 
 Checks:
   1. the camera polls (the gateway answers with a downlink)
-  2. picture/set D1 -> a full 320x240 JPEG with no missing chunks
-  3. picture/set D3 right after -> a delta (queued so it goes out with the poll after the
-     picture, within BF_KEEP_ON_S while the Blackfin still holds the reference)
+  2. picture/set D1 -> a full 320x240 JPEG with no missing chunks (or
+     completed by the gateway's resend: "complete after resend")
+  3. picture/set D3 right after -> a delta (queued during D1's delivery; the poll after the
+     picture carries D1's ACK, so the ACK rule holds D3 back and it reaches a still-powered
+     Blackfin only when D1 needed a resend, whose 0xF0 answers clear the ACK; otherwise it is
+     taken cold and is a full picture; see TODO.md)
   4. a poll follows right after a picture (the camera polls after every picture)
   5. alarm/set ON reaches the camera (armed 1), alarm/set OFF too (armed 0)
   6. the full picture came in 56-byte packets (type 0x82: 40 bytes each, so ~len/40 chunks)
@@ -46,6 +49,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SECRETS = os.path.join(HERE, "..", "868Receiver", "src", "secrets.h")
 CONFIG_H = os.path.join(HERE, "firmware", "config.h")
 HEX32 = re.compile(r"\b[0-9A-Fa-f]{32}\b")
+DELIVER_WAIT_S = 150    # a disarmed camera polls every 120 s (BF_POLL_DISARMED_S), plus margin
+RESEND_WAIT_S = 75      # the gateway's resend rounds end after RS_TOTAL_MS (60 s), plus the last round
 
 
 def jpeg_components(j: bytes) -> int:
@@ -174,30 +179,52 @@ def main() -> int:
     r = log.wait(poll_rx, 75, m)
     check("poll", r is not None, r[1].split("] ", 1)[1] if r else "no downlink in 75 s")
 
-    # 2-8. picture chain. The Blackfin stays on only BF_KEEP_ON_S (15 s) after a picture, and
-    # a queued command goes out with the next poll answer, which follows right after a
-    # picture. So each command is published as soon as the previous one has been delivered:
-    # it then reaches the camera with the poll after that picture, while the reference for
-    # deltas is still in the Blackfin's SDRAM.
+    # 2-8. picture chain. The Blackfin stays on only BF_KEEP_ON_S (15 s) after a picture. Each
+    # command is published as soon as the previous one has been delivered, so it can reach the
+    # camera with the poll right after that picture while the reference for deltas is still in
+    # the Blackfin's SDRAM. The ACK rule usually prevents that: a command goes out first on a
+    # poll without the ACK bit, and the poll after a picture carries the previous command's ACK.
+    # Only resend rounds (0xF0 answers clear the ACK) let it out in time; otherwise the camera
+    # takes it cold (see TODO.md, "Command queued during delivery").
     chain = ["D1", "D3", "D4", "D3", "D5", "D6"]
     m = log.mark()
     publish(f"{dev}/picture/set", chain[0])
     pics = []
+    resend_note = ""                 # how the D1 picture was completed, if by resend
     for i, cmd in enumerate(chain):
-        d = log.wait(poll_rx + r".*cmd 0x" + cmd, 120, m)
+        d = log.wait(poll_rx + r".*cmd 0x" + cmd, DELIVER_WAIT_S, m)
         if not d:
             pics.append((cmd, None, 0))
-            check(f"{cmd} delivered", False, "command not delivered in 120 s")
+            check(f"{cmd} delivered", False, f"command not delivered in {DELIVER_WAIT_S} s")
             break
         n_img = len(images)
         if i + 1 < len(chain):
             publish(f"{dev}/picture/set", chain[i + 1])
         r = log.wait(picture_rx, 120, d[2] + 1)
+        m = r[2] + 1 if r else log.mark()
+        if i == 0 and r and not (" 0/" in r[1] and "width 320" in r[1] and "(end lost)" not in r[1]):
+            # chunks were lost in the first pass: the gateway may complete the picture by resend.
+            # The line must come before the next command's delivery, else it belongs to a later
+            # picture. The checks then run on the re-published picture that follows it.
+            rs = log.wait(r"\[ImageReceiver\] Picture from " + dev + r" complete after resend: .*?, (\d+) round",
+                          RESEND_WAIT_S, r[2] + 1)
+            nd = log.wait(poll_rx + r".*cmd 0x" + chain[1], 0.5, r[2] + 1)
+            if rs and not (nd and nd[2] < rs[2]):
+                rj = log.wait(r"\[ImageReceiver\] JPEG from " + dev + r".* 0/\d+ chunks missing", 5, rs[2] + 1)
+                if rj:
+                    mr = re.search(r"(\d+)/(\d+) chunks", r[1])
+                    rounds = re.search(r"(\d+) round", rs[1]).group(1)
+                    first_pass = f"{mr.group(1)}/{mr.group(2)} missing" if mr else "incomplete"
+                    resend_note = f", first pass {first_pass}, complete after resend: {rounds} round(s)"
+                    r = rj
         time.sleep(1.0)
         new = [p for t, p in images[n_img:]]
-        # the first picture published after this command (the next one may already follow)
-        pics.append((cmd, r, jpeg_components(new[0]) if new else 0))
-        m = r[2] + 1 if r else log.mark()
+        # the MQTT image of the logged picture (same length), else the first one published after
+        # this command (the next one may already follow, and a resent picture comes twice)
+        mb = re.search(r"(\d+) bytes", r[1]) if r else None
+        mine = [p for p in new if mb and len(p) == int(mb.group(1))]
+        pick = mine[-1] if mine else (new[0] if new else None)
+        pics.append((cmd, r, jpeg_components(pick) if pick else 0))
 
     def detail(r):
         return r[1].split("] ", 1)[1] if r else "no picture in 120 s"
@@ -215,8 +242,9 @@ def main() -> int:
 
     for k, (cmd, r, comps) in enumerate(pics):
         if k == 0:
-            ok = bool(r and "JPEG" in r[1] and "width 320" in r[1] and " 0/" in r[1])
-            check("D1 full picture", ok, detail(r))
+            ok = bool(r and "JPEG" in r[1] and "width 320" in r[1] and " 0/" in r[1]
+                      and "(end lost)" not in r[1])
+            check("D1 full picture", ok, detail(r) + resend_note)
             mm = re.search(r"(\d+) bytes.* (\d+)/(\d+) chunks", r[1]) if r else None
             if mm:
                 nbytes, chunks = int(mm.group(1)), int(mm.group(3))
