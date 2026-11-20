@@ -34,6 +34,8 @@ flowchart TD
     Step5 -- Approved --> Step6["5. Security & Code Reviewer (Pro): Audit & Security"]
     Step6 -- Changes needed --> Step4
     Step6 -- Approved --> Step7["6. Orchestrator: Final delivery to the user"]
+    Step5 -- Failure after round 3 --> Stop["Round 3 reached: User decides"]
+    Step6 -- Changes needed after round 3 --> Stop
 ```
 
 ### Phase 1: Specification & Architecture (Hardware Analyst)
@@ -60,6 +62,13 @@ flowchart TD
   - Correct handling of the AES-128 KDF and protection against replay attacks.
   - Buffer bounds when receiving RF packets via SPI/DMA.
 
+### Round limits and finding verification
+- A **round** is one pass Coder → QA → Reviewer. A QA or CI failure that sends the work back to the Coder also counts as a round. Verification work (a bench test, a host test that confirms a finding) does not start a new round by itself.
+- **At most 3 rounds** per change. If the reviewer still returns "Changes needed" after the third round, or QA or CI still fails, the Orchestrator stops and hands the open points to the user instead of starting a fourth round.
+- **Verify a finding before acting on it** when it contradicts what the team believes (a bench result, a memory bank entry, an earlier conclusion) or when acting on it would change behaviour in sensitive code (RF protocol, crypto/replay filter, ISRs, DMA, the counter log). The Orchestrator confirms it first with evidence: a bench test, a log, a host test that fails without the fix, or a second independent reviewer given the code but not the finding's conclusion. A finding that is neither confirmed nor refuted goes to the user, not to the Coder.
+- Clear-cut findings (a typo, a comment that contradicts the code) go to the Coder directly. In sensitive code the failing input is the evidence, even for a missing bound check: the Coder adds it as a host test that fails before the fix (QA runs it), then fixes the code.
+- When a confirmed finding contradicts a memory bank entry, that entry is rewritten (section 4).
+
 ---
 
 ## 3. Guardrails & Security Policy (Deterministic Rules)
@@ -72,6 +81,7 @@ To save tokens and prevent mistakes, the following strict rules apply:
    - Simple code changes and test runs are run on `flash` for minimal latency and token consumption.
    - `pro` (High Thinking) is reserved for Architecture/Hardware analysis and the final Security Review.
 4. **English in the repository:** Everything committed to the repository (documentation, TODO, code comments, memory bank entries, file names) is written in English.
+5. **Deterministic gates before LLM review:** CI runs these gates on every push and pull request: SDCC warning-free builds, the key guard (`check_secrets.py`), gitleaks, cppcheck and CodeQL. `qa_tester` runs cppcheck locally before review when it is installed. The reviewer does not repeat what these check, but ALWAYS reviews changes that weaken them (new `cppcheck-suppress` or `gitleaks:allow` markers, allowlist entries in `.gitleaks.toml` or `check_secrets.py`, edits to the workflows or their scripts) and still checks credentials (Wi-Fi, MQTT and portal passwords are only partly covered by the gates) and 16-bit integer arithmetic in CC1110 code. A CI failure on the PR goes back to the Coder and counts as a round.
 
 ---
 

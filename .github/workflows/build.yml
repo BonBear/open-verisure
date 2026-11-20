@@ -164,3 +164,50 @@ jobs:
           if python derive_key.py --master-key 000102030405060708090a0b0c0d0e0f --id 2K79A65; then
             echo "a 7-character ID must be rejected"; exit 1
           fi
+
+  cppcheck:
+    name: Static analysis (cppcheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install cppcheck
+        run: sudo apt-get update -q && sudo apt-get install -y -q cppcheck && cppcheck --version
+      - name: Run cppcheck
+        # warning and portability checks only (style is left to review); any finding fails the job.
+        # Findings that are intended are suppressed in the code with a "// cppcheck-suppress <id>"
+        # comment that says why. The SDCC storage keywords are defined away for the CC1110 code.
+        run: bash .github/scripts/run_cppcheck.sh
+
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        run: sudo apt-get update -q && sudo apt-get install -y -q gitleaks && gitleaks version
+      - name: Self-test of the project rule
+        # A made-up password in the #define form must be found, the template placeholder must not.
+        run: |
+          t="$RUNNER_TEMP/gl"; mkdir -p "$t/bad" "$t/ok"
+          p="Kq7vT2-not-a-"   # assembled at run time so this file itself does not match the rule
+          echo "#define DEFAULT_WIFI_PASS       \"${p}real-pass\"" > "$t/bad/secrets.h"
+          echo '#define DEFAULT_WIFI_PASS       "your-wifi-password"' > "$t/ok/secrets.h"
+          if gitleaks detect --no-git --source "$t/bad" --config .gitleaks.toml --redact --no-banner; then
+            echo "::error::project-default-password did not catch a password"; exit 1
+          fi
+          gitleaks detect --no-git --source "$t/ok" --config .gitleaks.toml --redact --no-banner
+      - name: Scan the files
+        run: gitleaks detect --no-git --source . --config .gitleaks.toml --redact --no-banner -v
+      - name: Scan the commits not on main yet
+        # The history before this check is not scanned: the master key that has been public since
+        # 2026-10-22 is still the current key (TODO.md item 0: change it before deployment) and
+        # stays in the old history, which is why only the new commits are scanned.
+        run: |
+          git rev-parse -q --verify origin/main >/dev/null || { echo "::error::origin/main not fetched"; exit 1; }
+          if [ "$(git rev-list --count origin/main..HEAD)" != 0 ]; then
+            gitleaks detect --source . --config .gitleaks.toml --log-opts="--diff-merges=first-parent origin/main..HEAD" --redact --no-banner -v
+          else
+            echo "no commits outside main"
+          fi
