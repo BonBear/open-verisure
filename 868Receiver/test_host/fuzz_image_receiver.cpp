@@ -59,6 +59,15 @@ void sendBlob(const char* dev, const std::vector<uint8_t>& blob) {
     for (unsigned c = 0; c < n; c++) chunk(dev, (uint16_t)c, chunkLen(blob, c), c == 0, c + 1 == n, &blob[c * CHUNK]);
 }
 
+/** sendBlob(), then the publish that follows the camera's poll answer. Finishing a picture must not
+ *  publish by itself (nothing is pending before: the callers flush every picture). */
+void sendBlobPublished(const char* dev, const std::vector<uint8_t>& blob) {
+    int before = hostMqtt.images;
+    sendBlob(dev, blob);
+    CHECK_EQ(hostMqtt.images, before);
+    imageReceiverPublishPending();
+}
+
 /** Touch every byte of a returned picture (ASan checks the range) and check the bounds. */
 void checkPicture(const uint8_t* p, size_t len, uint16_t missing, size_t maxLen, bool spliced) {
     if (!p) return;
@@ -138,7 +147,7 @@ TEST(fuzz_image_pictures_and_deltas_match_reference) {
             baseId = (int)r.below(256);
             base = randomPicture(r, 320, baseId, MAX_IMAGE_SIZE);
             want = fuzzAssemble(base);
-            sendBlob(CAM, want);
+            sendBlobPublished(CAM, want);
             CHECK(hostMqtt.last == want);
             CHECK_EQ(hostMqtt.images, published + 1);
         } else if (what <= 6) {                              // delta against the base
@@ -147,7 +156,7 @@ TEST(fuzz_image_pictures_and_deltas_match_reference) {
             FuzzJpeg next = fuzzSplice(base, e);
             std::vector<uint8_t> nb = fuzzAssemble(next);
             if (d.size() > MAX_IMAGE_SIZE || nb.size() > MAX_IMAGE_SIZE) continue;
-            sendBlob(CAM, d);
+            sendBlobPublished(CAM, d);
             base = next;
             if (!e.empty()) {
                 want = nb;                                   // the spliced picture is the newest
@@ -161,7 +170,7 @@ TEST(fuzz_image_pictures_and_deltas_match_reference) {
             std::vector<uint8_t> d =
                 fuzzMakeDelta((baseId + 1 + (int)r.below(255)) & 0xFF, (unsigned)base.segs.size(),
                               fuzzDeltaEntries(r, (unsigned)base.segs.size(), 5, 20));
-            sendBlob(CAM, d);
+            sendBlobPublished(CAM, d);
             CHECK_EQ(hostMqtt.images, published);
             uint16_t f;
             uint32_t m;
@@ -171,13 +180,13 @@ TEST(fuzz_image_pictures_and_deltas_match_reference) {
         } else if (what == 8) {                              // grayscale flash picture, no COM id
             FuzzJpeg g = randomPicture(r, 320, -1, r.chance(80) ? GRAY_MAX : MAX_IMAGE_SIZE);
             std::vector<uint8_t> gb = fuzzAssemble(g);
-            sendBlob(CAM, gb);
+            sendBlobPublished(CAM, gb);
             CHECK(hostMqtt.last == gb);
             if (gb.size() <= GRAY_MAX) want = gb;            // newest until a delta changes the picture
         } else {                                             // 640x480: kept apart
             FuzzJpeg l = randomPicture(r, 640, (int)r.below(256), MAX_IMAGE_SIZE);
             wantLarge = fuzzAssemble(l);
-            sendBlob(CAM, wantLarge);
+            sendBlobPublished(CAM, wantLarge);
             CHECK(hostMqtt.last == wantLarge);
         }
         CHECK(current() == want);
@@ -229,6 +238,7 @@ TEST(fuzz_image_resend_completes_pictures) {
         }
         if (!lossyResend) {
             // complete again: stored like a picture without holes and published once more
+            imageReceiverPublishPending();      // (the poll answer after the last chunk does this)
             CHECK(hostMqtt.last == pic);
             CHECK((wide ? currentLarge() : current()) == pic);
             completed++;
@@ -281,6 +291,7 @@ TEST(fuzz_image_random_operations) {
                         resend(dev, (uint16_t)c, (uint8_t)r.range(1, CHUNK), r.chance(5), data);
                 }
             }
+            if (r.chance(80)) imageReceiverAfterPollAnswer(dev);   // the answer went out (or not yet)
         } else if (op < 65) {
             imageReceiverLoop();
         } else if (op < 75) {                               // time goes by
@@ -322,6 +333,8 @@ TEST(fuzz_image_random_operations) {
             imageReceiverProcessChunk(r.chance(50) ? nullptr : dev, idx, len, true, true, r.chance(50) ? nullptr : data);
             imageReceiverProcessResend(r.chance(50) ? nullptr : dev, idx, len, true, r.chance(50) ? nullptr : data);
             imageReceiverPollSeen(nullptr);
+            imageReceiverAfterPollAnswer(nullptr);
+            if (r.chance(10)) imageReceiverPublishPending();
         } else if (op < 92) {
             imageReceiverInit();
         } else {                                            // a chunk next to the last valid blob
@@ -332,5 +345,207 @@ TEST(fuzz_image_random_operations) {
         }
         checkOutputs();
         if (fuzzStop("fuzz_image_random_operations", it)) return;
+    }
+}
+
+/* ---- Deferred publish: finishing a picture stores it, the poll hook or the timer publishes it -- */
+TEST(fuzz_image_publish_after_poll_answer) {
+    Rng r(0x1A6E0004);
+    resetAll();
+    hostAdvanceMillis(1000);
+    // a colour base, a delta spliced into it, a grayscale flash picture, a large one
+    FuzzJpeg base = randomPicture(r, 320, 7, MAX_IMAGE_SIZE);
+    std::vector<FuzzDeltaEntry> e = fuzzDeltaEntries(r, (unsigned)base.segs.size(), 30, 60);
+    struct Step { std::vector<uint8_t> blob, want; };
+    std::vector<Step> steps;
+    steps.push_back({fuzzAssemble(base), fuzzAssemble(base)});
+    if (!e.empty())                                         // (an empty delta publishes nothing)
+        steps.push_back({fuzzMakeDelta(7, (unsigned)base.segs.size(), e), fuzzAssemble(fuzzSplice(base, e))});
+    std::vector<uint8_t> gray = fuzzAssemble(randomPicture(r, 320, -1, GRAY_MAX));
+    steps.push_back({gray, gray});
+    std::vector<uint8_t> large = fuzzAssemble(randomPicture(r, 640, 9, MAX_IMAGE_SIZE));
+    steps.push_back({large, large});
+    for (const Step& s : steps) {
+        const std::vector<uint8_t>& blob = s.blob;
+        const std::vector<uint8_t>& want = s.want;
+        int before = hostMqtt.images;
+        sendBlob(CAM, blob);
+        CHECK_EQ(hostMqtt.images, before);                  // (1) finishing does not publish
+        imageReceiverAfterPollAnswer("OTHER001");           // another camera's poll: not its picture
+        imageReceiverAfterPollAnswer(nullptr);
+        CHECK_EQ(hostMqtt.images, before);
+        imageReceiverAfterPollAnswer(CAM);                  // (2) the poll answer went out
+        CHECK_EQ(hostMqtt.images, before + 1);
+        CHECK(hostMqtt.last == want);
+        CHECK(hostMqtt.lastDevice == CAM);
+        imageReceiverAfterPollAnswer(CAM);                  // published once only
+        imageReceiverPublishPending();
+        CHECK_EQ(hostMqtt.images, before + 1);
+        checkOutputs();
+    }
+}
+
+TEST(fuzz_image_publish_after_defer_time) {
+    Rng r(0x1A6E0005);
+    resetAll();
+    hostAdvanceMillis(1000);
+    std::vector<uint8_t> pic = fuzzAssemble(randomPicture(r, 320, 3, MAX_IMAGE_SIZE));
+    sendBlob(CAM, pic);
+    CHECK_EQ(hostMqtt.images, 0);
+    imageReceiverLoop();
+    CHECK_EQ(hostMqtt.images, 0);
+    hostAdvanceMillis(IMG_PUBLISH_DEFER_MS - 1);
+    imageReceiverLoop();
+    CHECK_EQ(hostMqtt.images, 0);                           // (3) not yet
+    hostAdvanceMillis(1);
+    imageReceiverLoop();
+    CHECK_EQ(hostMqtt.images, 1);                           // after the defer time, no poll needed
+    CHECK(hostMqtt.last == pic);
+    hostAdvanceMillis(5000);
+    imageReceiverLoop();
+    CHECK_EQ(hostMqtt.images, 1);
+}
+
+TEST(fuzz_image_newer_picture_flushes_pending) {
+    Rng r(0x1A6E0006);
+    resetAll();
+    hostAdvanceMillis(1000);
+    std::vector<uint8_t> a = fuzzAssemble(randomPicture(r, 320, 1, MAX_IMAGE_SIZE));
+    std::vector<uint8_t> b = fuzzAssemble(randomPicture(r, 320, 2, MAX_IMAGE_SIZE));
+    sendBlob(CAM, a);
+    CHECK_EQ(hostMqtt.images, 0);
+    sendBlob(CAM, b);                                       // (4) the pending one goes out first, intact
+    CHECK_EQ(hostMqtt.images, 1);
+    CHECK(hostMqtt.last == a);
+    CHECK(current() == b);
+    imageReceiverAfterPollAnswer(CAM);
+    CHECK_EQ(hostMqtt.images, 2);
+    CHECK(hostMqtt.last == b);
+}
+
+/** A picture of 4+ chunks with chunk `lost` (not the first, not the last) missing, sent as the camera
+ *  does; then the poll that follows it, answered with the resend request (the order of main.cpp:
+ *  imageReceiverPollSeen, answer, imageReceiverAfterPollAnswer). */
+static void sendHoleyAndAnswerPoll(Rng& r, std::vector<uint8_t>& pic, unsigned* lost) {
+    FuzzJpeg j = fuzzMakeJpeg(r, 320, (int)r.below(256), r.range(20, 200), r.range(5, 45));
+    pic = fuzzAssemble(j);
+    unsigned nc = chunksOf(pic.size());
+    CHECK(nc > 3);
+    *lost = nc > 3 ? r.range(1, nc - 2) : 1;
+    for (unsigned c = 0; c < nc; c++)
+        if (c != *lost) chunk(CAM, (uint16_t)c, chunkLen(pic, c), c == 0, c + 1 == nc, &pic[c * CHUNK]);
+    CHECK_EQ(hostMqtt.images, 0);
+    hostAdvanceMillis(30);
+    imageReceiverPollSeen(CAM);
+    uint16_t first;
+    uint32_t map;
+    CHECK(takeResendRequest(CAM, &first, &map));
+    CHECK_EQ((unsigned)first, *lost);
+    imageReceiverAfterPollAnswer(CAM);
+}
+
+// A picture with a hole is held while its resend runs (a blocking publish would make the camera's
+// next poll, ~70 ms after the 0xF0 answer, miss its deadline); the complete picture replaces it and
+// is published after the ACK poll answer: one publish, the complete picture.
+TEST(fuzz_image_resend_replaces_pending_first_pass) {
+    Rng r(0x1A6E0007);
+    for (int it = 0; it < fuzzIters(50); it++) {
+        resetAll();
+        hostAdvanceMillis(1000);
+        std::vector<uint8_t> pic;
+        unsigned lost;
+        sendHoleyAndAnswerPoll(r, pic, &lost);
+        CHECK_EQ(hostMqtt.images, 0);                       // held: not published with the 0xF0 answer
+        hostAdvanceMillis(IMG_PUBLISH_DEFER_MS + 50);
+        imageReceiverLoop();
+        CHECK_EQ(hostMqtt.images, 0);                       // nor by the timer while the resend runs
+        resend(CAM, (uint16_t)lost, chunkLen(pic, lost), false, &pic[lost * CHUNK]);
+        CHECK_EQ(hostMqtt.images, 0);
+        hostAdvanceMillis(70);                              // the ACK poll
+        imageReceiverPollSeen(CAM);
+        uint16_t f;
+        uint32_t m;
+        CHECK(!takeResendRequest(CAM, &f, &m));
+        imageReceiverAfterPollAnswer(CAM);
+        CHECK_EQ(hostMqtt.images, 1);
+        CHECK(hostMqtt.last == pic);
+        CHECK(current() == pic);
+        checkOutputs();
+    }
+}
+
+// A resend that ends without completing: the first pass is then published (by the next loop() or poll hook).
+TEST(fuzz_image_resend_given_up_publishes_first_pass) {
+    Rng r(0x1A6E0008);
+    for (int it = 0; it < fuzzIters(30); it++) {
+        for (int how = 0; how < 2; how++) {
+            resetAll();
+            hostAdvanceMillis(1000);
+            std::vector<uint8_t> pic;
+            unsigned lost;
+            sendHoleyAndAnswerPoll(r, pic, &lost);
+            CHECK_EQ(hostMqtt.images, 0);
+            size_t hole0 = (size_t)lost * CHUNK, hole1 = hole0 + chunkLen(pic, lost);
+            if (how == 0) {                                 // no answer to the request: given up
+                hostAdvanceMillis(20001);
+                imageReceiverLoop();
+            } else {                                        // the camera sends a new picture instead
+                std::vector<uint8_t> next = fuzzAssemble(randomPicture(r, 320, 77, MAX_IMAGE_SIZE));
+                sendBlob(CAM, next);
+                CHECK_EQ(hostMqtt.images, 1);               // finishing it flushed the first pass
+            }
+            CHECK_EQ(hostMqtt.images, 1);
+            CHECK_EQ(hostMqtt.last.size(), pic.size());
+            for (size_t i = 0; i < pic.size(); i++)
+                if (i < hole0 || i >= hole1) CHECK_EQ(hostMqtt.last[i], pic[i]);
+            checkOutputs();
+        }
+    }
+}
+
+// Several pictures finished without a publish in between: the flushes jpegFinish() does (before a
+// delta splices into s_jpg, before s_jpg is overwritten, ...) publish every one intact, in order.
+TEST(fuzz_image_back_to_back_pictures_publish_in_order) {
+    Rng r(0x1A6E0009);
+    for (int it = 0; it < fuzzIters(20); it++) {
+        resetAll();
+        hostMqtt.keepAll = true;
+        hostAdvanceMillis(1000);
+        std::vector<std::vector<uint8_t>> want;
+        FuzzJpeg base = randomPicture(r, 320, 5, MAX_IMAGE_SIZE);
+        want.push_back(fuzzAssemble(base));
+        sendBlob(CAM, want.back());
+        FuzzJpeg cur = base;
+        for (int d = 0; d < 2; d++) {                       // two deltas, each into the one before
+            std::vector<FuzzDeltaEntry> e = fuzzDeltaEntries(r, (unsigned)cur.segs.size(), 30, 60);
+            if (e.empty()) continue;
+            std::vector<uint8_t> blob = fuzzMakeDelta(5, (unsigned)cur.segs.size(), e);
+            FuzzJpeg next = fuzzSplice(cur, e);
+            std::vector<uint8_t> nb = fuzzAssemble(next);
+            if (blob.size() > MAX_IMAGE_SIZE || nb.size() > MAX_IMAGE_SIZE) continue;
+            sendBlob(CAM, blob);
+            cur = next;
+            want.push_back(nb);
+        }
+        want.push_back(fuzzAssemble(randomPicture(r, 320, -1, GRAY_MAX)));     // gray, kept in s_jpgGray
+        sendBlob(CAM, want.back());
+        for (int k = 0; k < 200; k++) {                                         // gray, too big for it
+            std::vector<uint8_t> g = fuzzAssemble(randomPicture(r, 320, -1, MAX_IMAGE_SIZE));
+            if (g.size() > GRAY_MAX) {
+                want.push_back(g);
+                sendBlob(CAM, g);
+                break;
+            }
+        }
+        std::vector<uint8_t> hl = fuzzAssemble(randomPicture(r, 320, 9, MAX_IMAGE_SIZE));   // no frame header
+        for (size_t i = 2; i + 9 < hl.size() && i < 1024; i++)
+            if (hl[i] == 0xFF && hl[i + 1] == 0xC0) hl[i + 1] = 0xC1;
+        want.push_back(hl);
+        sendBlob(CAM, hl);
+        imageReceiverPublishPending();
+        CHECK_EQ(hostMqtt.all.size(), want.size());
+        for (size_t k = 0; k < want.size() && k < hostMqtt.all.size(); k++) CHECK(hostMqtt.all[k] == want[k]);
+        hostMqtt.keepAll = false;
+        checkOutputs();
     }
 }

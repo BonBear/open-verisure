@@ -92,11 +92,14 @@ The web page has the same upload (Firmware Update card).
   picture's first chunk or 5 s of silence. Full 320x240 pictures are the base that deltas are
   spliced into; if a delta has no base the gateway asks the camera for a full picture. Grayscale
   flash pictures and 640x480 pictures are kept apart. Every picture is published on MQTT.
-* **Resend:** a full picture with missing chunks is published as it is, then the gateway asks the
-  camera (with the answer to the poll that follows the picture) for the missing chunks among the
-  32 from the first missing one (a bitmap), repeatedly, until it is complete (tested with every
-  7th chunk dropped: a 640x480 picture complete after 14 rounds in 2.2 s); the complete picture
-  is stored and published again.
+* **Resend:** a full picture with missing chunks is stored and the gateway asks the camera (with
+  the answer to the poll that follows the picture) for the missing chunks among the 32 from the
+  first missing one (a bitmap), repeatedly, until it is complete (tested with every 7th chunk
+  dropped: a 640x480 picture complete after 14 rounds in 2.2 s). A picture is published on MQTT
+  (a blocking call) only after the poll answer, never before it, so the publish does not make the
+  camera's next poll miss its answer deadline; with no poll, after 300 ms. A picture with holes is
+  held while its resend runs: the complete picture replaces it and is published after the answer
+  to the final poll (one publish); if the resend gives up, the picture with holes is published then.
 
 ## MQTT topics (base topic `verisure`)
 

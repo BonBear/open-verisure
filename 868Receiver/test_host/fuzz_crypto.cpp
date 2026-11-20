@@ -333,12 +333,14 @@ TEST(fuzz_crypto_picture_tag_window) {
             bool inWindow = !badHigh && rebuilt == tag && dd <= 64 && dd >= -128;
             bool taken = wellFormed && inWindow &&
                          (type == 0x83 ? hasPicTag && tag == picTag : !hasPicTag || (int32_t)(tag - picTag) >= 0);
+            imageReceiverPublishPending();      // a finished picture is published after the poll answer
             int before = hostMqtt.images;
             CHECK_EQ(rx56(bigPacket(CAM, p)), wellFormed);
             if (taken) {
                 picTag = tag;
                 hasPicTag = true;
             }
+            imageReceiverPublishPending();
             if (observable && wellFormed) CHECK_EQ(hostMqtt.images > before, taken);
         } else if (op < 92) {                                   // a bit-flipped chunk
             uint8_t p[48];
@@ -350,8 +352,10 @@ TEST(fuzz_crypto_picture_tag_window) {
             uint8_t q[48];
             chunkPlain(q, lastCtr + 1, 0x82, 0, 0xC0 | 8, data, 40);
             q[6] = 0xFF;
+            imageReceiverPublishPending();
             int before = hostMqtt.images;
             CHECK(rx56(bigPacket(CAM, q)));
+            imageReceiverPublishPending();
             if (hostMqtt.images > before) {
                 picTag = lastCtr + 1;
                 hasPicTag = true;
@@ -415,11 +419,13 @@ TEST(fuzz_crypto_pictures_end_to_end) {
         size_t len = 0;
         const uint8_t* got = imageReceiverJpeg(&len, nullptr);
         CHECK(got && std::vector<uint8_t>(got, got + len) == pic);
+        imageReceiverPublishPending();          // the poll answer after the last chunk
         CHECK(hostMqtt.last == pic);
         // a recorded older picture is dropped once the counter has moved on
         if (!oldFrames.empty()) {
             int before = hostMqtt.images;
             for (const std::vector<uint8_t>& f : oldFrames) CHECK(rx56(f));
+            imageReceiverPublishPending();
             CHECK_EQ(hostMqtt.images, before);
         }
         oldFrames = frames;

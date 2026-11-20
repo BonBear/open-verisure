@@ -43,11 +43,13 @@ static uint16_t s_jpgGrayMissing = 0;
 static bool s_grayNewest = false;
 
 // Resend of missing chunks (56-byte packets only): a full picture with holes (or a lost end)
-// is published as it is and also copied to s_rsImg; with its next poll answer the gateway asks
+// is held for publishing (see publishHeld) and copied to s_rsImg; with its next poll answer the gateway asks
 // the camera for the missing chunks among the 32 from the first missing one (a bitmap). The
 // camera sends them as type 0x83, they are patched into s_rsImg, and the next ones are asked for, until the picture is
-// complete: then it goes through jpegFinish() again (stored and published like a picture
-// without holes). Limits: RS_MAX_ROUNDS requests, RS_TIMEOUT_MS without an answer, RS_TOTAL_MS.
+// complete: then it goes through jpegFinish() again (stored like a picture without holes; it
+// replaces the held first pass and is published after the next poll answer). If the resend ends
+// without completing, the first pass is published instead.
+// Limits: RS_MAX_ROUNDS requests, RS_TIMEOUT_MS without an answer, RS_TOTAL_MS.
 #define RS_MAX_ROUNDS 40
 #define RS_TIMEOUT_MS 20000
 #define RS_TOTAL_MS 60000
@@ -73,10 +75,66 @@ static uint16_t s_deltaCount = 0;            // deltas applied since the last fu
 static char s_activeDeviceId[10] = {0};
 static unsigned long s_lastChunkTime = 0;
 
+// Deferred publish: publishing a picture (up to ~35 KB over MQTT) blocks for 100+ ms, and the
+// camera polls right after its last chunk and listens for the answer for ~0.1 s. So jpegFinish()
+// only stores the picture and marks it here; it is published after that camera's poll answer
+// (imageReceiverAfterPollAnswer), or from imageReceiverLoop() IMG_PUBLISH_DEFER_MS later if no poll
+// comes. One slot for now (the gateway has one picture state); a per-camera array later.
+// buf points to a buffer that stays unchanged until the publish (s_jpg, s_jpgLarge, s_jpgGray or
+// s_pubImg, never s_imgBuf which jpegReset() clears): every jpegFinish() first flushes the slot.
+struct PendingPublish {
+    bool active;
+    char deviceId[10];
+    const uint8_t* buf;
+    size_t len;
+    unsigned long since;
+};
+static PendingPublish s_pub = {false, {0}, nullptr, 0, 0};
+static uint8_t* s_pubImg = nullptr;          // copy of a picture that is not stored anywhere else
+static bool s_resendDone = false;            // jpegFinish() completes a picture by resend
+
 static uint8_t* allocBig(size_t n) {
     uint8_t* p = (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!p) p = (uint8_t*)malloc(n);
     return p;
+}
+
+static void publishPending(void) {
+    if (!s_pub.active) return;
+    s_pub.active = false;
+    if (!mqttPublishCameraImage(s_pub.deviceId, s_pub.buf, s_pub.len))
+        Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
+}
+
+// A picture with holes is held while its resend runs: the camera resends and polls again ~60-80 ms
+// after the answer that asked for the chunks, and a blocking publish in between would make that
+// poll miss its answer deadline. When the resend completes, the complete picture replaces it (see
+// jpegFinish); when it ends without completing (rsCancel), the next imageReceiverLoop() or poll
+// hook publishes the first pass.
+static bool publishHeld(void) {
+    return s_pub.active && s_rsActive && strcmp(s_rsDevice, s_pub.deviceId) == 0;
+}
+
+// Mark the picture for publishing. stable: where it is stored (s_jpg, s_jpgLarge, s_jpgGray), or
+// nullptr to copy len bytes of s_imgBuf to s_pubImg (a picture without frame header, or too
+// big for the gray buffer). Without a buffer for the copy it is published at once.
+static void queuePublish(const uint8_t* stable, size_t len) {
+    if (!stable) {
+        if (!s_pubImg) s_pubImg = allocBig(MAX_IMAGE_SIZE);
+        if (!s_pubImg) {
+            if (!mqttPublishCameraImage(s_activeDeviceId, s_imgBuf, len))
+                Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
+            return;
+        }
+        memcpy(s_pubImg, s_imgBuf, len);
+        stable = s_pubImg;
+    }
+    strncpy(s_pub.deviceId, s_activeDeviceId, 9);
+    s_pub.deviceId[9] = '\0';
+    s_pub.buf = stable;
+    s_pub.len = len;
+    s_pub.since = millis();
+    s_pub.active = true;
 }
 
 static void jpegFinish(size_t len, bool endSeen = true);
@@ -154,7 +212,9 @@ static void rsRequestNext(void) {
         s_haveCount = s_rsChunks;
         strncpy(s_activeDeviceId, s_rsDevice, 9);
         s_noResend = true;
+        s_resendDone = true;
         jpegFinish(s_rsLen, true);
+        s_resendDone = false;
         s_noResend = false;
         return;
     }
@@ -165,6 +225,9 @@ static void rsRequestNext(void) {
     if (++s_rsRounds > RS_MAX_ROUNDS || millis() - s_rsStart > RS_TOTAL_MS) {
         Serial.printf("[ImageReceiver] Resend for %s stopped after %u rounds\n", s_rsDevice, s_rsRounds - 1);
         rsCancel();
+        // released right after a resend batch: restart the defer time so the camera's next poll
+        // (~30-40 ms later) is answered before this blocking publish
+        if (s_pub.active) s_pub.since = millis();
         return;
     }
     s_rsReqEnd = last;
@@ -196,13 +259,23 @@ void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t
 
 // Finish the blob in s_imgBuf (len bytes; missing chunks stay zero): a full JPEG (kept as
 // the base for deltas if it is 320 wide, or as the large picture) or a delta blob that is
-// spliced into the base (jpeg_splice.cpp). The resulting picture is published on MQTT.
+// spliced into the base (jpeg_splice.cpp). The resulting picture is marked for publishing on
+// MQTT (queuePublish: published after the camera's poll answer, see PendingPublish).
 // endSeen false: the last chunk never came (the blob ended by a pause or the next blob), so
 // the missing count cannot include the lost end; a JPEG gets its EOI back so it decodes.
 static void jpegFinish(size_t len, bool endSeen) {
     if (len < 4 || !s_jpg || !s_tmp) {
         jpegReset();
         return;
+    }
+    // A picture still waiting to be published must go out before s_jpg & co are overwritten, or it
+    // would be dropped. Exception: the same picture completed by resend replaces its first pass
+    // (holes), so only the complete one is published (one blocking publish instead of two).
+    if (s_pub.active) {
+        if (s_resendDone && strcmp(s_pub.deviceId, s_activeDeviceId) == 0)
+            s_pub.active = false;
+        else
+            publishPending();
     }
     uint16_t chunks = (len + JPEG_CHUNK - 1) / JPEG_CHUNK;
     uint16_t missing = chunks > s_haveCount ? chunks - s_haveCount : 0;
@@ -231,14 +304,14 @@ static void jpegFinish(size_t len, bool endSeen) {
             s_jpgLen = n;
             s_deltaCount++;
             if (updated) s_grayNewest = false;
-            if (updated && !mqttPublishCameraImage(s_activeDeviceId, s_jpg, n))
-                Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
+            if (updated) queuePublish(s_jpg, n);
         }
         jpegReset();
         return;
     }
     bool soi = s_imgBuf[0] == 0xFF && s_imgBuf[1] == 0xD8;
     unsigned int w = jpegWidth(s_imgBuf, len);
+    const uint8_t* stable = nullptr;                // where the picture is kept for the publish
     if (w == 0) {
         // no frame header (lost with a chunk): published, but neither stored as the base
         // nor as the large picture until a resend completes it
@@ -247,6 +320,7 @@ static void jpegFinish(size_t len, bool endSeen) {
             memcpy(s_jpgLarge, s_imgBuf, len);
             s_jpgLargeLen = len;
             s_jpgLargeMissing = missing;
+            stable = s_jpgLarge;
         }
     } else if (s_baseId >= 0 && jpegCommentId(s_imgBuf, len) < 0) {
         // no COM id (grayscale, e.g. a flash picture 0xD4): published below, but the colour
@@ -257,6 +331,7 @@ static void jpegFinish(size_t len, bool endSeen) {
             s_jpgGrayLen = len;
             s_jpgGrayMissing = missing;
             s_grayNewest = true;
+            stable = s_jpgGray;
         }
     } else {
         s_grayNewest = false;
@@ -265,11 +340,11 @@ static void jpegFinish(size_t len, bool endSeen) {
         s_jpgMissing = missing;
         s_baseId = jpegCommentId(s_jpg, len);
         s_deltaCount = 0;
+        stable = s_jpg;
     }
     Serial.printf("[ImageReceiver] JPEG from %s: %u bytes, width %u, id %d, %u/%u chunks missing%s%s\n", s_activeDeviceId,
                   (unsigned int)len, w, jpegCommentId(s_imgBuf, len), missing, chunks, soi ? "" : " (no SOI)", endNote);
-    if (!mqttPublishCameraImage(s_activeDeviceId, s_imgBuf, len))
-        Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
+    queuePublish(stable, len);
     if (!s_noResend && (missing || !endSeen)) {
         if (!s_rsImg) s_rsImg = allocBig(MAX_IMAGE_SIZE);
     }
@@ -298,6 +373,12 @@ void imageReceiverPollSeen(const char* deviceId) {
     // answer. The camera polls every ~2 s until an answer without a resend request.
     if (deviceId && s_rsActive && strcmp(deviceId, s_rsDevice) == 0 && !downlinkResendPending(deviceId))
         rsRequestNext();
+}
+
+void imageReceiverPublishPending(void) { publishPending(); }
+
+void imageReceiverAfterPollAnswer(const char* deviceId) {
+    if (deviceId && s_pub.active && strcmp(deviceId, s_pub.deviceId) == 0 && !publishHeld()) publishPending();
 }
 
 void imageReceiverInit(void) {
@@ -379,6 +460,8 @@ void imageReceiverLoop(void) {
         Serial.printf("[ImageReceiver] Resend for %s given up (no answer)\n", s_rsDevice);
         rsCancel();
     }
+    // a picture no poll followed (or whose poll was not seen): publish it after the defer time
+    if (s_pub.active && millis() - s_pub.since >= IMG_PUBLISH_DEFER_MS && !publishHeld()) publishPending();
 }
 
 #ifdef HOST_TEST
@@ -390,6 +473,8 @@ void imageReceiverHostTestRestart() {
     s_jpgMissing = s_jpgLargeMissing = s_jpgGrayMissing = 0;
     s_grayNewest = false;
     s_rsActive = false;
+    s_pub.active = false;
+    s_resendDone = false;
     s_dropEvery = s_dropCount = 0;
     s_noResend = false;
     s_baseId = -1;

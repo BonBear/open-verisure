@@ -85,7 +85,7 @@ void printTimestamp(unsigned long now) {
  * @param frameStartUs radioNowUs() timestamp at which the poll frame started coming in
  *        (RadioFrame::startUs): the answer is skipped when it can no longer arrive in time.
  */
-static void answerCameraPoll(const VerisureTelemetry& t, uint32_t frameStartUs) {
+static void answerCameraPollNow(const VerisureTelemetry& t, uint32_t frameStartUs) {
     uint8_t key[16], plain[16], pkt[VERISURE_PACKET_LEN];
     uint8_t state = t.rawP1;             // plain[13] of the poll
     bool armed = downlinkArmed();
@@ -137,6 +137,16 @@ static void answerCameraPoll(const VerisureTelemetry& t, uint32_t frameStartUs) 
         Serial.printf("[Downlink] NOTE: %s reported armed %d before this answer\n",
                       t.deviceId, (state & DOWNLINK_STATE_ARMED) ? 1 : 0);
     }
+}
+
+/**
+ * @brief answerCameraPollNow() followed by the MQTT publish of the picture this camera just
+ *        finished: the (blocking) publish must not run before the poll answer is handed to the
+ *        radio task, whatever way answerCameraPollNow() returns (answered, skipped, failed).
+ */
+static void answerCameraPoll(const VerisureTelemetry& t, uint32_t frameStartUs) {
+    answerCameraPollNow(t, frameStartUs);
+    imageReceiverAfterPollAnswer(t.deviceId);
 }
 
 /** Handles one item from the radio task's queue (a complete frame or a radio event). */

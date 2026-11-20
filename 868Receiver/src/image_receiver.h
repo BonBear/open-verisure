@@ -32,13 +32,27 @@ const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing);
 /** Last finished JPEG wider than 320 pixels (640x480), nullptr if none yet. */
 const uint8_t* imageReceiverJpegLarge(size_t* len, uint16_t* missing);
 
-/** A chunk resent on the gateway's request (packet type 0x83): patched into the last picture,
- *  which is published again once complete. */
+/** A chunk resent on the gateway's request (packet type 0x83): patched into the last picture;
+ *  once complete it replaces the held first pass and is published after the next poll answer. */
 void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen, bool isLast,
                                 const uint8_t* data);
 
 /** A poll from this camera arrived: finish a picture that is still open (its end was lost). */
 void imageReceiverPollSeen(const char* deviceId);
+
+/** A finished picture is published on MQTT (a blocking call) only after its camera's poll answer,
+ *  so the publish does not delay that answer; if no poll follows, imageReceiverLoop() publishes it
+ *  once IMG_PUBLISH_DEFER_MS have passed (only while loop() runs, e.g. not during an OTA upload).
+ *  A picture with holes is held while its resend runs and published when the resend completes
+ *  (the complete picture replaces it) or ends without completing. */
+#define IMG_PUBLISH_DEFER_MS 300
+
+/** Call at the end of answering a poll from this camera (answer sent, skipped or failed):
+ *  publishes the picture waiting for it, if any, unless it is held while its resend runs. */
+void imageReceiverAfterPollAnswer(const char* deviceId);
+
+/** Publish the waiting picture now, whatever device (used by tests). */
+void imageReceiverPublishPending(void);
 
 /** Test: drop every n-th 56-byte picture chunk (0 = off), to exercise the resend. */
 void imageReceiverSetDrop(uint32_t n);
