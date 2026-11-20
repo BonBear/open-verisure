@@ -26,10 +26,14 @@ static void reset(void) {
     memset((void *)&dma_desc, 0x5A, sizeof(dma_desc));
     ctr_page = 0xA5;
     ctr_next = 0xA5A5;
-    ctr_pending = 0xA5A5A5A5UL;
+    ctr_limit = 0xA5A5A5A5UL;
+    ctr_safe = true;                 /* the unsafe value: ctr_boot must set it */
+    ctr_retry = 0xA5;
+#ifdef DEV_CAM
+    s_tx_held = true;
+#endif
 #ifdef DEV_CAM
     s_ctr = 0x5A5A5A5AUL;
-    s_ctr_first = 0xA5A5A5A5UL;
 #endif
     emu_reset_sfr();
     emu_xdata_clear();
@@ -40,6 +44,7 @@ static void reset(void) {
 static uint32_t s_first;
 static uint32_t s_arg32;
 static uint8_t s_arg8;
+static bool s_send;
 static uint16_t s_arg16;
 static const uint8_t *s_argp;
 static bool s_ok;
@@ -62,13 +67,16 @@ static bool boot(uint32_t *first) {
 
 static void cb_packet(void *a) {
     (void)a;
-    pkt_rule(s_arg32, s_arg8);
+    s_send = pkt_rule(s_arg32);
 }
 
-static bool packet(uint32_t ctr, uint8_t boot_pkts) {
+static bool packet(uint32_t ctr, bool *send) {
+    bool r;
     s_arg32 = ctr;
-    s_arg8 = boot_pkts;
-    return emu_run(cb_packet, 0);
+    s_send = false;
+    r = emu_run(cb_packet, 0);
+    *send = r && s_send;
+    return r;
 }
 
 static void cb_log(void *a) {
@@ -115,15 +123,54 @@ static bool erased(uint8_t page, uint16_t i) { return ctr_erased(ctr_entry(page,
 
 static bool clock_ok(void) { return flash_clock_ok(); }
 
-static uint32_t pending(void) { return ctr_pending; }
+static uint32_t limit(void) { return ctr_limit; }
 static unsigned page(void) { return ctr_page; }
 static unsigned next(void) { return ctr_next; }
+static bool safe(void) { return ctr_safe; }
 
-static void set_log_state(unsigned pg, unsigned nx, uint32_t pend) {
+static void set_log_state(unsigned pg, unsigned nx, uint32_t lim, bool sf) {
     ctr_page = pg;
     ctr_next = nx;
-    ctr_pending = pend;
+    ctr_limit = lim;
+    ctr_safe = sf;
 }
+
+#ifdef DEV_CAM
+static uint8_t s_cmd;
+
+static void cb_pic_ok(void *a) {
+    (void)a;
+    s_ok = pic_ctr_ok();
+}
+
+static bool pic_ok(uint32_t *ctr, bool *ok) {
+    bool r;
+    s_ctr = *ctr;
+    s_ok = false;
+    r = emu_run(cb_pic_ok, 0);
+    *ctr = s_ctr;
+    *ok = s_ok;
+    return r;
+}
+
+static void cb_picture(void *a) {
+    (void)a;
+    s_ok = bf_send_picture(s_cmd, false);
+}
+
+static bool picture(uint8_t cmd, uint32_t *ctr, struct pic_trace *trace, bool *ok) {
+    bool r;
+    memset(&s_pic, 0, sizeof(s_pic));
+    s_cmd = cmd;
+    s_ctr = *ctr;
+    s_ok = false;
+    r = emu_run(cb_picture, 0);
+    *ctr = s_ctr;
+    *trace = s_pic;
+    *ok = s_ok;
+    return r;
+}
+#endif
 
 const struct ctr_dev DEV_SYM = {
     DEV_NAME,
@@ -134,5 +181,10 @@ const struct ctr_dev DEV_SYM = {
 #endif
     CTR_ENTRIES, CTR_PAGE0, CTR_SEED, CTR_BLOCK_MAX,
     reset, boot, packet, log_block, erase_page, write4, decode, erased, clock_ok,
-    pending, page, next, set_log_state,
+    limit, page, next, safe, set_log_state,
+#ifdef DEV_CAM
+    pic_ok, picture,
+#else
+    NULL, NULL,
+#endif
 };

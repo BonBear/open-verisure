@@ -17,6 +17,18 @@
 extern "C" {
 #endif
 
+#define PIC_TRACE_MAX 64
+
+/** What the camera's picture path sent (pic_stubs.h). */
+struct pic_trace {
+    unsigned npackets;                     /* 24-byte packets sent by transmit() */
+    uint32_t packet_ctr[PIC_TRACE_MAX];
+    uint8_t packet_marker[PIC_TRACE_MAX];
+    unsigned nchunks;                      /* picture chunks (transmit_big_chunk) */
+    uint32_t chunk_tag[PIC_TRACE_MAX];
+    unsigned bf_cmds;                      /* picture commands to the Blackfin */
+};
+
 struct ctr_dev {
     const char *name;
     bool camera;             /* MD_CAM/firmware/main.c, else VerisureDoorSensor/main.c */
@@ -30,9 +42,9 @@ struct ctr_dev {
     void (*reset)(void);
     /** ctr_boot(); *first = the first counter value of this boot. */
     bool (*boot)(uint32_t *first);
-    /** The firmware's counter rule before sending the packet with counter @p ctr
-     *  (@p boot_pkts: packets already sent since this boot, saturating at 255). */
-    bool (*packet)(uint32_t ctr, uint8_t boot_pkts);
+    /** The firmware's counter rule before the packet with counter @p ctr; *send = the packet
+     *  goes out (false: it is held, nothing is sent and the counter stays). */
+    bool (*packet)(uint32_t ctr, bool *send);
     /** ctr_log(block) directly; *ok = its result. */
     bool (*log)(uint32_t block, bool *ok);
     /** flash_erase_page() and flash_write4() directly (4 bytes from @p data). */
@@ -43,10 +55,18 @@ struct ctr_dev {
     bool (*erased)(uint8_t page, uint16_t i);
     bool (*clock_ok)(void);
 
-    uint32_t (*pending)(void);
+    /** ctr_limit: the highest block a packet may use (the newest logged block + 1). */
+    uint32_t (*limit)(void);
     unsigned (*page)(void);
     unsigned (*next)(void);
-    void (*set_log_state)(unsigned page, unsigned next, uint32_t pending);
+    bool (*safe)(void);
+    void (*set_log_state)(unsigned page, unsigned next, uint32_t limit, bool safe);
+
+    /** Camera only (NULL for the door sensor): the real pic_ctr_ok() and bf_send_picture()
+     *  with the stubs of pic_stubs.h, from counter s_ctr = *ctr (updated); *trace = what was
+     *  sent (cleared first); *ok = the result. */
+    bool (*pic_ctr_ok)(uint32_t *ctr, bool *ok);
+    bool (*picture)(uint8_t cmd, uint32_t *ctr, struct pic_trace *trace, bool *ok);
 };
 
 extern const struct ctr_dev dev_door, dev_door4, dev_door_seed, dev_door_seed0, dev_door_seedbig;

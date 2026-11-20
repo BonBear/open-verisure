@@ -69,7 +69,7 @@ $(BUILD)/cam_ctr.inc: $(CAM_SRC) extract_ctr.py
 	$(PYTHON) extract_ctr.py $< $@
 
 define VARIANT_RULE
-$(BUILD)/glue_$(1).o: ctr_glue.c ctr_dev.h emu.h stubs/cc1110.h $(BUILD)/$($(1)_DEV)_ctr.inc \
+$(BUILD)/glue_$(1).o: ctr_glue.c ctr_dev.h emu.h pic_stubs.h stubs/cc1110.h $(BUILD)/$($(1)_DEV)_ctr.inc \
                       $(ROOT)/cc1110_common/ctr_log.c
 	@mkdir -p $(BUILD)
 	$(CC) $(FW_CFLAGS) $(SANITIZE) $($($(1)_DEV)_IQUOTE) $($($(1)_DEV)_DEVDEF) $($(1)_DEFS) \

@@ -2,7 +2,8 @@
  * @file test_ctr_log.cpp
  * @brief Directed tests of the persistent packet counter log (ctr_log.c + each ctr_boot) on the
  *        emulated CC1110 flash: seed, boot steps, block rollover, page switch, a power cut at
- *        every flash operation, garbage and worn entries, CTR_BLOCK_MAX, no crystal.
+ *        every flash operation, garbage and worn entries, CTR_BLOCK_MAX, no crystal, and the
+ *        packets the counter rule holds (blocks that could not be logged).
  */
 
 #include <string.h>
@@ -48,7 +49,7 @@ TEST(fresh_log_starts_at_ctr_seed) {
         CHECK_EQ(v, c.want);
         CHECK_EQ(d.page(), d.page0);
         CHECK_EQ(d.next(), 1);
-        CHECK_EQ(d.pending(), 0);
+        CHECK_EQ(d.limit(), c.want + 1);
         CHECK_EQ(emu_stats.erases, 0);
         CHECK_EQ(emu_stats.words, 2);   // one entry, two flash words
         checkClean(d);
@@ -66,7 +67,7 @@ TEST(each_boot_adds_two_blocks) {
             CHECK_EQ(first, (1 + 2 * k) << 8);
             CHECK(newestBlock(d, &newest));
             CHECK_EQ(newest, 1 + 2 * k);
-            CHECK_EQ(d.pending(), 0);
+            CHECK_EQ(d.limit(), 2 + 2 * k);
         }
         // a page switch (erase of the other page) every CTR_ENTRIES boots after the first page
         CHECK_EQ(emu_stats.erases, (2 * d.entries + 4) / d.entries);
@@ -196,9 +197,8 @@ TEST(power_cut_at_every_flash_operation_never_reuses_a_counter) {
                         if (emu_stats.errors && !errors++)
                             printf("    emulator: %s\n", emu_last_error);
                         rewrites += emu_stats.rewrites;
-                        // reuse only after a cut write saturated the log: the XFAIL tests below
                         saturated += s.saturated > 0;
-                        if (s.violations > s.saturated && !reuse++)
+                        if (s.violations && !reuse++)
                             s.report();
                         cases++;
                     }
@@ -206,10 +206,10 @@ TEST(power_cut_at_every_flash_operation_never_reuses_a_counter) {
             }
         }
     }
-    printf("    %u cut cases (in %u of them counters were reused only after a cut write "
-           "saturated the log)\n", cases, saturated);
+    printf("    %u cut cases\n", cases);
     CHECK(cases > 1000);
     CHECK_EQ(reuse, 0);
+    CHECK_EQ(saturated, 0);
     CHECK_EQ(lost, 0);
     CHECK_EQ(notCut, 0);
     CHECK_EQ(errors, 0);
@@ -231,7 +231,7 @@ TEST(garbage_entries_are_skipped) {
         putRaw(p0, 1, e[0], (uint8_t)(e[1] ^ 0x10), e[2], e[3]);
         entryBytes(0x123456, e);
         putRaw(p0, 2, e[0], e[1], 0xFF, 0xFF);
-        putRaw(p0, 3, 0x01, (uint8_t)(0x01 ^ 0x02 ^ 0xFF ^ 0xA5), 0x02, 0xFF);
+        putRaw(p0, 3, 0x01, entryCheck(0x01, 0x02, 0xFF), 0x02, 0xFF);
         CHECK(!d.decode((uint8_t)p0, 1, &v));
         CHECK(!d.decode((uint8_t)p0, 2, &v));
         CHECK(!d.decode((uint8_t)p0, 3, &v));
@@ -277,12 +277,12 @@ TEST(garbage_entries_are_skipped) {
     }
 }
 
-TEST(worn_slot_is_skipped_and_ctr_pending_retries_it) {
+TEST(worn_slot_is_skipped_and_the_rule_retries_it) {
     for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
         const ctr_dev& d = *dp;
         const unsigned p0 = d.page0;
         uint32_t first = 0, v = 0;
-        bool ok;
+        bool ok, send;
 
         blank(d);
         REQUIRE(d.boot(&first));   // block 1 in slot 0
@@ -294,28 +294,32 @@ TEST(worn_slot_is_skipped_and_ctr_pending_retries_it) {
         CHECK(!d.decode((uint8_t)p0, 1, &v));
         CHECK(d.decode((uint8_t)p0, 2, &v) && v == 3);
         CHECK_EQ(d.next(), 3);
-        CHECK_EQ(d.pending(), 0);
+        CHECK_EQ(d.limit(), 4);
 
-        // three worn slots: the boot's entry fails, ctr_pending holds its block
+        // three worn slots: the boot's entry fails, ctr_limit stays at the newest block + 1
         for (unsigned i = 3; i < 6; i++)
             emu_stuck1[p0 * EMU_PAGE_SIZE + i * 4 + 3] = 0x01;
         d.reset();
         REQUIRE(d.boot(&first));
         CHECK_EQ(first, 5u << 8);
-        CHECK_EQ(d.pending(), 5);
+        CHECK_EQ(d.limit(), 4);
         CHECK_EQ(d.next(), 6);
-        // the first packet retries it in the next slot
-        REQUIRE(d.packet(first, 0));
-        CHECK_EQ(d.pending(), 0);
+        // the first packet retries it in the next slot, and is sent once it is logged
+        REQUIRE(d.packet(first, &send));
+        CHECK(send);
+        CHECK_EQ(d.limit(), 6);
         CHECK(d.decode((uint8_t)p0, 6, &v) && v == 5);
 
-        // a worn slot at a rollover: the next packets of that block retry it
+        // a worn slot at a rollover: the block after the newest one is sent all the same (the
+        // next boot skips it), and the next packets of that block retry it
         for (unsigned i = 7; i < 10; i++)
             emu_stuck1[p0 * EMU_PAGE_SIZE + i * 4 + 3] = 0x01;
-        REQUIRE(d.packet(6u << 8, 1));
-        CHECK_EQ(d.pending(), 6);
-        REQUIRE(d.packet((6u << 8) + 1, 2));
-        CHECK_EQ(d.pending(), 0);
+        REQUIRE(d.packet(6u << 8, &send));
+        CHECK(send);
+        CHECK_EQ(d.limit(), 6);
+        REQUIRE(d.packet((6u << 8) + 1, &send));
+        CHECK(send);
+        CHECK_EQ(d.limit(), 7);
         CHECK(d.decode((uint8_t)p0, 10, &v) && v == 6);
 
         // ctr_log() alone: 3 tries, then false
@@ -324,42 +328,56 @@ TEST(worn_slot_is_skipped_and_ctr_pending_retries_it) {
         REQUIRE(d.log(8, &ok));
         CHECK(!ok);
         CHECK_EQ(d.next(), 14);
+        CHECK_EQ(d.limit(), 7);
         checkClean(d);
     }
 }
 
-TEST(ctr_block_max_clamps_the_log) {
+/* The counter never wraps: nothing above CTR_BLOCK_MAX is logged (b2 never reaches 0xFF), the
+ * block after the newest entry (CTR_BLOCK_MAX + 1) is the last one sent, and every packet after
+ * it is held, also after a reset (a device that gets there needs a reflash). */
+TEST(ctr_block_max_stops_the_counter) {
     for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
         const ctr_dev& d = *dp;
         const unsigned p0 = d.page0;
+        const uint32_t max = d.block_max;
         uint32_t first = 0, v = 0;
-        bool ok;
-        CHECK_EQ(d.block_max, 0xFEFFFF);
+        bool ok, send;
+        CHECK_EQ(max, 0xFEFFFF);
         blank(d);
-        putEntry(p0, 0, d.block_max - 1);
+        putEntry(p0, 0, max - 2);
         REQUIRE(d.boot(&first));
+        CHECK_EQ(first, max << 8);
         CHECK(d.decode((uint8_t)p0, 1, &v));
-        CHECK_EQ(v, d.block_max);              // MAX - 1 + 2, clamped
-        CHECK_EQ(entryPtr(p0, 1)[3], 0xFE);    // b2 never reaches 0xFF
-        CHECK_EQ(d.pending(), 0);
-        REQUIRE(d.log(d.block_max + 5, &ok));
-        CHECK(ok);
-        CHECK(d.decode((uint8_t)p0, 2, &v) && v == d.block_max);
+        CHECK_EQ(v, max);
+        CHECK_EQ(entryPtr(p0, 1)[3], 0xFE);
+        CHECK_EQ(d.limit(), max + 1);
+        unsigned ops = emu_stats.ops;
+        REQUIRE(d.packet(first, &send));
+        CHECK(send);
+        REQUIRE(d.packet((max + 1) << 8, &send));   // 0xFF000000: not logged, but sent
+        CHECK(send);
+        REQUIRE(d.packet((max + 2) << 8, &send));   // 0xFF000100: held
+        CHECK(!send);
+        REQUIRE(d.log(max + 1, &ok));
+        CHECK(!ok);
         REQUIRE(d.log(0xFFFFFF, &ok));
-        CHECK(ok);
-        CHECK(d.decode((uint8_t)p0, 3, &v) && v == d.block_max);
+        CHECK(!ok);
+        CHECK_EQ(emu_stats.ops, ops);                // nothing written above the maximum
+        d.reset();
+        REQUIRE(d.boot(&first));
+        CHECK_EQ(first, (max + 2) << 8);
+        CHECK_EQ(emu_stats.ops, ops);
+        REQUIRE(d.packet(first, &send));
+        CHECK(!send);
         checkClean(d);
     }
 }
 
-/* KNOWN PROBLEM (needs a firmware decision and a bench test): ctr_boot() returns
- * (best + 2) << 8 even when best + 2 > CTR_BLOCK_MAX, while ctr_log() logs the clamped
- * CTR_BLOCK_MAX. Once the log holds CTR_BLOCK_MAX every boot starts at the same counter
- * 0xFF000100, so counter values are reused at every reset. A normal device never gets there
- * (2^32 packets), but a cut write or erase can leave an entry with a much larger block
- * (cut_write_can_only_raise_a_block), which brings it closer. */
-XFAIL_TEST(counter_reused_once_the_log_is_saturated,
-           "boots after CTR_BLOCK_MAX reuse 0xFF000100 (ctr_boot does not stop at the maximum)") {
+/* Was a known problem until 2026-11-19: ctr_boot() returned (best + 2) << 8 even above
+ * CTR_BLOCK_MAX while ctr_log() logged the clamped CTR_BLOCK_MAX, so once the log held
+ * CTR_BLOCK_MAX every boot started at the same counter 0xFF000100. Now those packets are held. */
+TEST(no_counter_reuse_once_the_log_is_saturated) {
     for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
         const ctr_dev& d = *dp;
         blank(d);
@@ -371,47 +389,51 @@ XFAIL_TEST(counter_reused_once_the_log_is_saturated,
                 s.packets(2);
         s.report();
         CHECK_EQ(s.violations, 0);
+        CHECK_EQ(s.held, 6);
     }
 }
 
-/* A write cut in the second flash word (b1, b2) leaves bits of b1/b2 at 1. If the check byte
- * still matches, the entry is valid with a LARGER block (bits only stay 1), never a smaller one,
- * so this cannot reuse a counter; it only uses up counter space (see the XFAIL above). */
-TEST(cut_write_can_only_raise_a_block) {
-    for (const ctr_dev* dp : kDevices) {
-        const ctr_dev& d = *dp;
-        unsigned valid = 0, raised = 0;
-        uint32_t maxSeen = 0;
-        for (uint32_t seed = 1; seed <= 3000; seed++) {
-            uint32_t first = 0, v = 0;
-            blank(d);
-            putEntry(d.page0, 0, 0x0101);   // the boot logs 0x0103: b0 0x03, b1 0x01, b2 0x00
-            emu_cut_at(1, EMU_CUT_PARTIAL, seed);
-            CHECK(!d.boot(&first));
-            if (d.decode((uint8_t)d.page0, 1, &v)) {
-                valid++;
-                CHECK(v >= 0x0103);
-                if (v > 0x0103) {
-                    raised++;
-                    if (v > maxSeen)
-                        maxSeen = v;
+/* A write cut in a flash word leaves bits at 1 that should be 0 (and a cut erase bits at 1 that
+ * should stay 0). The check byte counts the 0 bits of the block, so the stored check can only go
+ * up and the count of the block bytes only down: no cut word can leave a valid entry. Every
+ * partial result of both words of one entry, for blocks with many and with few 0 bits. */
+TEST(cut_write_never_leaves_a_valid_entry) {
+    const ctr_dev& d = dev_door;
+    static const uint32_t kBlocks[] = {0x0001FD, 0x000101, 0x7F7F7F, 0xFEFFFD, 0x123456};
+    unsigned cases = 0, valid = 0;
+    for (uint32_t prev : kBlocks) {
+        uint8_t e[4];
+        entryBytes(prev + 2, e);   // what the boot writes
+        for (unsigned op = 0; op < 2; op++) {
+            uint8_t wlo = op ? e[2] : e[0], whi = op ? e[3] : e[1];
+            for (unsigned lo = 0; lo < 256; lo++) {
+                for (unsigned hi = 0; hi < 256; hi++) {
+                    uint32_t first = 0, v = 0;
+                    // only masks that leave a bit at 1 that should be 0 are a cut
+                    if (!((lo & ~wlo) | (hi & ~whi)))
+                        continue;
+                    blank(d);
+                    putEntry(d.page0, 0, prev);
+                    emu_cut_word_at(op, (uint8_t)lo, (uint8_t)hi);
+                    CHECK(!d.boot(&first));
+                    emu_cut_clear();
+                    cases++;
+                    if (d.decode((uint8_t)d.page0, 1, &v) && !valid++)
+                        printf("    valid after a cut of word %u of %06X (%02X %02X): %06X\n", op,
+                               prev + 2, lo, hi, v);
                 }
             }
-            emu_cut_clear();
         }
-        printf("    %s: 3000 cut second words: %u valid, %u with a raised block (max %06X)\n",
-               d.name, valid, raised, maxSeen);
     }
+    printf("    %u cut words\n", cases);
+    CHECK(cases > 100000);
+    CHECK_EQ(valid, 0);
 }
 
-/* KNOWN PROBLEM (needs a firmware decision and a bench test): the check byte is an XOR of b0,
- * b1 and b2, so a write cut in its second word (b1, b2) that leaves the SAME bits still 1 in b1
- * and b2 passes the check. Block 0x0001FF (bytes FF 5B 01 00) cut when only bit 0 of b2 is
- * programmed reads FF 5B FF FE = block 0xFEFFFF = CTR_BLOCK_MAX: one power cut saturates the
- * log, and from then on every boot starts at 0xFF000100 (counter_reused_once_the_log_is_
- * saturated). The random power cut test finds the same thing with random partial writes. */
-XFAIL_TEST(cut_second_word_can_saturate_the_log_and_reuse_counters,
-           "a cut write can read as a valid CTR_BLOCK_MAX entry (XOR check), then boots reuse") {
+/* Was a known problem until 2026-11-19, with the XOR check byte: block 0x0001FF cut in its
+ * second word with bits 7..1 of b1 and b2 still 1 read FF 5B FF FE, a valid CTR_BLOCK_MAX, which
+ * saturated the log. With the 0-bit count it is skipped, and the next boot logs the block again. */
+TEST(cut_second_word_does_not_saturate_the_log) {
     for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
         const ctr_dev& d = *dp;
         uint32_t v = 0;
@@ -423,13 +445,16 @@ XFAIL_TEST(cut_second_word_can_saturate_the_log_and_reuse_counters,
         // of both bytes still 1
         emu_cut_word_at(1, 0xFE, 0xFE);
         CHECK(!s.boot());
-        CHECK(d.decode((uint8_t)d.page0, 1, &v));
-        CHECK_EQ(v, d.block_max);
+        emu_cut_clear();
+        CHECK(!d.decode((uint8_t)d.page0, 1, &v));
         for (int r = 0; r < 3; r++)
             if (s.boot())
                 s.packets(2);
+        CHECK(newestBlock(d, &v));
+        CHECK_EQ(v, 0x1FFu + 4);   // 0x1FF, 0x201, 0x203
         s.report();
         CHECK_EQ(s.violations, 0);
+        CHECK_EQ(s.held, 0);
     }
 }
 
@@ -439,8 +464,9 @@ TEST(no_flash_operation_without_the_crystal) {
         uint32_t first = 0, v = 0;
         bool ok = true;
         const uint8_t data[4] = {1, 2, 3, 4};
+        bool send;
         blank(d);
-        d.set_log_state(d.page0, 0, 0);
+        d.set_log_state(d.page0, 0, 0, true);
         CLKCON |= 0x40;   // OSC = 1: HS RCOSC (clock_xosc() timed out)
         CHECK(!d.clock_ok());
         REQUIRE(d.erase_page((uint8_t)d.page0));
@@ -453,26 +479,28 @@ TEST(no_flash_operation_without_the_crystal) {
         REQUIRE(d.boot(&first));
         CHECK_EQ(emu_stats.ops, 0);
         CHECK_EQ(first, seedBlock(d) << 8);
-        CHECK_EQ(d.pending(), seedBlock(d));
-        // the crystal back: the first packet logs the pending block
+        CHECK_EQ(d.limit(), seedBlock(d) - 1);
+        // the boot's block is not logged: its packets are held
+        REQUIRE(d.packet(first, &send));
+        CHECK(!send);
+        CHECK_EQ(emu_stats.ops, 0);
+        // the crystal back: the next packet logs the block and is sent
         CLKCON = 0x80;
         CHECK(d.clock_ok());
-        REQUIRE(d.packet(first, 0));
-        CHECK_EQ(d.pending(), 0);
+        REQUIRE(d.packet(first, &send));
+        CHECK(send);
+        CHECK_EQ(d.limit(), seedBlock(d) + 1);
         CHECK(newestBlock(d, &v) && v == seedBlock(d));
         checkClean(d);
     }
 }
 
-/* KNOWN PROBLEM (needs a bench test): if the crystal is not running (clock_xosc() timed out)
- * when ctr_log() reaches the end of a page, ctr_log() switches to the other page although
- * flash_erase_page() did nothing. With the crystal back, the next tries write over the old
- * entries of that unerased page (words programmed twice, garbage, nothing reads back), and when
- * that page is "full" ctr_log() erases the page that holds the newest entry. A power cut in
- * that erase, or before the next entry is written, loses the newest entry: the next boot starts
- * hundreds of blocks lower and reuses counter values. */
-XFAIL_TEST(crystal_failure_at_a_page_end_can_lose_the_newest_entry,
-           "a skipped erase (no crystal) is not noticed; the page with the newest entry is erased later") {
+/* Was a known problem until 2026-11-19: without the crystal (clock_xosc() timed out) at the
+ * end of a page, ctr_log() switched to the other page although flash_erase_page() did nothing,
+ * wrote over its old entries and, once it was "full", erased the page with the newest entry; a
+ * power cut there lost it. Now ctr_log() does nothing without the crystal (the block after the
+ * newest is sent unlogged as usual), and the next packet with the crystal erases and switches. */
+TEST(crystal_failure_at_a_page_end_never_loses_the_newest_entry) {
     const ctr_dev& d = dev_door;
     for (int kind = 0; kind < 2; kind++) {
         // page 30 full (blocks 1..511), page 31 with 255 entries (513..1021)
@@ -485,23 +513,27 @@ XFAIL_TEST(crystal_failure_at_a_page_end_can_lose_the_newest_entry,
         CLKCON |= 0x40;                  // the crystal did not start for this packet
         REQUIRE(s.packet(false));        // rollover: block 1024 cannot be logged, page 30 not erased
         CLKCON = 0x80;
-        CHECK_EQ(d.pending(), 1024);
+        CHECK_EQ(d.limit(), 1024);
+        CHECK_EQ(d.page(), d.page0 + 1);  // no page switch
+        CHECK_EQ(d.next(), d.entries);
         // the next packets of block 1024 retry on the unerased page 30 until it is "full";
         // find the erase of page 31 (with the newest entry) that follows
         std::vector<uint8_t> snap(emu_state_size());
         emu_save(snap.data());
         unsigned page = d.page(), next = d.next();
-        uint32_t pend = d.pending();
+        uint32_t lim = d.limit();
+        bool safe = d.safe();
         Sim probe = s;
         unsigned erases = emu_stats.erases, k = 0;
         while (emu_stats.erases == erases && k++ < 256)
             REQUIRE(probe.packet());
         REQUIRE(emu_stats.erases == erases + 1);
+        CHECK_EQ(k, 1);                  // the first packet with the crystal
         unsigned eraseOp = emu_stats.last_erase_op;
-        printf("    rewrites of unerased words before the erase: %u\n", emu_stats.rewrites);
+        CHECK_EQ(emu_stats.rewrites, 0);
         // again from the snapshot, with a power cut in that erase or right after it
         emu_restore(snap.data());
-        d.set_log_state(page, next, pend);
+        d.set_log_state(page, next, lim, safe);
         emu_cut_at(kind ? eraseOp + 1 : eraseOp, kind ? EMU_CUT_BEFORE : EMU_CUT_PARTIAL, 5);
         for (k = 0; k < 256 && s.packet(); k++) {
         }
@@ -515,13 +547,11 @@ XFAIL_TEST(crystal_failure_at_a_page_end_can_lose_the_newest_entry,
     }
 }
 
-/* KNOWN PROBLEM (needs a bench test): the boot's own block is used even when it could not be
- * logged (ctr_pending). The skipped block (best + 2) only covers an unlogged block after the
- * logged one, not the boot's block itself: if the boot's entry and the retry before the first
- * packet both fail (6 worn slots in a row, or a weak supply), and the device resets, the next
- * boot finds the same newest entry and starts at the same counter again. */
-XFAIL_TEST(unlogged_boot_block_is_reused_after_a_reset,
-           "the boot's block is used without being logged; the next boot picks the same block") {
+/* Was a known problem until 2026-11-19: the boot's own block (newest + 2) was used even when it
+ * could not be logged, so if the retry before the first packet also failed (6 worn slots in a
+ * row, or a weak supply) and the device reset, the next boot started at the same counter. Now
+ * such a packet is held (ctr_use) until its block is logged. */
+TEST(unlogged_boot_block_is_not_sent) {
     for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
         const ctr_dev& d = *dp;
         blank(d);
@@ -530,13 +560,166 @@ XFAIL_TEST(unlogged_boot_block_is_reused_after_a_reset,
         REQUIRE(s.packets(3));
         for (unsigned i = 1; i <= 6; i++)        // slots 1..6: bit 0 of b2 no longer programs
             emu_stuck1[d.page0 * EMU_PAGE_SIZE + i * 4 + 3] = 0x01;
-        REQUIRE(s.boot());                       // block 3: slots 1..3 fail, ctr_pending = 3
-        CHECK_EQ(d.pending(), 3);
-        REQUIRE(s.packet());                     // retry in slots 4..6 fails; 0x300 is sent
-        CHECK_EQ(d.pending(), 3);
+        REQUIRE(s.boot());                       // block 3: slots 1..3 fail
+        CHECK_EQ(d.limit(), 2);
+        REQUIRE(s.packet());                     // retry in slots 4..6 fails: 0x300 is held
+        CHECK_EQ(d.limit(), 2);
+        CHECK_EQ(s.held, 1);
         REQUIRE(s.boot());                       // newest is still block 1: block 3 again
+        CHECK_EQ(d.limit(), 4);                  // slot 7 works
         s.packets(1);
         s.report();
         CHECK_EQ(s.violations, 0);
+        CHECK_EQ(s.held, 1);
     }
+}
+
+/* Erases that fail without a power cut (weak supply) at a page switch: the page without a
+ * valid entry is erased again as soon as its next slot is not blank, so the device sends again
+ * after at most one held packet per 3 failed erases (3 tries per ctr_log()), and the page with
+ * the newest entry is never touched (a failed erase whose next slot is blank needs no retry). */
+TEST(failed_erase_at_a_page_switch_is_retried) {
+    for (const ctr_dev* dp : {&dev_door, &dev_door4, &dev_cam}) {
+        const ctr_dev& d = *dp;
+        for (unsigned k = 1; k <= 6; k++) {
+            for (uint32_t seed = 1; seed <= 20; seed++) {
+                emu_init();
+                uint32_t last = prefill(d, 2 * d.entries);   // page 1 full, newest at its end
+                emu_seed(seed * 977 + k);
+                emu_erase_fail = k;
+                Sim s(d);
+                s.sentUpTo((last << 8) | 0xFF);
+                s.note("[%s, %u failed erases, seed %u] ", d.name, k, seed);
+                REQUIRE(s.boot());
+                REQUIRE(s.packets(300));
+                uint32_t v = 0;
+                CHECK(newestBlock(d, &v) && v > last);
+                // an erase that failed but left the next slot blank needs no second one
+                CHECK(emu_stats.failed_erases >= 1 && emu_stats.failed_erases <= k);
+                CHECK(s.held <= (emu_stats.failed_erases + 2) / 3);
+                CHECK_EQ(emu_stats.rewrites, 0);
+                s.report();
+                CHECK_EQ(s.violations, 0);
+            }
+        }
+    }
+}
+
+/* A page whose cells no longer erase (stuck at 0): nothing can be logged there, so the device
+ * holds its packets (the newest entry is in the other page, which is never erased), and the
+ * early erases are capped (CTR_RETRY_MAX per boot, then one per full walk of ~85 calls). */
+TEST(dead_page_holds_packets_with_bounded_wear) {
+    for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
+        const ctr_dev& d = *dp;
+        emu_init();
+        uint32_t last = prefill(d, d.entries);   // page 0 full, newest at its end
+        memset(&emu_stuck0[(d.page0 + 1) * EMU_PAGE_SIZE], 0xFF, EMU_PAGE_SIZE);
+        std::vector<uint8_t> page0(entryPtr(d.page0, 0), entryPtr(d.page0, 0) + EMU_PAGE_SIZE);
+        Sim s(d);
+        s.sentUpTo((last << 8) | 0xFF);
+        const unsigned kAttempts = 1000;
+        REQUIRE(s.boot());
+        REQUIRE(s.packets(kAttempts));
+        CHECK_EQ(s.held, kAttempts);
+        CHECK(memcmp(page0.data(), entryPtr(d.page0, 0), EMU_PAGE_SIZE) == 0);
+        unsigned erases = emu_stats.erases + emu_stats.failed_erases;
+        printf("    %s: %u erases of the dead page in %u held packets\n", d.name, erases, kAttempts);
+        CHECK(erases <= 1 + 8 + (kAttempts + 1) / 85 + 1);
+        // the page works again (e.g. after the supply recovered): the next packet is sent
+        memset(&emu_stuck0[(d.page0 + 1) * EMU_PAGE_SIZE], 0, EMU_PAGE_SIZE);
+        unsigned held = s.held;
+        REQUIRE(s.packets(90));
+        CHECK(s.held - held <= d.entries / 3 + 2);
+        CHECK(s.held - held < 90);
+        s.report();
+        CHECK_EQ(s.violations, 0);
+        CHECK_EQ(emu_stats.rewrites, 0);
+    }
+}
+
+/* If an erase pre-programmed cells to 0 before erasing (the CC1110 documents no such step), a
+ * cut one could leave a 0-heavy pattern that passes the 0-bit count, e.g. FF 01 FF FE = block
+ * 0xFEFFFF. Such an entry can only be in the page without the newest entry and can only raise
+ * the counter: the device then holds every packet (CTR_BLOCK_MAX), it never reuses one. */
+TEST(zero_heavy_cut_erase_can_only_raise_the_counter) {
+    for (const ctr_dev* dp : {&dev_door, &dev_cam}) {
+        const ctr_dev& d = *dp;
+        uint32_t v = 0;
+        blank(d);
+        putEntry(d.page0, 0, 0x100);
+        putRaw(d.page0 + 1, 7, 0xFF, 0x01, 0xFF, 0xFE);
+        CHECK(d.decode((uint8_t)(d.page0 + 1), 7, &v) && v == d.block_max);   // documented
+        Sim s(d);
+        s.sentUpTo((0x100u << 8) | 0xFF);
+        for (int r = 0; r < 2; r++)
+            if (s.boot())
+                s.packets(3);
+        s.report();
+        CHECK_EQ(s.violations, 0);
+        CHECK_EQ(s.held, 6);
+    }
+}
+
+/* Camera: a picture starts with a 24-byte packet (0xB2) whose counter tags all its chunks. If
+ * that packet is held (its block cannot be logged), no picture may be taken or sent: its chunks
+ * would carry a counter that was not sent and that the next packet uses again. */
+TEST(cam_held_start_packet_sends_no_picture) {
+    const ctr_dev& d = dev_cam;
+    REQUIRE(d.picture && d.pic_ctr_ok);
+    uint32_t first = 0;
+    bool ok = true;
+    struct pic_trace t;
+    blank(d);
+    REQUIRE(d.boot(&first));                     // block 1 in slot 0
+    for (unsigned i = 1; i <= 9; i++)            // slots 1..9: bit 0 of b2 no longer programs
+        emu_stuck1[d.page0 * EMU_PAGE_SIZE + i * 4 + 3] = 0x01;
+    d.reset();
+    REQUIRE(d.boot(&first));                     // block 3 cannot be logged (slots 1..3)
+    CHECK_EQ(d.limit(), 2);
+    uint32_t ctr = first;
+    REQUIRE(d.pic_ctr_ok(&ctr, &ok));            // slots 4..6: still not logged
+    CHECK(!ok);
+    REQUIRE(d.picture(0xD3, &ctr, &t, &ok));     // slots 7..9
+    CHECK(!ok);
+    CHECK_EQ(t.npackets, 0);
+    CHECK_EQ(t.nchunks, 0);
+    CHECK_EQ(t.bf_cmds, 0);
+    CHECK_EQ(ctr, first);
+    // the next slot works: the picture goes out, tagged with its start packet's counter
+    REQUIRE(d.picture(0xD3, &ctr, &t, &ok));
+    CHECK(ok);
+    CHECK_EQ(t.npackets, 1);
+    CHECK_EQ(t.packet_ctr[0], first);
+    CHECK_EQ(t.bf_cmds, 1);
+    CHECK_EQ(t.nchunks, 3);                      // 100 bytes, 40 per chunk
+    for (unsigned i = 0; i < t.nchunks && i < PIC_TRACE_MAX; i++)
+        CHECK_EQ(t.chunk_tag[i], first);
+    checkClean(d);
+}
+
+TEST(cam_each_picture_has_its_own_tag) {
+    const ctr_dev& d = dev_cam;
+    REQUIRE(d.picture && d.pic_ctr_ok);
+    uint32_t first = 0, prevTag = 0;
+    bool ok;
+    struct pic_trace t;
+    blank(d);
+    REQUIRE(d.boot(&first));
+    uint32_t ctr = first + 250;                  // pictures across a block rollover
+    for (unsigned p = 0; p < 12; p++) {
+        REQUIRE(d.picture(0xD3, &ctr, &t, &ok));
+        CHECK(ok);
+        REQUIRE(t.npackets == 1);
+        CHECK_EQ(t.packet_marker[0], 0xB2);
+        uint32_t tag = t.packet_ctr[0];
+        if (p)
+            CHECK(tag > prevTag);
+        CHECK_EQ(t.nchunks, 3);
+        for (unsigned i = 0; i < t.nchunks && i < PIC_TRACE_MAX; i++)
+            CHECK_EQ(t.chunk_tag[i], tag);
+        prevTag = tag;
+    }
+    uint32_t v = 0;
+    CHECK(newestBlock(d, &v) && v == (first >> 8) + 1);   // the rollover block was logged first
+    checkClean(d);
 }
