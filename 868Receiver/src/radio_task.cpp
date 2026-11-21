@@ -78,8 +78,8 @@
 #define CC1101_MARCSTATE 0x35
 #define CC1101_RXBYTES   0x3B
 
-RadioStatus   g_radioStatus   = { false, 0, 0, 0x01, -100, 0 };
-RadioStatus   g_radioStatus2  = { false, 0, 0, 0x01, -100, 0 };
+RadioStatus   g_radioStatus   = { false, 0, 0, 0x01, -100, 0, 0 };
+RadioStatus   g_radioStatus2  = { false, 0, 0, 0x01, -100, 0, 0 };
 RadioDiag     g_radioDiag     = {};
 RadioDiag     g_radioDiag2    = {};
 RadioLoopDiag g_radioLoopDiag = {};
@@ -669,6 +669,7 @@ static void radioDoTx(RadioCmd& c) {
     ccStrobe(m0.csPin, CC1101_SFTX);
     ccWriteBurst(m0.csPin, CC1101_TXFIFO, c.pkt, VERISURE_PACKET_LEN);
     ccStrobe(m0.csPin, CC1101_STX);
+    bump(m0.status->txCount);
     const uint32_t stxUs = radioNowUs();
     maxTo(m0.diag->maxTxLatencyUs, (uint32_t)(stxUs - c.frameStartUs));
 

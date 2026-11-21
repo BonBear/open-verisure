@@ -10,6 +10,7 @@
 #include "jpeg_splice.h"
 #include "downlink.h"
 #include "picture_token.h"
+#include "duty_cycle.h"
 
 /* --------------------------- JPEG chunks (type 0x82) ---------------------------
  * Chunk n carries bytes 40n .. 40n+len-1 of the JPEG (40-byte chunks in 56-byte packets), the
@@ -61,6 +62,7 @@
 // jpegReset() clears): every jpegFinish() of a camera first flushes that camera's pending picture.
 #define ALLOC_RETRY_MS 60000UL       // a camera whose buffers could not be allocated is retried this often
 static_assert(IMG_MAX_CAMERAS == DOWNLINK_MAX_CAMERAS, "picture slots and downlink slots are per camera: keep equal");
+static_assert(IMG_MAX_CAMERAS == DUTY_MAX_CAMERAS, "picture slots and duty-cycle slots are per camera: keep equal");
 
 struct CamPic {
     bool used;                       // slot belongs to deviceId
@@ -419,6 +421,7 @@ void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t
     CamPic* c = findCam(deviceId);
     if (!c || !c->rsActive) return;
     noteChunkChannel(c, channel);
+    dutyCycleRecordCamChunk(deviceId, channel, true, false, (uint32_t)millis());
     pictureTokenOnChunk(deviceId, true, (uint32_t)millis());
     size_t off = (size_t)chunkIdx * JPEG_CHUNK;
     if (off + chunkLen > MAX_IMAGE_SIZE) return;
@@ -631,7 +634,9 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
         jpegFinish(c, c->imgEnd, false);    // previous picture lost its last chunk
         s_noResend = false;
     }
+    const bool newPic = (c->lastIdx < 0);
     noteChunkChannel(c, channel);
+    dutyCycleRecordCamChunk(deviceId, channel, false, newPic, (uint32_t)now);
     pictureTokenOnChunk(deviceId, false, (uint32_t)now);
     c->lastChunkTime = now;
 

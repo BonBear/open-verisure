@@ -17,6 +17,7 @@
 #include "image_receiver.h"
 #include "jpeg_splice.h"
 #include "picture_token.h"
+#include "duty_cycle.h"
 #include <Arduino.h>
 
 void imageReceiverHostTestRestart();    // image_receiver.cpp, HOST_TEST only
@@ -36,6 +37,7 @@ void resetAll() {
     imageReceiverHostTestRestart();
     downlinkInit();
     pictureTokenInit();
+    dutyCycleInit();
     hostMqttReset();
 }
 

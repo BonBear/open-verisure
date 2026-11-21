@@ -11,6 +11,7 @@
 #include "mqtt_manager.h"
 #include "downlink.h"
 #include "picture_token.h"
+#include "duty_cycle.h"
 #include "crypto.h"
 #include "image_receiver.h"
 #include "gateway_diag.h"
@@ -41,6 +42,7 @@ static void printHelp() {
     Serial.println("  freqoffset [n]             - Show or set CC1101 #1 frequency correction (FSCTRL0 steps)");
     Serial.println("  freqoffset2 [n]            - Show or set CC1101 #2 frequency correction (FSCTRL0 steps)");
     Serial.println("  pch [on|off|cal|status]    - Show or control picture channel module #2");
+    Serial.println("  duty                       - Show 1 h duty-cycle and band-50 fallback counters");
     Serial.println("  portalpass [<password>|clear] - Show, set (8-64 characters) or clear the web portal password");
     Serial.println("  appass                     - Show the setup access point's password (unique per gateway)");
     Serial.println("  radio [reset]              - Show (or clear) the radio task diagnostics");
@@ -171,7 +173,71 @@ static void printPchStatus() {
                       (unsigned long)tok.releases, (unsigned long)tok.expiries,
                       (unsigned long)tok.legacyClaims);
     }
+    {
+        DutyCycleStatus dc;
+        dutyCycleGetStatus((uint32_t)millis(), &dc);
+        Serial.printf("  Duty GW TX   : %lu ms (%lu.%lu%% of 3600 ms/h) | peak %lu ms | over %lu\n",
+                      (unsigned long)dc.gwTx1hMs,
+                      (unsigned long)(dc.gwTxBudgetPctTenths / 10),
+                      (unsigned long)(dc.gwTxBudgetPctTenths % 10),
+                      (unsigned long)dc.gwTxPeak1hMs,
+                      (unsigned long)dc.gwTxOverBudgetCount);
+        Serial.printf("  Fallback B50 : %lu pic(s) | %lu chunk(s) | %lu ms | cam B50 over %lu\n",
+                      (unsigned long)dc.totalFallbackPictures,
+                      (unsigned long)dc.totalFallbackChunks,
+                      (unsigned long)dc.totalFallbackAirtimeMs,
+                      (unsigned long)dc.totalCamB50OverBudgetCount);
+    }
     Serial.println("-----------------------------------\n");
+}
+
+static void printDutyStatus() {
+    DutyCycleStatus dc;
+    dutyCycleGetStatus((uint32_t)millis(), &dc);
+    Serial.println("\n--- DUTY CYCLE & FALLBACK (1H SLIDING) ---");
+    Serial.printf("  GW TX (B50)  : %lu ms (%lu.%lu%% of 3600 ms/h) | peak %lu ms | over %lu%s | total %lu pkt (%lu ms)\n",
+                  (unsigned long)dc.gwTx1hMs,
+                  (unsigned long)(dc.gwTxBudgetPctTenths / 10),
+                  (unsigned long)(dc.gwTxBudgetPctTenths % 10),
+                  (unsigned long)dc.gwTxPeak1hMs,
+                  (unsigned long)dc.gwTxOverBudgetCount,
+                  dc.gwTxOverBudget ? " [OVER]" : "",
+                  (unsigned long)dc.gwTxPackets,
+                  (unsigned long)dc.gwTxTotalMs);
+    Serial.printf("  Fallback B50 : %lu pic(s) | %lu chunk(s) | %lu ms | cam B50 over %lu | bucket age %lu s\n",
+                  (unsigned long)dc.totalFallbackPictures,
+                  (unsigned long)dc.totalFallbackChunks,
+                  (unsigned long)dc.totalFallbackAirtimeMs,
+                  (unsigned long)dc.totalCamB50OverBudgetCount,
+                  (unsigned long)(dc.curBucketAgeMs / 1000UL));
+    if (dc.cameraCount == 0) {
+        Serial.println("  Cameras      : none seen yet");
+    } else {
+        for (uint8_t i = 0; i < dc.cameraCount; i++) {
+            const CamDutyStatus& c = dc.cameras[i];
+            Serial.printf("  Camera %-8s: B50 %lu ms (%lu.%lu%%, peak %lu, over %lu%s) | B54 %lu ms (%lu.%lu%%, peak %lu, over %lu%s)\n",
+                          c.deviceId,
+                          (unsigned long)c.b50_1hMs,
+                          (unsigned long)(c.b50BudgetPctTenths / 10),
+                          (unsigned long)(c.b50BudgetPctTenths % 10),
+                          (unsigned long)c.b50Peak1hMs,
+                          (unsigned long)c.b50OverBudgetCount,
+                          c.b50OverBudget ? " OVER" : "",
+                          (unsigned long)c.b54_1hMs,
+                          (unsigned long)(c.b54BudgetPctTenths / 10),
+                          (unsigned long)(c.b54BudgetPctTenths % 10),
+                          (unsigned long)c.b54Peak1hMs,
+                          (unsigned long)c.b54OverBudgetCount,
+                          c.b54OverBudget ? " OVER" : "");
+            Serial.printf("                 pkt24 %lu | PCH chunks %lu | fallback %lu pic (%lu ch, %lu ms)\n",
+                          (unsigned long)c.pkt24Count,
+                          (unsigned long)c.pchChunks,
+                          (unsigned long)c.fallbackPictures,
+                          (unsigned long)c.fallbackChunks,
+                          (unsigned long)c.fallbackAirtimeMs);
+        }
+    }
+    Serial.println("------------------------------------------\n");
 }
 
 static void printStatus() {
@@ -288,6 +354,8 @@ static void processCommand(char* cmd) {
     } else if (strcmp(cmd, "radio reset") == 0) {
         radioDiagReset();
         Serial.println("[CLI] Radio diagnostics cleared.");
+    } else if (strcmp(cmd, "duty") == 0) {
+        printDutyStatus();
 #ifdef RADIO_EVAL
     } else if (strncmp(cmd, "loopblock ", 10) == 0) {
         unsigned long ms = strtoul(cmd + 10, nullptr, 10);

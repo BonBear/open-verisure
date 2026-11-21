@@ -572,6 +572,71 @@ static void ctr_boot(void) {
     s_ctr = best << 8;
 }
 
+#define BF_TICKS_PER_S 36        // delay_ms(10) takes ~27.5 ms here (delay_ms runs ~2.75x slow)
+
+/* ============================================================================
+ * Duty-cycle self-accounting (7 x 10-min buckets; band 50 = 0.1%, band 54 = 10%)
+ * ============================================================================ */
+#define DUTY_BUCKETS         7
+#define DUTY_BUCKET_TICKS    (600U * BF_TICKS_PER_S)   /* 21600 ticks = 10 min @ 36 ticks/s */
+#define DUTY_PKT24_MS        7UL
+#define DUTY_CHUNK56_MS      14UL
+#define DUTY_B50_LIMIT_MS    3600UL
+#define DUTY_B54_LIMIT_MS    360000UL
+#define DUTY_B54_SOFT_LIMIT  1
+
+static __xdata uint32_t s_dc_b50[DUTY_BUCKETS];
+static __xdata uint32_t s_dc_b54[DUTY_BUCKETS];
+static __xdata uint16_t s_dc_ticks;
+static __xdata uint8_t  s_dc_idx;
+static __xdata uint16_t s_b50_fallback_pics;
+static __xdata uint16_t s_b50_over_count;
+static __xdata uint16_t s_b54_over_count;
+static __xdata bool     s_b50_over;
+static __xdata bool     s_b54_over;
+
+static uint32_t duty_sum(const __xdata uint32_t *buckets) {
+    uint32_t sum = 0;
+    uint8_t i;
+    for (i = 0; i < DUTY_BUCKETS; i++)
+        sum += buckets[i];
+    return sum;
+}
+
+static void duty_add_b50(uint32_t ms) {
+    s_dc_b50[s_dc_idx] += ms;
+    if (duty_sum(s_dc_b50) > DUTY_B50_LIMIT_MS && !s_b50_over) {
+        s_b50_over = true;
+        if (s_b50_over_count < 0xFFFFU)
+            s_b50_over_count++;
+    }
+}
+
+static void duty_add_b54(uint32_t ms) {
+    s_dc_b54[s_dc_idx] += ms;
+    if (duty_sum(s_dc_b54) > DUTY_B54_LIMIT_MS && !s_b54_over) {
+        s_b54_over = true;
+        if (s_b54_over_count < 0xFFFFU)
+            s_b54_over_count++;
+    }
+}
+
+static void duty_tick(uint16_t ticks) {
+    s_dc_ticks += ticks;
+    while (s_dc_ticks >= DUTY_BUCKET_TICKS) {
+        s_dc_ticks -= DUTY_BUCKET_TICKS;
+        s_dc_idx++;
+        if (s_dc_idx >= DUTY_BUCKETS)
+            s_dc_idx = 0;
+        s_dc_b50[s_dc_idx] = 0;
+        s_dc_b54[s_dc_idx] = 0;
+        if (duty_sum(s_dc_b50) <= DUTY_B50_LIMIT_MS)
+            s_b50_over = false;
+        if (duty_sum(s_dc_b54) <= DUTY_B54_LIMIT_MS)
+            s_b54_over = false;
+    }
+}
+
 /* ============================================================================
  * Packet build + transmit
  * ============================================================================ */
@@ -642,6 +707,7 @@ static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t ar
     s_ctr = ctr + 1;
 
     g_tx_count++;
+    duty_add_b50(DUTY_PKT24_MS);
     if (!radio_send_dma()) {
         g_tx_fail++;
     }
@@ -700,6 +766,13 @@ static void transmit_big_chunk(uint8_t type, uint16_t chunk_idx, uint8_t chunk_l
     PKTLEN = BIG_PACKET_LEN;
     s_tx_len = BIG_PACKET_LEN;
     radio_send_dma();
+    if (s_pic_ch == RF_CH_PCH) {
+        duty_add_b54(DUTY_CHUNK56_MS);
+    } else {
+        if (type == 0x82 && is_first && s_b50_fallback_pics < 0xFFFFU)
+            s_b50_fallback_pics++;
+        duty_add_b50(DUTY_CHUNK56_MS);
+    }
     PKTLEN = PACKET_LEN;
     s_tx_len = PACKET_LEN;
 }
@@ -711,7 +784,6 @@ static void transmit_big_chunk(uint8_t type, uint16_t chunk_idx, uint8_t chunk_l
 #define BF_IMG_CMD 0xD3          // 0xD3 colour 320x240 as delta (only changed blocks), 0xD1 full colour, 0xD0 grayscale
 #define BF_IMG_HIRES_ON_MOTION 1 // the 2nd picture of a motion event is 640x480 colour (0xD2/0xD6, ~18 KB, ~12 s)
 #define BF_PIR_HOLD_S 30         // a motion event lasts this long after the last PIR activity
-#define BF_TICKS_PER_S 36        // delay_ms(10) takes ~27.5 ms here (delay_ms runs ~2.75x slow)
 #define BF_IMG_PAUSE_TICKS (5 * BF_TICKS_PER_S)   // pause between pictures during motion (~5 s)
 #define BF_IMG_PIC_TICKS (7 * BF_TICKS_PER_S)     // the PIR hold time one picture counts for
 #define BF_ARMED_AT_BOOT 1       // alarm state until the gateway has answered a poll (armed: fail safe)
@@ -1049,6 +1121,7 @@ static bool cam_token_acquire(uint8_t cmd, bool motion, bool *has_token) {
         if (tries + 1 < PIC_TOK_HOLD_MAX_TRIES) {
             for (w = 0; w < PIC_TOK_RETRY_TICKS; w++)
                 delay_ms(10);
+            duty_tick(PIC_TOK_RETRY_TICKS);
         }
     }
     *has_token = false;
@@ -1359,7 +1432,11 @@ static void cam_alarm_loop(void) {
 #endif
             if (ev_pic < 2)
                 ev_pic++;
-        } else if (s_armed && BF_ARMED_IDLE_S && idle >= (uint32_t)BF_ARMED_IDLE_S * BF_TICKS_PER_S) {
+        } else if (s_armed && BF_ARMED_IDLE_S &&
+#if DUTY_B54_SOFT_LIMIT
+                   !s_b54_over &&
+#endif
+                   idle >= (uint32_t)BF_ARMED_IDLE_S * BF_TICKS_PER_S) {
             // decided by the preprocessor, as for the tamper picture: a run-time test of the
             // constant BF_IMG_CMD makes SDCC warn (110, condition always true or false)
 #if BF_AUTO_FLASH && BF_IMG_CMD == 0xD3
@@ -1404,7 +1481,11 @@ static void cam_alarm_loop(void) {
             // acknowledgement (a picture takes seconds over RF, so a disarm waits less too)
             poll = BF_POLL_NOW;
             hold = hold > BF_IMG_PIC_TICKS ? hold - BF_IMG_PIC_TICKS : 0;
+#if DUTY_B54_SOFT_LIMIT
+            gap = s_b54_over ? (30U * BF_TICKS_PER_S) : BF_IMG_PAUSE_TICKS;
+#else
             gap = BF_IMG_PAUSE_TICKS;   // at least ~5 s to the next alarm picture
+#endif
         } else {
             uint16_t n = 1;
 #if BF_SLEEP_IDLE
@@ -1415,6 +1496,7 @@ static void cam_alarm_loop(void) {
                 delay_ms(10);
             poll += n;
             idle += n;
+            duty_tick(n);
             keep = keep > n ? keep - n : 0;
             gap = gap > n ? gap - n : 0;
             tamper_gap = tamper_gap > n ? tamper_gap - n : 0;
