@@ -1033,6 +1033,7 @@ static void handleApiPicture() {
  * after the last one. Access is checked on the first piece, before anything is written; a refused
  * upload is read to its end (and ignored) so that the client still gets the error reply. A dropped
  * connection aborts the update. The running firmware stays in every error case. */
+#define OTA_PIECE_TIMEOUT_MS 3000       // max wait for the next bytes of an upload (< the 5 s loop watchdog)
 static bool s_otaBody = false;          // this request's body came as a raw stream
 static bool s_otaAllowed = false;
 static bool s_otaReplied = false;       // refused at the start: reply sent, connection closed
@@ -1056,6 +1057,11 @@ static void handleApiOtaBody() {
     HTTPRaw& raw = s_server.raw();
     switch (raw.status) {
         case RAW_START:
+            // The WebServer waits up to 5 s (HTTP_MAX_POST_WAIT/SEND_WAIT) for the next piece inside
+            // readBytes(), as long as the loop task watchdog (5 s): a stalled client would reboot the
+            // gateway before the read gives up. 3 s leaves the watchdog 2 s of margin; the timeout
+            // restarts with every byte that arrives and is reset by the WebServer for the next request.
+            s_server.client().setTimeout(OTA_PIECE_TIMEOUT_MS);
             s_otaBody = true;
             s_otaReplied = false;
             s_deferReply = true;
@@ -1088,8 +1094,11 @@ static void handleApiOtaBody() {
             s_otaReplied = false;
             break;
     }
-    // the upload blocks loop() until it is complete: keep reading the radio meanwhile
+    // the upload blocks loop() until it is complete: feed the loop task watchdog for every piece
+    // (the OTA path must never be killed by it) and keep reading the radio meanwhile
+    feedLoopWDT();
     if (s_busyHook) s_busyHook();
+    feedLoopWDT();   // the hook may have published to MQTT
 }
 
 static void handleApiOta() {
@@ -1108,7 +1117,10 @@ static void handleApiOta() {
         return;
     }
     s_otaAllowed = false;
-    if (!otaFinish()) {
+    feedLoopWDT();   // otaFinish(): MD5 check and esp_ota_set_boot_partition() verifying the whole image
+    const bool otaOk = otaFinish();
+    feedLoopWDT();
+    if (!otaOk) {
         s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"" + jsonEscape(otaError()) + "\"}");
         return;
     }

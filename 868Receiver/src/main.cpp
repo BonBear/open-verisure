@@ -272,6 +272,8 @@ void setup() {
     Serial.println("\n=======================================================");
     Serial.println("  ESP32-S2 VERISURE GATEWAY & RECEIVER (868.950 MHz)   ");
     Serial.println("=======================================================\n");
+    // a watchdog reboot of a hung loop() shows up here as "task_wdt" (also in 'status' and /api/status)
+    Serial.printf("[System] Last reset reason: %s\n", gatewayDiagSample().resetReason);
 
     // 1. Initialize WebPortal, NVS Config, Serial CLI & MQTT
     webPortalInit();
@@ -317,6 +319,13 @@ void setup() {
     lastEventTime = millis();
     lastHeartbeat = lastEventTime;
     webPortalSetBusyHook(radioDrainHook);   // an OTA upload blocks loop(): keep handling the queued frames
+
+    // Subscribe loopTask to the task watchdog (5 s, panic = reboot, reset reason task_wdt). Bench
+    // 2026-11-20: loop() hung once after a 2 h soak (HTTP, MQTT and USB CDC dead, ping alive) and
+    // nothing rebooted the gateway. The core feeds the watchdog once per loop() iteration; every
+    // longer blocking path (OTA upload, MQTT connect/picture publish, CLI scan/connect) feeds it
+    // itself with feedLoopWDT(). Enabled last: setup() above blocks for ~10 s (delays, Wi-Fi wait).
+    enableLoopWDT();
 }
 
 void loop() {

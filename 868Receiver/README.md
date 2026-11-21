@@ -71,6 +71,11 @@ The web page has the same upload (Firmware Update card).
 * The upload (~1 MB, ~10 s) blocks the main loop: the radio task keeps reading the FIFO and
   the received frames are handled for every piece, but the MQTT client and the rest of the
   loop wait, and flash writes and erases pause every task (a packet can be lost then). If OTA ever leaves the gateway unreachable, flash it over USB as above.
+* **Loop watchdog:** `loopTask` (setup/loop) is subscribed to the 5 s task watchdog, so a hung
+  `loop()` reboots the gateway; the reason shows as `task_wdt` at boot, in the CLI `status` and as
+  `reset_reason` in `/api/status`. The OTA upload feeds the watchdog for every received piece and
+  around the final verification, and gives up on a client that sends nothing for 3 s, so an update
+  is not killed by it. The MQTT reconnect, picture publish and the CLI `scan`/`connect` feed it too.
 
 ## What it does
 
@@ -143,8 +148,9 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   `portalpass [<password>|clear]` (show, set or clear the web portal password), `reset` (erase
   all NVS settings), `reboot`. The master key is never printed, only its check value.
   `radio` shows the radio task's counters and `radio reset` clears them. Only in the
-  evaluation env `lolin_s2_mini_eval` (`-D RADIO_EVAL=1`): `loopblock <ms>` (block loop() once),
-  `radiostall <ms>` (the radio task skips FIFO servicing once) and `polldelay <ms>` (delay the
+  evaluation env `lolin_s2_mini_eval` (`-D RADIO_EVAL=1`): `loopblock <ms>` (block loop() once, max 4 s: below the loop watchdog),
+  `wdttest` (block loop() without feeding the watchdog: the gateway must reboot with reset reason
+  `task_wdt`), `radiostall <ms>` (the radio task skips FIFO servicing once) and `polldelay <ms>` (delay the
   camera poll answers).
 * **`/api/status` `radio_diag`** (radio task counters since boot): `frames`, `fifo_overflows`,
   `partial_drops`, `queue_drops`, `queue_high_water` (of 256), `max_gap_us` and `gap_gt_5ms/10ms/20ms`

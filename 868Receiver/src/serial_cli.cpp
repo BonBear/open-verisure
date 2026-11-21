@@ -42,7 +42,8 @@ static void printHelp() {
     Serial.println("  appass                     - Show the setup access point's password (unique per gateway)");
     Serial.println("  radio [reset]              - Show (or clear) the radio task diagnostics");
 #ifdef RADIO_EVAL
-    Serial.println("  loopblock <ms>             - Eval: block loop() once for <ms>");
+    Serial.println("  loopblock <ms>             - Eval: block loop() once for <ms> (max 4000, below the loop watchdog)");
+    Serial.println("  wdttest                    - Eval: block loop() without feeding the watchdog (reboots, reset reason task_wdt)");
     Serial.println("  radiostall <ms>            - Eval: the radio task skips FIFO servicing once for <ms> (max 3000)");
     Serial.println("  polldelay <ms>             - Eval: delay every camera poll answer by <ms> before it is queued (0 = off)");
 #endif
@@ -164,7 +165,19 @@ static void runScan() {
         WiFi.mode(WIFI_STA);
     }
     delay(100);
-    int n = WiFi.scanNetworks(false, true);
+    // Async scan polled here: the synchronous call can take longer than the 5 s loop watchdog
+    WiFi.scanNetworks(true, true);
+    const unsigned long scanStart = millis();
+    int n;
+    while ((n = WiFi.scanComplete()) == WIFI_SCAN_RUNNING && millis() - scanStart < 15000) {
+        feedLoopWDT();
+        delay(50);
+    }
+    if (n < 0) {
+        Serial.println(n == WIFI_SCAN_RUNNING ? "[Wi-Fi] Scan still running after 15 s, giving up."
+                                              : "[Wi-Fi] Scan failed.");
+        return;
+    }
     Serial.printf("[Wi-Fi] Found %d networks:\n", n);
     for (int i = 0; i < n; i++) {
         wifi_auth_mode_t auth = WiFi.encryptionType(i);
@@ -206,10 +219,15 @@ static void processCommand(char* cmd) {
 #ifdef RADIO_EVAL
     } else if (strncmp(cmd, "loopblock ", 10) == 0) {
         unsigned long ms = strtoul(cmd + 10, nullptr, 10);
-        if (ms > 10000) ms = 10000;
-        Serial.printf("[CLI] Blocking loop() for %lu ms (max 10000)\n", ms);
+        if (ms > 4000) ms = 4000;   // below the 5 s loop watchdog: wdttest triggers it on purpose
+        Serial.printf("[CLI] Blocking loop() for %lu ms (max 4000)\n", ms);
         Serial.flush();
         delay(ms);
+    } else if (strcmp(cmd, "wdttest") == 0) {
+        Serial.println("[CLI] Blocking loop() without feeding the watchdog: expect a reboot after ~5 s (reset reason task_wdt)");
+        Serial.flush();
+        delay(15000);
+        Serial.println("[CLI] ERROR: the loop watchdog did NOT reset the gateway");
     } else if (strncmp(cmd, "radiostall ", 11) == 0) {
         unsigned long ms = strtoul(cmd + 11, nullptr, 10);
         if (ms > 3000) ms = 3000;
@@ -247,6 +265,7 @@ static void processCommand(char* cmd) {
 
         unsigned long t0 = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
+            feedLoopWDT();   // waits up to 10 s, longer than the loop watchdog
             delay(250);
             Serial.print(".");
         }

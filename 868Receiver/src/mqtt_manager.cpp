@@ -251,6 +251,7 @@ static void checkMqttConnection() {
 
     s_mqttClient.setServer(cfg.mqttHost, cfg.mqttPort);
     s_mqttClient.setSocketTimeout(2);   // CONNACK wait, seconds (default 15)
+    feedLoopWDT();   // worst case below: DNS lookup + 1.5 s TCP connect + 2 s CONNACK wait, then the discovery publishes
 
     // Open TCP ourselves with a bounded timeout; PubSubClient reuses a connected client.
     // (A host name still costs one blocking DNS lookup; an IP address does not.)
@@ -283,12 +284,14 @@ static void checkMqttConnection() {
         Serial.println("[MQTT] Connected to broker!");
         s_wasConnected = true;
         s_reconnectIntervalMs = 5000;
+        feedLoopWDT();
 
         // Publish Gateway Online Status (Retained)
         s_mqttClient.publish(statusTopic.c_str(), "online", true);
 
         // Immediately publish gateway discovery and announce all known sensors
         publishGatewayDiscovery(cfg.mqttTopic);
+        feedLoopWDT();
         publishAlarmDiscovery(cfg.mqttTopic);
         publishAlarmState();
         String alarmSet = String(cfg.mqttTopic) + "/alarm/set";
@@ -301,6 +304,7 @@ static void checkMqttConnection() {
             const SensorRecord* rec = sensorRegistryGetByIndex(i);
             if (rec && rec->active) {
                 publishSensorDiscovery(rec->lastTelem.deviceId, cfg.mqttTopic);
+                feedLoopWDT();   // one sensor = up to ~20 publishes
             }
         }
     } else {
@@ -361,7 +365,17 @@ bool mqttPublishCameraImage(const char* deviceId, const uint8_t* jpegBuf, size_t
     // Use PubSubClient streaming publish to support images larger than MQTT_MAX_PACKET_SIZE
     bool ok = s_mqttClient.beginPublish(topic.c_str(), len, true);
     if (ok) {
-        size_t written = s_mqttClient.write(jpegBuf, len);
+        // In pieces, feeding the loop task watchdog between them: a ~35 KB picture to a slow broker
+        // link can take longer than the 5 s watchdog although it keeps moving. (A write() to a
+        // stalled peer still blocks up to ~10 s: that stays a watchdog reboot, by design.)
+        size_t written = 0;
+        while (written < len) {
+            const size_t n = (len - written > 1024) ? 1024 : (len - written);
+            const size_t w = s_mqttClient.write(jpegBuf + written, n);
+            written += w;
+            feedLoopWDT();
+            if (w != n) break;
+        }
         ok = s_mqttClient.endPublish();
         if (ok && written == len) {
             Serial.printf("[MQTT] >> Successfully published Camera Image (%u bytes) to %s\n", (unsigned int)len, topic.c_str());
