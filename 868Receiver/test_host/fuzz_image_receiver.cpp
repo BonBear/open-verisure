@@ -38,16 +38,16 @@ void resetAll() {
 }
 
 /** imageReceiverProcessChunk() with the data in an exactly sized heap block. */
-void chunk(const char* dev, uint16_t idx, uint8_t len, bool first, bool last, const uint8_t* src) {
+void chunk(const char* dev, uint16_t idx, uint8_t len, bool first, bool last, const uint8_t* src, uint8_t ch = 0) {
     ExactBuf b(len);
     if (len) memcpy(b.p, src, len);
-    imageReceiverProcessChunk(dev, idx, len, first, last, b.p);
+    imageReceiverProcessChunk(dev, idx, len, first, last, b.p, ch);
 }
 
-void resend(const char* dev, uint16_t idx, uint8_t len, bool last, const uint8_t* src) {
+void resend(const char* dev, uint16_t idx, uint8_t len, bool last, const uint8_t* src, uint8_t ch = 0) {
     ExactBuf b(len);
     if (len) memcpy(b.p, src, len);
-    imageReceiverProcessResend(dev, idx, len, last, b.p);
+    imageReceiverProcessResend(dev, idx, len, last, b.p, ch);
 }
 
 unsigned chunksOf(size_t len) { return (unsigned)((len + CHUNK - 1) / CHUNK); }
@@ -998,4 +998,99 @@ TEST(fuzz_image_slot_with_running_resend_is_not_evicted) {
         checkOutputs();
         if (fuzzStop("fuzz_image_slot_with_running_resend_is_not_evicted", it)) return;
     }
+}
+
+// Per-camera PCH miss detector: 2 missed pictures -> suppressed 15 min; 2 more after expiry -> 30 min ->
+// doubles up to 4 h cap; receiving a chunk on channel 1 resets miss count, backoff and suppression.
+TEST(fuzz_image_pch_miss_detector) {
+    const unsigned long MIN_MS = 60UL * 1000UL;
+    const unsigned long HOUR_MS = 60UL * MIN_MS;
+    Rng r(0x1A6E0011);
+    std::vector<uint8_t> pic = fuzzAssemble(randomPicture(r, 320, 1, MAX_IMAGE_SIZE));
+    unsigned nc = chunksOf(pic.size());
+    REQUIRE(nc >= 2);
+
+    auto sendPicOnCh = [&](const char* dev, uint8_t ch) {
+        for (unsigned c = 0; c < nc; c++)
+            chunk(dev, (uint16_t)c, chunkLen(pic, c), c == 0, c + 1 == nc, &pic[c * CHUNK], ch);
+    };
+
+    // 1. Two missed pictures (deaf channel: 0 chunks, finalized on poll) -> suppressed for 15 min
+    resetAll();
+    hostAdvanceMillis(1000);
+    CHECK(!imageReceiverPchSuppressed(CAM));
+    imageReceiverNotePicStart(CAM, true);
+    imageReceiverPollSeen(CAM);                 // miss 1
+    CHECK(!imageReceiverPchSuppressed(CAM));
+    imageReceiverNotePicStart(CAM, true);
+    imageReceiverPollSeen(CAM);                 // miss 2 -> 15 min suppression
+    CHECK(imageReceiverPchSuppressed(CAM));
+    CHECK(!imageReceiverPchSuppressed(CAM_B));  // per-camera isolation
+
+    hostAdvanceMillis(15 * MIN_MS - 1);
+    CHECK(imageReceiverPchSuppressed(CAM));
+    hostAdvanceMillis(1);
+    CHECK(!imageReceiverPchSuppressed(CAM));
+
+    // 2. Exponential backoff on repeated misses after expiry: 30m -> 60m -> 120m -> 240m (4h) -> 4h cap
+    const unsigned long expectedBackoff[] = {30 * MIN_MS, 60 * MIN_MS, 120 * MIN_MS, 4 * HOUR_MS, 4 * HOUR_MS};
+    for (unsigned long waitMs : expectedBackoff) {
+        // Test both deaf-channel (NotePicStart + PollSeen) and main-channel fallback (channel 0 chunks)
+        imageReceiverNotePicStart(CAM, true);
+        sendPicOnCh(CAM, 0);
+        CHECK(!imageReceiverPchSuppressed(CAM));
+        imageReceiverNotePicStart(CAM, true);
+        imageReceiverPollSeen(CAM);
+        CHECK(imageReceiverPchSuppressed(CAM));
+
+        hostAdvanceMillis(waitMs - 1);
+        CHECK(imageReceiverPchSuppressed(CAM));
+        hostAdvanceMillis(1);
+        CHECK(!imageReceiverPchSuppressed(CAM));
+    }
+
+    // 3. Receiving a chunk on channel 1 resets miss count, backoff and suppression
+    // First accumulate 1 miss after an expired 15 min backoff, then succeed on channel 1
+    resetAll();
+    hostAdvanceMillis(1000);
+    for (int i = 0; i < 2; i++) {
+        imageReceiverNotePicStart(CAM, true);
+        imageReceiverPollSeen(CAM);
+    }
+    CHECK(imageReceiverPchSuppressed(CAM));
+    hostAdvanceMillis(15 * MIN_MS);
+    CHECK(!imageReceiverPchSuppressed(CAM));    // backoff is now 15 min (next miss would double to 30 min)
+
+    imageReceiverNotePicStart(CAM, true);
+    imageReceiverPollSeen(CAM);                 // 1 miss
+    CHECK(!imageReceiverPchSuppressed(CAM));
+    imageReceiverNotePollAnswer(CAM, true);
+    imageReceiverNotePicStart(CAM);             // 1-arg overload using last poll answer
+    sendPicOnCh(CAM, 1);                        // succeeds on PCH -> resets misses & backoff
+    imageReceiverPollSeen(CAM);
+    CHECK(!imageReceiverPchSuppressed(CAM));
+
+    // Next 2 misses must start at 15 min again (not 30 min)
+    imageReceiverNotePicStart(CAM, true);
+    imageReceiverNotePicStart(CAM, true);       // finalizes first miss, starts second
+    imageReceiverPollSeen(CAM);                 // finalizes second miss
+    CHECK(imageReceiverPchSuppressed(CAM));
+    hostAdvanceMillis(15 * MIN_MS);
+    CHECK(!imageReceiverPchSuppressed(CAM));
+
+    // 4. Stats and manual reset ('pch on')
+    PchCamStats stats[IMG_MAX_CAMERAS];
+    int nStats = imageReceiverPchGetStats(stats, IMG_MAX_CAMERAS);
+    CHECK_EQ(nStats, 1);
+    CHECK_STR(stats[0].deviceId, CAM);
+    CHECK_EQ(stats[0].pchChunks, nc);
+    imageReceiverNotePicStart(CAM, true);
+    imageReceiverPollSeen(CAM);
+    imageReceiverNotePicStart(CAM, true);
+    imageReceiverPollSeen(CAM);
+    CHECK(imageReceiverPchSuppressed(CAM));
+    imageReceiverPchReset();
+    CHECK(!imageReceiverPchSuppressed(CAM));
+
+    imageReceiverPublishPending();
 }

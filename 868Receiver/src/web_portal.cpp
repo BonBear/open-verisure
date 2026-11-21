@@ -772,13 +772,33 @@ static void handleApiStatus() {
     radioDiagAppendJson(json, 1);
     json += "},";
 
+    PchCamStats pchCams[IMG_MAX_CAMERAS];
+    int nPchCams = imageReceiverPchGetStats(pchCams, IMG_MAX_CAMERAS);
+    uint32_t totalPchChunks = 0, totalMainChunks = 0;
+    for (int i = 0; i < nPchCams; i++) {
+        totalPchChunks += pchCams[i].pchChunks;
+        totalMainChunks += pchCams[i].mainChunks;
+    }
     json += "\"pch\":{";
     json += "\"enabled\":" + String(cfg.pchEnabled ? "true" : "false") + ",";
     json += "\"online\":" + String(g_radioStatus2.online ? "true" : "false") + ",";
     json += "\"mode\":\"" + String(radioIsCalMode() ? "cal" : "pch") + "\",";
     json += "\"freq_offset2\":" + String((int)cfg.freqOffset2) + ",";
     json += "\"rssi\":" + String((int)g_radioStatus2.rssiDbm) + ",";
-    json += "\"marcstate\":\"0x" + String(g_radioStatus2.marcState, HEX) + "\"},";
+    json += "\"marcstate\":\"0x" + String(g_radioStatus2.marcState, HEX) + "\",";
+    json += "\"pch_chunks\":" + String(totalPchChunks) + ",";
+    json += "\"main_chunks\":" + String(totalMainChunks) + ",";
+    json += "\"cameras\":[";
+    for (int i = 0; i < nPchCams; i++) {
+        if (i > 0) json += ",";
+        json += "{\"id\":\"" + String(pchCams[i].deviceId) + "\",";
+        json += "\"pch_chunks\":" + String(pchCams[i].pchChunks) + ",";
+        json += "\"main_chunks\":" + String(pchCams[i].mainChunks) + ",";
+        json += "\"misses\":" + String((unsigned)pchCams[i].misses) + ",";
+        json += "\"suppressed\":" + String(pchCams[i].suppressed ? "true" : "false") + ",";
+        json += "\"suppress_rem_sec\":" + String(pchCams[i].suppressRemSec) + "}";
+    }
+    json += "]},";
 
     json += "\"diag\":{";       // counters since boot (gateway_diag.h)
     gatewayDiagAppendJson(json, gatewayDiagSample());

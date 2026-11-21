@@ -208,7 +208,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId, bool onlyKnown = 
 #define PIC_TAG_AHEAD  64      // a picture's start packet may be this far ahead of the last counter
 #define PIC_TAG_BEHIND 128      // ... or this far behind (a picture's polls and resend rounds: <~100)
 
-bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16]) {
+bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16], uint8_t channel) {
     if (!rxBuf56 || !masterKey) return false;
     char devId[9] = {0};
     for (int i = 0; i < 8; i++) {
@@ -268,9 +268,9 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16])
     sess->lastSeen = millis();
     uint16_t idx = ((uint16_t)plain[3] << 8) | plain[4];
     if (resent)       // a chunk resent on request: patched into the last picture
-        imageReceiverProcessResend(devId, idx, len, (plain[5] & 0x40) != 0, &plain[6]);
+        imageReceiverProcessResend(devId, idx, len, (plain[5] & 0x40) != 0, &plain[6], channel);
     else
-        imageReceiverProcessChunk(devId, idx, len, (plain[5] & 0x80) != 0, (plain[5] & 0x40) != 0, &plain[6]);
+        imageReceiverProcessChunk(devId, idx, len, (plain[5] & 0x80) != 0, (plain[5] & 0x40) != 0, &plain[6], channel);
     return true;
 }
 

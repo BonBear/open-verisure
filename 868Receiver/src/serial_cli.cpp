@@ -142,6 +142,7 @@ static void printPchStatus() {
     } else {
         Serial.println("  CAL stats    : none yet (run 'pch cal' while a device transmits)");
     }
+    imageReceiverPchPrintStatus();
     Serial.println("-----------------------------------\n");
 }
 
@@ -417,6 +418,7 @@ static void processCommand(char* cmd) {
             const bool en = (strcmp(arg, "on") == 0);
             ConfigManager::setPchEnabled(en);
             ConfigManager::save();
+            if (en) imageReceiverPchReset();
             const bool applied = radioRequestSetMode(false, 200);
             Serial.printf("[CLI] Picture channel %s and saved (module #2 mode: PCH 869.525 MHz%s%s).\n",
                           en ? "ENABLED" : "DISABLED",

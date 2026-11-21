@@ -24,7 +24,8 @@ static uint16_t s_lastIdx = 0;
 static bool s_lastFirst = false, s_lastLast = false;
 static uint8_t s_lastLen = 0, s_lastData0 = 0;
 
-void imageReceiverProcessChunk(const char*, uint16_t idx, uint8_t len, bool first, bool last, const uint8_t* data) {
+void imageReceiverProcessChunk(const char*, uint16_t idx, uint8_t len, bool first, bool last, const uint8_t* data,
+                               uint8_t) {
     s_chunks++;
     s_lastIdx = idx;
     s_lastLen = len;
@@ -33,7 +34,7 @@ void imageReceiverProcessChunk(const char*, uint16_t idx, uint8_t len, bool firs
     s_lastData0 = data[0];
 }
 
-void imageReceiverProcessResend(const char*, uint16_t idx, uint8_t len, bool last, const uint8_t* data) {
+void imageReceiverProcessResend(const char*, uint16_t idx, uint8_t len, bool last, const uint8_t* data, uint8_t) {
     s_resends++;
     s_lastIdx = idx;
     s_lastLen = len;

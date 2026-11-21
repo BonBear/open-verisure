@@ -144,9 +144,10 @@ def main():
                          text[tx[0]:tx[1]]):
             die("transmit() no longer sets 's_tx_held = !ctr_use(ctr >> 8);' (pic_stubs.h)")
         poll = body_of(text, "cam_poll")
-        if not re.search(r"\btransmit\s*\([^;]*\);\s*if\s*\(\s*s_tx_held\s*\|\|",
-                         text[poll[0]:poll[1]]):
-            die("cam_poll() no longer returns at once after a held poll ('if (s_tx_held ||')")
+        if not re.search(
+                r"\btransmit\s*\([^;]*\);\s*if\s*\(\s*s_tx_held\s*(?:\|\||\)\s*(?://[^\n]*\n\s*)?return\s+false\s*;)",
+                text[poll[0]:poll[1]]):
+            die("cam_poll() no longer returns at once after a held poll ('if (s_tx_held')")
         calls = [m for m in re.finditer(r"\bbf_send_picture\s*\(", text)
                  if not re.search(r"\bbool\s*$", text[:m.start()])]
         if not calls or any(not re.search(r"\bpic_ok\s*&&\s*$", text[:m.start()])

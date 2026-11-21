@@ -12,8 +12,10 @@
  * 24-byte packet: 8 bytes device ID (plain) + AES-128-ECB(device key, plaintext):
  *   [0] 'D'  [1] 'L'  [2..5] the poll's 32-bit counter (big endian)  [6] armed (0/1)
  *   [7] command (0 none, 0xD1..0xD6 take a picture, 0xE8 HOLD, 0xF0 resend)
- *   [8..9] resend: first chunk (big endian)  [10..13] resend: bitmap, bit i (byte 10 + i/8,
- *   bit i%8) = chunk first + i is missing  [14] 'V'  [15] 'S'
+ *   [8..9] resend (cmd 0xF0): first chunk (big endian), [10..13] resend: bitmap, bit i (byte 10 + i/8,
+ *   bit i%8) = chunk first + i is missing.
+ *   When cmd != 0xF0: [8] flags (DL_FLAG_*), [9] picture channel (0 = 869.525 MHz when DL_FLAG_PCH
+ *   is set, else 0), [10..13] 0.  [14] 'V'  [15] 'S'
  * The camera accepts it only if the counter is the one of its own last poll. The counter
  * never repeats (it survives resets, see crypto.cpp), so a recorded answer never fits again.
  */
@@ -52,6 +54,12 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd);
 
 #define DOWNLINK_CMD_RESEND   0xF0
 
+#define DL_FLAG_PCH           0x01
+#define DL_FLAG_GRANT         0x02
+#define DL_FLAG_HOLD          0x04
+#define DL_FLAG_TOKEN         0x08
+#define DL_PCH_CH_869525      0
+
 /** Ask a camera to resend the picture chunks first + i for every bit i set in map (32 chunks
  *  at most per request) with its next poll answer (sent once; it goes before a picture command,
  *  also one already sent). */
@@ -74,4 +82,4 @@ uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16
 
 /** Build the 16-byte plaintext of a poll answer (see the format above). */
 void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t first, uint32_t map,
-                        uint8_t out[16]);
+                        uint8_t out[16], uint8_t flags = 0, uint8_t channel = 0);

@@ -113,7 +113,22 @@ struct CamPic {
     const uint8_t* pubBuf;
     size_t pubLen;
     unsigned long pubSince;
+
+    // picture channel (PCH) miss detector & per-camera stats
+    bool lastPollAdvPch;
+    bool expectPch;
+    bool gotPchChunk;
+    uint8_t pchMisses;
+    bool pchSuppressed;
+    unsigned long pchSuppressStart;
+    uint32_t pchBackoffMs;
+    uint32_t pchChunks;
+    uint32_t mainChunks;
 };
+
+#define PCH_MISS_THRESHOLD   2
+#define PCH_BACKOFF_INIT_MS  (15UL * 60UL * 1000UL)
+#define PCH_BACKOFF_MAX_MS   (4UL * 60UL * 60UL * 1000UL)
 
 // On the heap, allocated once by a static initializer (zeroed like a static array would be): the
 // ~2.3 KB of slot state did not fit .dram0.bss. ESP-IDF runs C++ static initializers after the heap
@@ -186,6 +201,34 @@ static void queuePublish(CamPic* c, const uint8_t* stable, size_t len) {
 }
 
 static void jpegFinish(CamPic* c, size_t len, bool endSeen = true);
+
+static void finalizePchExpect(CamPic* c) {
+    if (!c->expectPch) return;
+    c->expectPch = false;
+    if (c->gotPchChunk) return;
+    if (++c->pchMisses >= PCH_MISS_THRESHOLD) {
+        c->pchMisses = 0;
+        uint32_t next = c->pchBackoffMs ? (c->pchBackoffMs * 2UL) : PCH_BACKOFF_INIT_MS;
+        if (next > PCH_BACKOFF_MAX_MS) next = PCH_BACKOFF_MAX_MS;
+        c->pchBackoffMs = next;
+        c->pchSuppressStart = millis();
+        c->pchSuppressed = true;
+        Serial.printf("[PCH] %s: %d missed picture(s) on PCH, suppressing PCH advertisement for %lu min\n",
+                      c->deviceId, PCH_MISS_THRESHOLD, (unsigned long)(c->pchBackoffMs / 60000UL));
+    }
+}
+
+static void noteChunkChannel(CamPic* c, uint8_t channel) {
+    if (channel == 1) {
+        c->pchChunks++;
+        c->gotPchChunk = true;
+        c->pchMisses = 0;
+        c->pchBackoffMs = 0;
+        c->pchSuppressed = false;
+    } else {
+        c->mainChunks++;
+    }
+}
 
 static void jpegReset(CamPic* c) {
     if (c->imgBuf) memset(c->imgBuf, 0, MAX_IMAGE_SIZE);
@@ -368,10 +411,11 @@ static void rsRequestNext(CamPic* c) {
 }
 
 void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen, bool isLast,
-                                const uint8_t* data) {
+                                const uint8_t* data, uint8_t channel) {
     if (!deviceId || !data || chunkLen == 0 || chunkLen > JPEG_CHUNK || chunkIdx >= JPEG_MAX_CHUNKS) return;
     CamPic* c = findCam(deviceId);
     if (!c || !c->rsActive) return;
+    noteChunkChannel(c, channel);
     size_t off = (size_t)chunkIdx * JPEG_CHUNK;
     if (off + chunkLen > MAX_IMAGE_SIZE) return;
     memcpy(c->imgBuf + off, data, chunkLen);
@@ -395,6 +439,7 @@ void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t
 // endSeen false: the last chunk never came (the blob ended by a pause or the next blob), so
 // the missing count cannot include the lost end; a JPEG gets its EOI back so it decodes.
 static void jpegFinish(CamPic* c, size_t len, bool endSeen) {
+    finalizePchExpect(c);
     if (len < 4 || !c->imgBuf || !c->jpg || !s_tmp) {
         jpegReset(c);
         return;
@@ -511,6 +556,8 @@ void imageReceiverPollSeen(const char* deviceId) {
     // the camera polls right after a picture: a picture still open lost its last chunk; finish
     // it now so a resend request can go out with this poll's answer (the Blackfin is still on)
     if (c->lastIdx >= 0) jpegFinish(c, c->imgEnd, false);
+    // deaf channel (0 chunks arrived): finalize any pending PCH expectation here
+    finalizePchExpect(c);
     // a resend round whose last chunk was lost never asks for the next one (that happens when
     // the last requested chunk arrives): ask again for what is still missing with this poll's
     // answer. The camera polls every ~2 s until an answer without a resend request.
@@ -552,7 +599,7 @@ void imageReceiverInit(void) {
 }
 
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
-                               bool isFirst, bool isLast, const uint8_t* data) {
+                               bool isFirst, bool isLast, const uint8_t* data, uint8_t channel) {
     if (!deviceId || !data || chunkLen == 0 || chunkLen > JPEG_CHUNK || chunkIdx >= JPEG_MAX_CHUNKS ||
         (size_t)chunkIdx * JPEG_CHUNK + chunkLen > MAX_IMAGE_SIZE) return;
     unsigned long now = millis();
@@ -573,6 +620,7 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
         jpegFinish(c, c->imgEnd, false);    // previous picture lost its last chunk
         s_noResend = false;
     }
+    noteChunkChannel(c, channel);
     c->lastChunkTime = now;
 
     size_t off = (size_t)chunkIdx * JPEG_CHUNK;
@@ -634,6 +682,101 @@ void imageReceiverLoop(void) {
         }
         // a picture no poll followed (or whose poll was not seen): publish it after the defer time
         if (c->pubActive && millis() - c->pubSince >= IMG_PUBLISH_DEFER_MS && !publishHeld(c)) publishPending(c);
+    }
+}
+
+void imageReceiverNotePollAnswer(const char* deviceId, bool pchAdvertised) {
+    if (!deviceId || !deviceId[0]) return;
+    unsigned long now = millis();
+    CamPic* c = pchAdvertised ? assignCam(deviceId, now) : findCam(deviceId);
+    if (!c) return;
+    if (pchAdvertised && !c->lastUse) c->lastUse = now;
+    c->lastPollAdvPch = pchAdvertised;
+}
+
+void imageReceiverNotePicStart(const char* deviceId, bool pchAdvertised) {
+    if (!deviceId || !deviceId[0]) return;
+    unsigned long now = millis();
+    CamPic* c = pchAdvertised ? assignCam(deviceId, now) : findCam(deviceId);
+    if (!c) return;
+    if (pchAdvertised && !c->lastUse) c->lastUse = now;
+    if (c->expectPch) finalizePchExpect(c);
+    if (pchAdvertised) {
+        c->expectPch = true;
+        c->gotPchChunk = false;
+    }
+}
+
+void imageReceiverNotePicStart(const char* deviceId) {
+    if (!deviceId || !deviceId[0]) return;
+    CamPic* c = findCam(deviceId);
+    imageReceiverNotePicStart(deviceId, c ? c->lastPollAdvPch : false);
+}
+
+bool imageReceiverPchSuppressed(const char* deviceId) {
+    CamPic* c = deviceId ? findCam(deviceId) : nullptr;
+    if (!c || !c->pchSuppressed) return false;
+    if (millis() - c->pchSuppressStart >= c->pchBackoffMs) {
+        c->pchSuppressed = false;
+        return false;
+    }
+    return true;
+}
+
+void imageReceiverPchReset(const char* deviceId) {
+    for (int i = 0; i < s_nCam; i++) {
+        CamPic* c = &s_cam[i];
+        if (!c->used) continue;
+        if (deviceId && strncmp(c->deviceId, deviceId, 9) != 0) continue;
+        c->pchMisses = 0;
+        c->pchBackoffMs = 0;
+        c->pchSuppressed = false;
+        c->expectPch = false;
+        c->gotPchChunk = false;
+    }
+}
+
+int imageReceiverPchGetStats(PchCamStats* out, int maxOut) {
+    if (!out || maxOut <= 0) return 0;
+    int n = 0;
+    unsigned long now = millis();
+    for (int i = 0; i < s_nCam && n < maxOut; i++) {
+        CamPic* c = &s_cam[i];
+        if (!c->used) continue;
+        PchCamStats* s = &out[n++];
+        memcpy(s->deviceId, c->deviceId, sizeof(s->deviceId));
+        s->pchChunks = c->pchChunks;
+        s->mainChunks = c->mainChunks;
+        s->misses = c->pchMisses;
+        s->suppressed = imageReceiverPchSuppressed(c->deviceId);
+        if (s->suppressed) {
+            unsigned long elapsed = now - c->pchSuppressStart;
+            s->suppressRemSec = (c->pchBackoffMs > elapsed) ? (uint32_t)((c->pchBackoffMs - elapsed + 999UL) / 1000UL) : 0;
+        } else {
+            s->suppressRemSec = 0;
+        }
+    }
+    return n;
+}
+
+void imageReceiverPchPrintStatus(void) {
+    PchCamStats stats[IMG_MAX_CAMERAS];
+    int n = imageReceiverPchGetStats(stats, IMG_MAX_CAMERAS);
+    if (n == 0) {
+        Serial.println("  Cameras      : none seen yet");
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        const PchCamStats& s = stats[i];
+        if (s.suppressed) {
+            Serial.printf("  Camera %-8s: PCH chunks %lu | main chunks %lu | misses %u | SUPPRESSED (%lu s remaining)\n",
+                          s.deviceId, (unsigned long)s.pchChunks, (unsigned long)s.mainChunks,
+                          (unsigned)s.misses, (unsigned long)s.suppressRemSec);
+        } else {
+            Serial.printf("  Camera %-8s: PCH chunks %lu | main chunks %lu | misses %u | active\n",
+                          s.deviceId, (unsigned long)s.pchChunks, (unsigned long)s.mainChunks,
+                          (unsigned)s.misses);
+        }
     }
 }
 

@@ -169,7 +169,9 @@ static void answerCameraPollNow(const VerisureTelemetry& t, uint32_t frameStartU
     }
     if (!cryptoDeriveDeviceKey(ConfigManager::get().masterKey, t.deviceId, key)) return;
     uint8_t cmd = downlinkCommandForPoll(t.deviceId, state, &first, &map);
-    downlinkBuildPlain(t.counter, armed, cmd, first, map, plain);
+    const bool advPch = (cmd != DOWNLINK_CMD_RESEND) && ConfigManager::get().pchEnabled &&
+                        g_radioStatus2.online && !radioIsCalMode() && !imageReceiverPchSuppressed(t.deviceId);
+    downlinkBuildPlain(t.counter, armed, cmd, first, map, plain, advPch ? DL_FLAG_PCH : 0, DL_PCH_CH_869525);
     memcpy(pkt, t.deviceId, 8);
     bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
     memset(key, 0, sizeof(key));
@@ -185,12 +187,15 @@ static void answerCameraPollNow(const VerisureTelemetry& t, uint32_t frameStartU
         Serial.printf("[Downlink] %s: poll answer not queued (radio command queue full)\n", t.deviceId);
         return;
     }
+    if (cmd != DOWNLINK_CMD_RESEND) imageReceiverNotePollAnswer(t.deviceId, advPch);
     g_radioLoopDiag.pollAnswers++;
     Serial.printf("[Downlink] -> %s: armed %d, cmd 0x%02X (poll %lu, camera state 0x%02X)",
                   t.deviceId, armed ? 1 : 0, cmd, (unsigned long)t.counter, state);
     if (cmd == DOWNLINK_CMD_RESEND)
         Serial.printf(", resend %d chunks from %u (map %08lX)", __builtin_popcount(map), first,
                       (unsigned long)map);
+    else if (advPch)
+        Serial.print(", pch");
     Serial.println();
     if (((state & DOWNLINK_STATE_ARMED) != 0) != armed) {
         Serial.printf("[Downlink] NOTE: %s reported armed %d before this answer\n",
@@ -287,7 +292,7 @@ static void handleRadioFrame(const RadioFrame& item) {
     if (crcBig || (item.module == 0 && crcSmall)) g_gatewayDiag.rxCrcOk++;
 
     if (crcBig) {
-        if (!cryptoProcessBigPacket(frame, activeMasterKey)) {
+        if (!cryptoProcessBigPacket(frame, activeMasterKey, item.channel)) {
             printTimestamp(now);
             Serial.printf("[Security] Module #%u big packet rejected (invalid key or type).\n", modNum);
         }
@@ -300,6 +305,8 @@ static void handleRadioFrame(const RadioFrame& item) {
                     // a poll always counts, also 0 = unknown (the camera restarted)
                     telem.batteryLoadMv = downlinkLoadMv(telem.rawP1);
                 } else {
+                    if (telem.rawP0 == 0xB2)
+                        imageReceiverNotePicStart(telem.deviceId);
                     // other packets keep the last value the camera reported
                     const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
                     if (prev) telem.batteryLoadMv = prev->lastTelem.batteryLoadMv;
