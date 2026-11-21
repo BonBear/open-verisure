@@ -43,6 +43,7 @@
 #include "gateway_diag.h"
 #include "radio_task.h"
 #include <WiFi.h>
+#include <math.h>
 
 #include "hardware_pins.h"
 
@@ -68,6 +69,42 @@ unsigned long lastEventTime = 0;
 unsigned long lastHeartbeat = 0;
 unsigned long packetCount   = 0;
 
+struct CalCandidate {
+    bool     valid;
+    uint8_t  id[8];
+    int16_t  rssi;
+    int8_t   freqEst;
+    uint32_t startUs;
+};
+static CalCandidate s_lastMod0 = {};
+static CalCandidate s_pendingCal = {};
+static PchCalStats  s_calStats = {};
+
+void pchCalReset() {
+    memset(&s_calStats, 0, sizeof(s_calStats));
+    s_lastMod0.valid = false;
+    s_pendingCal.valid = false;
+}
+
+void pchCalGetStats(PchCalStats* out) {
+    if (!out) return;
+    *out = s_calStats;
+    if (s_calStats.count > 0) {
+        float avg = (float)s_calStats.freqEstSum / (float)s_calStats.count;
+        long sug = (long)ConfigManager::get().freqOffset2 + lroundf(avg);
+        if (sug < -128) sug = -128;
+        if (sug > 127) sug = 127;
+        out->suggestedOffset = (int8_t)sug;
+    } else {
+        out->suggestedOffset = ConfigManager::get().freqOffset2;
+    }
+}
+
+static bool calMatchTime(uint32_t aUs, uint32_t bUs) {
+    int32_t diff = (int32_t)(aUs - bUs);
+    return diff >= -50000L && diff <= 50000L;
+}
+
 /**
  * @brief Print elapsed uptime timestamp and delta milliseconds to Serial monitor.
  * @param now Current uptime in milliseconds (millis()).
@@ -76,6 +113,28 @@ void printTimestamp(unsigned long now) {
     unsigned long delta = (lastEventTime > 0) ? (now - lastEventTime) : 0;
     lastEventTime = now;
     Serial.printf("[%4lu.%03lu s] (+%5lu ms) ", now / 1000, now % 1000, delta);
+}
+
+static void calRecordPair(const uint8_t id[8], int16_t rssi1, int8_t fe1, int16_t rssi2, int8_t fe2) {
+    s_calStats.count++;
+    s_calStats.freqEstSum += fe2;
+    s_calStats.lastRssi1 = rssi1;
+    s_calStats.lastRssi2 = rssi2;
+    s_calStats.lastFreqEst1 = fe1;
+    s_calStats.lastFreqEst2 = fe2;
+
+    char idStr[9];
+    for (int i = 0; i < 8; i++) idStr[i] = isprint((unsigned char)id[i]) ? (char)id[i] : '?';
+    idStr[8] = '\0';
+
+    const float stepKhz = 26000.0f / 16384.0f;
+    PchCalStats snap;
+    pchCalGetStats(&snap);
+    printTimestamp(millis());
+    Serial.printf("[CAL] %s | #1 RSSI %d dBm freqEst %+d (%+.1f kHz) | #2 RSSI %d dBm freqEst %+d (%+.1f kHz) | n=%lu suggest=%d\n",
+                  idStr, (int)rssi1, (int)fe1, fe1 * stepKhz,
+                  (int)rssi2, (int)fe2, fe2 * stepKhz,
+                  (unsigned long)snap.count, (int)snap.suggestedOffset);
 }
 
 /**
@@ -156,21 +215,22 @@ static void handleRadioFrame(const RadioFrame& item) {
         printTimestamp(now);
         Serial.printf("[Radio] %u item(s) lost to a full radio queue\n", item.dropsBefore);
     }
+    const unsigned modNum = (unsigned)item.module + 1U;
     switch (item.kind) {
         case RADIO_ITEM_OVERFLOW:
             printTimestamp(now);
-            Serial.printf("[Radio] RX FIFO overflow (%u B lost), RX restarted\n", item.len);
+            Serial.printf("[Radio#%u] RX FIFO overflow (%u B lost), RX restarted\n", modNum, item.len);
             return;
         case RADIO_ITEM_PARTIAL:
             printTimestamp(now);
-            Serial.printf("[Partial %d B] dropped\n", item.len);
+            Serial.printf("[Partial#%u %d B] dropped\n", modNum, item.len);
             return;
         case RADIO_ITEM_ONLINE:
-            Serial.printf("\n[CC1101] MODULE DETECTED! Version: 0x%02X. Radio initialized.\n", item.data[0]);
+            Serial.printf("\n[CC1101#%u] MODULE DETECTED! Version: 0x%02X. Radio initialized.\n", modNum, item.data[0]);
             return;
         case RADIO_ITEM_OFFLINE:
             printTimestamp(now);
-            Serial.println("[CC1101] Module lost (SPI not responding), probing every 2 s.");
+            Serial.printf("[CC1101#%u] Module lost (SPI not responding), probing every 2 s.\n", modNum);
             return;
         case RADIO_ITEM_FRAME:
             break;
@@ -191,11 +251,47 @@ static void handleRadioFrame(const RadioFrame& item) {
 
     bool crcBig = crcAt(frame, BIG_PACKET_LEN);
     bool crcSmall = crcAt(frame, VERISURE_PACKET_LEN);
-    if (crcBig || crcSmall) g_gatewayDiag.rxCrcOk++;
 
-    if (crcBig && cryptoProcessBigPacket(frame, activeMasterKey)) {
-        // camera image packet (type 0x82), handled by the image receiver
-    } else if (crcSmall) {
+    if (item.flags & RADIO_FLAG_CAL) {
+        // Calibration frames are only measured against module #1; never pass to crypto/replay/MQTT/downlink
+        if (crcBig || crcSmall) {
+            if (s_lastMod0.valid && calMatchTime(item.startUs, s_lastMod0.startUs) &&
+                memcmp(s_lastMod0.id, frame, 8) == 0) {
+                calRecordPair(frame, s_lastMod0.rssi, s_lastMod0.freqEst, (int16_t)packetRssi, item.freqEst);
+                s_lastMod0.valid = false;
+            } else {
+                s_pendingCal.valid = true;
+                memcpy(s_pendingCal.id, frame, 8);
+                s_pendingCal.rssi = (int16_t)packetRssi;
+                s_pendingCal.freqEst = item.freqEst;
+                s_pendingCal.startUs = item.startUs;
+            }
+        }
+        return;
+    }
+
+    if ((crcBig || crcSmall) && item.module == 0) {
+        if (s_pendingCal.valid && calMatchTime(item.startUs, s_pendingCal.startUs) &&
+            memcmp(s_pendingCal.id, frame, 8) == 0) {
+            calRecordPair(frame, (int16_t)packetRssi, item.freqEst, s_pendingCal.rssi, s_pendingCal.freqEst);
+            s_pendingCal.valid = false;
+        } else {
+            s_lastMod0.valid = true;
+            memcpy(s_lastMod0.id, frame, 8);
+            s_lastMod0.rssi = (int16_t)packetRssi;
+            s_lastMod0.freqEst = item.freqEst;
+            s_lastMod0.startUs = item.startUs;
+        }
+    }
+
+    if (crcBig || (item.module == 0 && crcSmall)) g_gatewayDiag.rxCrcOk++;
+
+    if (crcBig) {
+        if (!cryptoProcessBigPacket(frame, activeMasterKey)) {
+            printTimestamp(now);
+            Serial.printf("[Security] Module #%u big packet rejected (invalid key or type).\n", modNum);
+        }
+    } else if (item.module == 0 && crcSmall) {
         VerisureTelemetry telem;
         if (cryptoProcessPacket(frame, packetRssi, rawLqi & 0x7F, activeMasterKey, &telem)) {
             if (haIsMotionCameraSensor(telem.deviceId)) {
@@ -231,8 +327,9 @@ static void handleRadioFrame(const RadioFrame& item) {
         }
     } else {
         printTimestamp(now);
-        Serial.printf("[Radio] Packet received with invalid CRC (dropped): RSSI %d dBm, freq. error %+.1f kHz\n",
-                      packetRssi, freqErrKhz);
+        Serial.printf("[Radio#%u] Packet received with invalid CRC (dropped): RSSI %d dBm, freq. error %+.1f kHz%s\n",
+                      modNum, packetRssi, freqErrKhz,
+                      (item.flags & RADIO_FLAG_TX_OVERLAP) ? " [TX_OVERLAP]" : "");
     }
 }
 
@@ -296,22 +393,30 @@ void setup() {
         Serial.println("[Wi-Fi] Connecting in background...");
     }
 
-    // 2. Initialize CC1101 SPI & Radio Transceiver on ADC1 pins (radio_task.cpp), then hand the
-    //    radio over to the radio task: from radioTaskStart() on nothing else touches the SPI bus.
-    byte ver = 0;
-    bool online = radioInit(&ver);
+    // 2. Initialize both CC1101 transceivers on ADC1 pins (radio_task.cpp), then hand the
+    //    SPI bus over to the radio task: from radioTaskStart() on nothing else touches it.
+    uint8_t ver1 = 0, ver2 = 0;
+    bool online2 = false;
+    bool online1 = radioInit(&ver1, &ver2, &online2);
 
-    if (online) {
-        Serial.printf("  [CC1101] SPI OK! Chip Version: 0x%02X (SCK=%d, MISO=%d, MOSI=%d, CS=%d)\n",
-                      ver, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
+    if (online1) {
+        Serial.printf("  [CC1101#1] SPI OK! Chip Version: 0x%02X (SCK=%d, MISO=%d, MOSI=%d, CS=%d)\n",
+                      ver1, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
         printTimestamp(millis());
-        Serial.println("[System] Receiver listening on 868.950 MHz (Robust RX, 30/32 Sync)...");
+        Serial.println("[System] Module #1 listening on 868.950 MHz (Robust RX, 30/32 Sync)...");
     } else {
-        Serial.printf("  [CC1101] No communication (read 0x%02X on SCK=%d, MISO=%d, MOSI=%d, CS=%d).\n",
-                      ver, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
-        Serial.println("  [CC1101] CC1101 disconnected - waiting for connection on pins (GPIO 3, 5, 7, 9).\n");
+        Serial.printf("  [CC1101#1] No communication (read 0x%02X on SCK=%d, MISO=%d, MOSI=%d, CS=%d).\n",
+                      ver1, PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
+        Serial.println("  [CC1101#1] Disconnected - probing every 2 s.");
     }
-    if (!radioTaskStart(online)) {
+    if (online2) {
+        Serial.printf("  [CC1101#2] SPI OK! Chip Version: 0x%02X (CS2=%d, 869.525 MHz PCH, pch=%s)\n",
+                      ver2, PIN_CS2, ConfigManager::get().pchEnabled ? "on" : "off");
+    } else {
+        Serial.printf("  [CC1101#2] Offline / not connected (read 0x%02X on CS2=%d, probing every 2 s).\n",
+                      ver2, PIN_CS2);
+    }
+    if (!radioTaskStart(online1, online2)) {
         // No fallback to a polling radio in loop(): that code is gone, and a loop() that cannot
         // keep up is what the task fixes. The gateway stays up (web, MQTT, CLI) without reception.
         Serial.println("[System] ERROR: radio task/PSRAM queue could not be created, NO radio reception! Check 'status' and the board's PSRAM.");
@@ -334,12 +439,16 @@ void loop() {
     // Heartbeat every 2 seconds (RSSI/MARCSTATE come from the radio task's cache: no SPI here)
     if (now - lastHeartbeat >= 2000) {
         lastHeartbeat = now;
-        const bool online = g_radioStatus.online;
-        Serial.printf("[Gateway Heartbeat] Wi-Fi: %s | MQTT: %s | CC1101: %s | RSSI: %d dBm | Packets: %lu\n",
+        const bool on1 = g_radioStatus.online;
+        const bool on2 = g_radioStatus2.online;
+        const char* m2Str = !on2 ? "Offline" : (radioIsCalMode() ? "CAL 868.95 MHz" : "PCH 869.525 MHz");
+        Serial.printf("[Gateway Heartbeat] Wi-Fi: %s | MQTT: %s | CC1101#1: %s (%d dBm) | CC1101#2: %s (%d dBm) | Packets: %lu\n",
                       WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "Connecting...",
                       mqttGetStatusString().c_str(),
-                      online ? "Online (868.95 MHz)" : "Disconnected",
-                      online ? (int)g_radioStatus.rssiDbm : 0,
+                      on1 ? "Online 868.95 MHz" : "Disconnected",
+                      on1 ? (int)g_radioStatus.rssiDbm : 0,
+                      m2Str,
+                      on2 ? (int)g_radioStatus2.rssiDbm : 0,
                       packetCount);
     }
     const int cachedRssi = g_radioStatus.rssiDbm;

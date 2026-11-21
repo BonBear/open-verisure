@@ -21,6 +21,20 @@
 
 #include <Arduino.h>
 
+/** @brief Running calibration statistics for `pch cal` / `pch status` (implemented in main.cpp). */
+struct PchCalStats {
+    uint32_t count;
+    int32_t  freqEstSum;
+    int16_t  lastRssi1;
+    int16_t  lastRssi2;
+    int8_t   lastFreqEst1;
+    int8_t   lastFreqEst2;
+    int8_t   suggestedOffset;
+};
+
+void pchCalReset();
+void pchCalGetStats(PchCalStats* out);
+
 /**
  * @brief Initialize the serial command buffer.
  */

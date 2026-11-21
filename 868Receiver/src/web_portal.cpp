@@ -765,8 +765,20 @@ static void handleApiStatus() {
     json += "\"total_packets\":" + String(s_cachedPackets) + "},";
 
     json += "\"radio_diag\":{";   // radio task counters since boot (radio_task.h)
-    radioDiagAppendJson(json);
+    radioDiagAppendJson(json, 0);
     json += "},";
+
+    json += "\"radio_diag2\":{";
+    radioDiagAppendJson(json, 1);
+    json += "},";
+
+    json += "\"pch\":{";
+    json += "\"enabled\":" + String(cfg.pchEnabled ? "true" : "false") + ",";
+    json += "\"online\":" + String(g_radioStatus2.online ? "true" : "false") + ",";
+    json += "\"mode\":\"" + String(radioIsCalMode() ? "cal" : "pch") + "\",";
+    json += "\"freq_offset2\":" + String((int)cfg.freqOffset2) + ",";
+    json += "\"rssi\":" + String((int)g_radioStatus2.rssiDbm) + ",";
+    json += "\"marcstate\":\"0x" + String(g_radioStatus2.marcState, HEX) + "\"},";
 
     json += "\"diag\":{";       // counters since boot (gateway_diag.h)
     gatewayDiagAppendJson(json, gatewayDiagSample());
