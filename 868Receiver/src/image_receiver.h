@@ -26,7 +26,7 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
                                bool isFirst, bool isLast, const uint8_t* data);
 
 /** Cameras with their own picture state (reassembly, delta base, resend, pending publish); keep
- *  equal to DOWNLINK_MAX_CAMERAS in downlink.cpp. A camera gets a slot with its first chunk; when
+ *  equal to DOWNLINK_MAX_CAMERAS in downlink.h (static_assert in image_receiver.cpp). A camera gets a slot with its first chunk; when
  *  all are taken the idle slot quiet the longest is reused, and if none is idle the chunk is dropped. */
 #define IMG_MAX_CAMERAS 4
 
