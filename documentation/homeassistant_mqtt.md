@@ -170,7 +170,7 @@ Access: every endpoint except `GET /api/replay` needs the web portal password (H
 * **`GET /api/status`:** Returns real-time JSON status for Wi-Fi, radio noise floor, MQTT broker link, and all registered sensors, plus a `diag` object with the gateway diagnostics (the keys of `verisure/gateway/state` from `uptime` to `last_rejected_id`, see [Gateway diagnostics](#gateway-diagnostics)).
 * **`GET /api/replay?id=<ID>`:** (no password) The last accepted persistent packet counter of a device (`{"id","known","counter"}`); the build scripts start a reflashed device above it and check afterwards that the gateway accepts its new counter.
 * **`GET /api/radio`:** CC1101 chip version, part number and MARCSTATE (radio check).
-* **`GET /api/camera.jpg`, `GET /api/camera_large.jpg`:** The last camera picture (320x240) and the last 640x480 picture; 404 until one has arrived.
+* **`GET /api/camera.jpg`, `GET /api/camera_large.jpg`:** The last camera picture (320x240) and the last 640x480 picture; 404 until one has arrived. Optional `?id=<camera ID>` (8 alphanumeric characters, else 400) selects a camera; without it the camera with the newest picture is served.
 * **`POST /api/camera_test?id=<ID>`:** (`id` required) Publishes a tiny test JPEG on the camera's MQTT image topic (checks the Home Assistant camera entity without the camera).
 * **`GET /api/scan`:** Wi-Fi scan in the background: answers `202 {"scanning":true}` until it is done, then the networks with RSSI and encryption flags (ask again until a list comes back).
 * **`POST /api/picture?id=<ID>&cmd=D1..D6`:** Queues a picture request for a camera, like `picture/set` over MQTT (the camera's card on the web page uses it).

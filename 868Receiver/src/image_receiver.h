@@ -25,12 +25,19 @@ void imageReceiverInit(void);
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
                                bool isFirst, bool isLast, const uint8_t* data);
 
-/** Newest 320x240 picture: the colour picture (with deltas spliced in) or, if it came later, a
- *  grayscale flash picture (nullptr if none yet); missing = chunks that never arrived (zeros). */
-const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing);
+/** Cameras with their own picture state (reassembly, delta base, resend, pending publish); keep
+ *  equal to DOWNLINK_MAX_CAMERAS in downlink.h (static_assert in image_receiver.cpp). A camera gets a slot with its first chunk; when
+ *  all are taken the idle slot quiet the longest is reused, and if none is idle the chunk is dropped. */
+#define IMG_MAX_CAMERAS 4
 
-/** Last finished JPEG wider than 320 pixels (640x480), nullptr if none yet. */
-const uint8_t* imageReceiverJpegLarge(size_t* len, uint16_t* missing);
+/** Newest 320x240 picture of a camera: the colour picture (with deltas spliced in) or, if it came
+ *  later, a grayscale flash picture (nullptr if none yet); missing = chunks that never arrived (zeros).
+ *  deviceId: the camera's 8-char ID; nullptr = the camera whose picture changed last. */
+const uint8_t* imageReceiverJpeg(size_t* len, uint16_t* missing, const char* deviceId = nullptr);
+
+/** Last finished JPEG wider than 320 pixels (640x480) of a camera, nullptr if none yet
+ *  (deviceId nullptr = the camera whose large picture came last). */
+const uint8_t* imageReceiverJpegLarge(size_t* len, uint16_t* missing, const char* deviceId = nullptr);
 
 /** A chunk resent on the gateway's request (packet type 0x83): patched into the last picture;
  *  once complete it replaces the held first pass and is published after the next poll answer. */
@@ -51,7 +58,7 @@ void imageReceiverPollSeen(const char* deviceId);
  *  publishes the picture waiting for it, if any, unless it is held while its resend runs. */
 void imageReceiverAfterPollAnswer(const char* deviceId);
 
-/** Publish the waiting picture now, whatever device (used by tests). */
+/** Publish every waiting picture now, oldest first, whatever device (used by tests). */
 void imageReceiverPublishPending(void);
 
 /** Test: drop every n-th 56-byte picture chunk (0 = off), to exercise the resend. */

@@ -20,6 +20,7 @@ struct HostMqtt {
     std::vector<uint8_t> last;      // copy of the last picture published
     bool keepAll = false;           // also keep every picture in all (a test sets it; reset clears it)
     std::vector<std::vector<uint8_t>> all;
+    std::vector<std::string> allDevice;     // the device (topic) of each picture in all
 };
 
 extern HostMqtt hostMqtt;
