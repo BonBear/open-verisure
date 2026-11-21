@@ -19,6 +19,9 @@
 #include <Arduino.h>
 
 void imageReceiverHostTestRestart();    // image_receiver.cpp, HOST_TEST only
+void imageReceiverHostTestFreeBuffers();
+void imageReceiverHostTestFailAlloc(int n);
+uint32_t imageReceiverHostTestNoSlotDrops();
 
 namespace {
 
@@ -26,6 +29,7 @@ const unsigned CHUNK = 40;
 const unsigned MAX_CHUNKS = (MAX_IMAGE_SIZE + CHUNK - 1) / CHUNK;
 const size_t GRAY_MAX = 16384;          // image_receiver.cpp
 const char* CAM = "CAMA0001";
+const char* CAM_B = "CAMB0002";
 
 void resetAll() {
     imageReceiverHostTestRestart();
@@ -107,6 +111,54 @@ std::vector<uint8_t> currentLarge() {
     size_t len = 0;
     const uint8_t* p = imageReceiverJpegLarge(&len, nullptr);
     return p ? std::vector<uint8_t>(p, p + len) : std::vector<uint8_t>();
+}
+
+/** The 320 picture / the large picture of one camera (empty if it has none). */
+std::vector<uint8_t> currentOf(const char* dev) {
+    size_t len = 0;
+    const uint8_t* p = imageReceiverJpeg(&len, nullptr, dev);
+    return p ? std::vector<uint8_t>(p, p + len) : std::vector<uint8_t>();
+}
+
+/** The pictures one camera returns stay within their buffers. */
+void checkCamera(const char* dev) {
+    size_t len = 0;
+    uint16_t missing = 0;
+    const uint8_t* p = imageReceiverJpeg(&len, &missing, dev);
+    checkPicture(p, len, missing, MAX_IMAGE_SIZE, true);
+    if (!p) CHECK_EQ(len, 0);
+    p = imageReceiverJpegLarge(&len, &missing, dev);
+    checkPicture(p, len, missing, MAX_IMAGE_SIZE, false);
+    if (!p) CHECK_EQ(len, 0);
+}
+
+/** Two cameras sending at the same time: their chunks arrive interleaved (each camera in order). */
+void sendInterleaved(Rng& r, const char* d0, const std::vector<uint8_t>& b0, const char* d1,
+                     const std::vector<uint8_t>& b1) {
+    unsigned n0 = chunksOf(b0.size()), n1 = chunksOf(b1.size()), i0 = 0, i1 = 0;
+    while (i0 < n0 || i1 < n1) {
+        if (i1 >= n1 || (i0 < n0 && r.chance(50))) {
+            chunk(d0, (uint16_t)i0, chunkLen(b0, i0), i0 == 0, i0 + 1 == n0, &b0[i0 * CHUNK]);
+            i0++;
+        } else {
+            chunk(d1, (uint16_t)i1, chunkLen(b1, i1), i1 == 0, i1 + 1 == n1, &b1[i1 * CHUNK]);
+            i1++;
+        }
+    }
+}
+
+/** Every picture published since the last hostMqttReset() went to its own camera's topic: the
+ *  last one of each device equals what that device is expected to have published. */
+void checkPublishedOnce(const char* d0, const std::vector<uint8_t>& w0, const char* d1, const std::vector<uint8_t>& w1) {
+    CHECK_EQ(hostMqtt.all.size(), 2);
+    CHECK_EQ(hostMqtt.allDevice.size(), hostMqtt.all.size());
+    int seen0 = 0, seen1 = 0;
+    for (size_t k = 0; k < hostMqtt.all.size() && k < hostMqtt.allDevice.size(); k++) {
+        if (hostMqtt.allDevice[k] == d0) { seen0++; CHECK(hostMqtt.all[k] == w0); }
+        if (hostMqtt.allDevice[k] == d1) { seen1++; CHECK(hostMqtt.all[k] == w1); }
+    }
+    CHECK_EQ(seen0, 1);
+    CHECK_EQ(seen1, 1);
 }
 
 /** A resend request in this poll's answer must address chunks that exist. */
@@ -252,7 +304,9 @@ TEST(fuzz_image_resend_completes_pictures) {
 TEST(fuzz_image_random_operations) {
     Rng r(0x1A6E0003);
     resetAll();
-    static const char* devs[] = {"CAMA0001", "CAMB0002", "CAMA0001", "X", "", "CAMC0003LONGERID"};
+    // more valid cameras than slots (IMG_MAX_CAMERAS), so slots are evicted and chunks dropped too
+    static const char* devs[] = {"CAMA0001", "CAMB0002", "CAMA0001", "X", "", "CAMC0003LONGERID",
+                                 "CAMD0004", "CAME0005", "CAMF0006"};
     const unsigned NDEV = sizeof(devs) / sizeof(devs[0]);
     std::vector<uint8_t> lastBlob;
     int baseId = 0;
@@ -319,7 +373,7 @@ TEST(fuzz_image_random_operations) {
             if (blob.size() > MAX_IMAGE_SIZE) blob.resize(MAX_IMAGE_SIZE);
             lastBlob = blob;
             unsigned nc = chunksOf(blob.size());
-            const char* bdev = r.chance(80) ? CAM : dev;
+            const char* bdev = r.chance(60) ? CAM : dev;
             for (unsigned c = 0; c < nc; c++) {
                 unsigned cc = r.chance(5) ? r.below(nc) : c;            // out of order
                 if (r.chance(5)) continue;                              // lost
@@ -344,6 +398,7 @@ TEST(fuzz_image_random_operations) {
             }
         }
         checkOutputs();
+        checkCamera(devs[r.below(NDEV)]);
         if (fuzzStop("fuzz_image_random_operations", it)) return;
     }
 }
@@ -548,4 +603,242 @@ TEST(fuzz_image_back_to_back_pictures_publish_in_order) {
         hostMqtt.keepAll = false;
         checkOutputs();
     }
+}
+
+/* ---- Several cameras: every picture state is per camera --------------------------------------- */
+
+// Two cameras send full pictures and deltas at the same time (chunks interleaved): each picture is
+// published intact on its own camera's topic, and a delta is spliced into its own camera's base (both
+// cameras use the same COM id on purpose, so a mix-up would show).
+TEST(fuzz_image_two_cameras_interleaved) {
+    Rng r(0x1A6E000A);
+    for (int it = 0; it < fuzzIters(40); it++) {
+        resetAll();
+        hostAdvanceMillis(1000);
+        int id = (int)r.below(256);
+        FuzzJpeg baseA = randomPicture(r, 320, id, MAX_IMAGE_SIZE);
+        FuzzJpeg baseB = randomPicture(r, 320, id, MAX_IMAGE_SIZE);
+        std::vector<uint8_t> a = fuzzAssemble(baseA), b = fuzzAssemble(baseB);
+        hostMqtt.keepAll = true;
+        sendInterleaved(r, CAM, a, CAM_B, b);
+        CHECK_EQ(hostMqtt.images, 0);                       // finishing does not publish
+        imageReceiverAfterPollAnswer(CAM);
+        imageReceiverAfterPollAnswer(CAM_B);
+        checkPublishedOnce(CAM, a, CAM_B, b);
+        CHECK(currentOf(CAM) == a);
+        CHECK(currentOf(CAM_B) == b);
+        for (int round = 0; round < 2; round++) {           // deltas, each into its own base
+            std::vector<FuzzDeltaEntry> ea, eb;
+            for (int k = 0; k < 20 && ea.empty(); k++) ea = fuzzDeltaEntries(r, (unsigned)baseA.segs.size(), 30, 60);
+            for (int k = 0; k < 20 && eb.empty(); k++) eb = fuzzDeltaEntries(r, (unsigned)baseB.segs.size(), 30, 60);
+            if (ea.empty() || eb.empty()) break;
+            std::vector<uint8_t> da = fuzzMakeDelta(id, (unsigned)baseA.segs.size(), ea);
+            std::vector<uint8_t> db = fuzzMakeDelta(id, (unsigned)baseB.segs.size(), eb);
+            FuzzJpeg nextA = fuzzSplice(baseA, ea), nextB = fuzzSplice(baseB, eb);
+            std::vector<uint8_t> na = fuzzAssemble(nextA), nb = fuzzAssemble(nextB);
+            if (da.size() > MAX_IMAGE_SIZE || db.size() > MAX_IMAGE_SIZE || na.size() > MAX_IMAGE_SIZE ||
+                nb.size() > MAX_IMAGE_SIZE) break;
+            hostMqttReset();
+            hostMqtt.keepAll = true;
+            hostAdvanceMillis(r.range(100, 3000));
+            sendInterleaved(r, CAM, da, CAM_B, db);
+            CHECK_EQ(hostMqtt.images, 0);
+            imageReceiverAfterPollAnswer(CAM_B);
+            imageReceiverAfterPollAnswer(CAM);
+            checkPublishedOnce(CAM, na, CAM_B, nb);
+            CHECK(currentOf(CAM) == na);
+            CHECK(currentOf(CAM_B) == nb);
+            baseA = nextA;
+            baseB = nextB;
+            checkOutputs();
+        }
+        // "newest" follows the camera whose picture changed last; a large picture belongs to its camera only
+        std::vector<uint8_t> a2 = fuzzAssemble(randomPicture(r, 320, 3, MAX_IMAGE_SIZE));
+        sendBlobPublished(CAM, a2);
+        CHECK(current() == a2);
+        std::vector<uint8_t> b2 = fuzzAssemble(randomPicture(r, 320, 4, MAX_IMAGE_SIZE));
+        sendBlobPublished(CAM_B, b2);
+        CHECK(current() == b2);
+        CHECK(currentOf(CAM) == a2);
+        std::vector<uint8_t> big = fuzzAssemble(randomPicture(r, 640, 5, MAX_IMAGE_SIZE));
+        sendBlobPublished(CAM, big);
+        CHECK(currentLarge() == big);
+        CHECK(imageReceiverJpegLarge(nullptr, nullptr, CAM_B) == nullptr);
+        CHECK(imageReceiverJpegLarge(nullptr, nullptr, CAM) != nullptr);
+        CHECK(currentOf(CAM_B) == b2);                      // the large picture did not touch it
+        CHECK(imageReceiverJpeg(nullptr, nullptr, "CAMZ0009") == nullptr);   // unknown camera
+        checkCamera(CAM);
+        checkCamera(CAM_B);
+        if (fuzzStop("fuzz_image_two_cameras_interleaved", it)) return;
+    }
+}
+
+// Camera A has a picture with two holes and its resend running (the first pass is held). Camera B
+// sends a whole picture meanwhile, A's resent chunks arriving in between: A's resend goes on and
+// completes, nothing of A is reset or cancelled, and each picture is published once, intact, for its camera.
+TEST(fuzz_image_resend_continues_while_other_camera_sends) {
+    Rng r(0x1A6E000B);
+    for (int it = 0; it < fuzzIters(40); it++) {
+        resetAll();
+        hostAdvanceMillis(1000);
+        FuzzJpeg ja = fuzzMakeJpeg(r, 320, (int)r.below(256), r.range(60, 200), r.range(5, 45));   // 6+ chunks
+        std::vector<uint8_t> a = fuzzAssemble(ja);
+        unsigned nc = chunksOf(a.size());
+        REQUIRE(nc > 5);
+        unsigned l1 = r.range(1, nc - 3), l2 = l1 + 1;
+        for (unsigned c = 0; c < nc; c++)
+            if (c != l1 && c != l2) chunk(CAM, (uint16_t)c, chunkLen(a, c), c == 0, c + 1 == nc, &a[c * CHUNK]);
+        hostAdvanceMillis(30);
+        imageReceiverPollSeen(CAM);
+        uint16_t first;
+        uint32_t map;
+        CHECK(takeResendRequest(CAM, &first, &map));
+        CHECK_EQ((unsigned)first, l1);
+        CHECK_EQ(map, 3);
+        imageReceiverAfterPollAnswer(CAM);
+        CHECK_EQ(hostMqtt.images, 0);                       // held while the resend runs
+
+        std::vector<uint8_t> b = fuzzAssemble(randomPicture(r, 320, (int)r.below(256), MAX_IMAGE_SIZE));
+        unsigned nb = chunksOf(b.size());
+        bool d1 = false, d2 = false;
+        for (unsigned c = 0; c < nb; c++) {
+            chunk(CAM_B, (uint16_t)c, chunkLen(b, c), c == 0, c + 1 == nb, &b[c * CHUNK]);
+            if (!d1 && c >= nb / 3) {
+                resend(CAM, (uint16_t)l1, chunkLen(a, l1), false, &a[l1 * CHUNK]);
+                d1 = true;
+            } else if (d1 && !d2 && c >= 2 * nb / 3) {
+                resend(CAM, (uint16_t)l2, chunkLen(a, l2), false, &a[l2 * CHUNK]);
+                d2 = true;
+            }
+        }
+        if (!d1) resend(CAM, (uint16_t)l1, chunkLen(a, l1), false, &a[l1 * CHUNK]);
+        if (!d2) resend(CAM, (uint16_t)l2, chunkLen(a, l2), false, &a[l2 * CHUNK]);
+        CHECK_EQ(hostMqtt.images, 0);                       // neither finishing nor completing publishes
+        CHECK(!takeResendRequest(CAM, &first, &map));       // A's resend is complete
+        CHECK(currentOf(CAM) == a);
+        CHECK(currentOf(CAM_B) == b);
+        hostAdvanceMillis(70);                              // A's ACK poll, B's poll
+        imageReceiverPollSeen(CAM);
+        CHECK(!takeResendRequest(CAM, &first, &map));
+        imageReceiverPollSeen(CAM_B);
+        imageReceiverAfterPollAnswer(CAM_B);
+        CHECK_EQ(hostMqtt.images, 1);
+        CHECK(hostMqtt.lastDevice == CAM_B);
+        CHECK(hostMqtt.last == b);
+        imageReceiverAfterPollAnswer(CAM);
+        CHECK_EQ(hostMqtt.images, 2);                       // the complete picture only, not the first pass too
+        CHECK(hostMqtt.lastDevice == CAM);
+        CHECK(hostMqtt.last == a);
+        checkOutputs();
+        if (fuzzStop("fuzz_image_resend_continues_while_other_camera_sends", it)) return;
+    }
+}
+
+// More cameras than slots: a new camera takes a free slot, else the idle slot (no open picture, no
+// resend, no pending publish) that has been quiet the longest; with no idle slot its chunks are dropped.
+TEST(fuzz_image_slot_eviction) {
+    static_assert(IMG_MAX_CAMERAS == 4, "the test uses 4 slots and 6 cameras");
+    Rng r(0x1A6E000C);
+    static const char* cams[] = {"CAMC0000", "CAMC0001", "CAMC0002", "CAMC0003", "CAMC0004", "CAMC0005"};
+    for (int it = 0; it < fuzzIters(20); it++) {
+        std::vector<uint8_t> pic[6], pic2[6];
+        for (int k = 0; k < 6; k++) {
+            pic[k] = fuzzAssemble(randomPicture(r, 320, 10 + k, MAX_IMAGE_SIZE));
+            pic2[k] = fuzzAssemble(randomPicture(r, 320, 20 + k, MAX_IMAGE_SIZE));
+        }
+        // 1. the fifth camera evicts the camera that has been quiet the longest
+        resetAll();
+        hostAdvanceMillis(1000);
+        for (int k = 0; k < 4; k++) {
+            sendBlobPublished(cams[k], pic[k]);
+            hostAdvanceMillis(1000);
+        }
+        for (int k = 0; k < 4; k++) CHECK(currentOf(cams[k]) == pic[k]);
+        sendBlobPublished(cams[4], pic[4]);
+        hostAdvanceMillis(1000);
+        CHECK(currentOf(cams[0]).empty());
+        CHECK(imageReceiverJpeg(nullptr, nullptr, cams[0]) == nullptr);
+        for (int k = 1; k <= 4; k++) CHECK(currentOf(cams[k]) == pic[k]);
+        CHECK_EQ(imageReceiverHostTestNoSlotDrops(), 0);
+
+        // 2. a camera with an open picture is not evicted, even when it is the oldest
+        std::vector<uint8_t>& p1 = pic2[1];
+        unsigned n1 = chunksOf(p1.size());
+        REQUIRE(n1 >= 3);
+        for (unsigned c = 0; c < 2; c++) chunk(cams[1], (uint16_t)c, chunkLen(p1, c), c == 0, false, &p1[c * CHUNK]);
+        hostAdvanceMillis(3000);
+        for (int k = 2; k <= 4; k++) {
+            sendBlobPublished(cams[k], pic2[k]);
+            hostAdvanceMillis(10);
+        }
+        sendBlobPublished(cams[5], pic[5]);                 // the oldest idle slot is camera 2's
+        CHECK(currentOf(cams[2]).empty());
+        CHECK(currentOf(cams[5]) == pic[5]);
+        CHECK(currentOf(cams[3]) == pic2[3]);
+        CHECK(currentOf(cams[4]) == pic2[4]);
+        for (unsigned c = 2; c < n1; c++) chunk(cams[1], (uint16_t)c, chunkLen(p1, c), false, c + 1 == n1, &p1[c * CHUNK]);
+        imageReceiverAfterPollAnswer(cams[1]);
+        CHECK(hostMqtt.lastDevice == cams[1]);
+        CHECK(hostMqtt.last == p1);                         // finished intact
+        CHECK(currentOf(cams[1]) == p1);
+        CHECK_EQ(imageReceiverHostTestNoSlotDrops(), 0);
+
+        // 3. every slot busy (a picture waits for its publish): the chunks are dropped and counted
+        resetAll();
+        hostAdvanceMillis(1000);
+        hostMqtt.keepAll = true;
+        for (int k = 0; k < 4; k++) {
+            sendBlob(cams[k], pic[k]);
+            hostAdvanceMillis(10);
+        }
+        CHECK_EQ(hostMqtt.images, 0);
+        sendBlob(cams[4], pic[4]);
+        CHECK_EQ(imageReceiverHostTestNoSlotDrops(), chunksOf(pic[4].size()));
+        CHECK_EQ(hostMqtt.images, 0);
+        CHECK(currentOf(cams[4]).empty());
+        imageReceiverPublishPending();                      // the oldest first, each to its own camera
+        REQUIRE(hostMqtt.all.size() == 4);
+        for (size_t k = 0; k < 4; k++) {
+            CHECK(hostMqtt.allDevice[k] == cams[k]);
+            CHECK(hostMqtt.all[k] == pic[k]);
+        }
+        sendBlobPublished(cams[4], pic[4]);                 // idle now: takes the slot of the oldest
+        CHECK(currentOf(cams[4]) == pic[4]);
+        CHECK(currentOf(cams[0]).empty());
+        checkOutputs();
+        if (fuzzStop("fuzz_image_slot_eviction", it)) return;
+    }
+}
+
+// A camera whose buffers cannot be allocated loses its pictures (logged once); the other cameras and
+// the next ones still work. n: the failing allocation is the splice buffer, imgBuf or jpg of the first camera.
+TEST(fuzz_image_allocation_failure_of_one_slot) {
+    Rng r(0x1A6E000D);
+    for (int n = 0; n < 3; n++) {
+        imageReceiverHostTestFreeBuffers();
+        resetAll();
+        hostAdvanceMillis(1000);
+        std::vector<uint8_t> a = fuzzAssemble(randomPicture(r, 320, 1, MAX_IMAGE_SIZE));
+        std::vector<uint8_t> b = fuzzAssemble(randomPicture(r, 320, 2, MAX_IMAGE_SIZE));
+        imageReceiverHostTestFailAlloc(n);
+        sendBlob(CAM, a);
+        imageReceiverAfterPollAnswer(CAM);
+        imageReceiverPublishPending();
+        CHECK_EQ(hostMqtt.images, 0);
+        CHECK(currentOf(CAM).empty());
+        checkOutputs();
+        sendBlobPublished(CAM_B, b);                        // another camera is not affected
+        CHECK(hostMqtt.lastDevice == CAM_B);
+        CHECK(hostMqtt.last == b);
+        CHECK(currentOf(CAM_B) == b);
+        sendBlob(CAM, a);                                   // still dropped, and B keeps its picture
+        imageReceiverPublishPending();
+        CHECK_EQ(hostMqtt.images, 1);
+        CHECK(currentOf(CAM).empty());
+        CHECK(currentOf(CAM_B) == b);
+        checkOutputs();
+        if (fuzzStop("fuzz_image_allocation_failure_of_one_slot", n)) return;
+    }
+    imageReceiverHostTestFreeBuffers();                     // the next tests allocate again
+    resetAll();
 }
