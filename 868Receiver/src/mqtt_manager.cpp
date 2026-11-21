@@ -20,13 +20,44 @@
  * MQTT_WRITE_STALL_MS closes the connection instead (PubSubClient then reports it as lost and the
  * reconnect back-off takes over). The loop watchdog is fed while the broker keeps up.
  */
+#define MQTT_WRITE_TOTAL_MS 20000  // one write (e.g. a picture publish) may take at most this long
+#define MQTT_READ_MAX_PASS  4096   // bytes read per mqttLoop() pass before the broker is dropped
+
 class MqttSocket : public WiFiClient {
 public:
     using WiFiClient::write;
+    using WiFiClient::read;
     size_t write(const uint8_t* buf, size_t size) override {
-        return gwsWriteBounded(*this, buf, size, MQTT_WRITE_STALL_MS, 0);
+        return gwsWriteBounded(*this, buf, size, MQTT_WRITE_STALL_MS, MQTT_WRITE_TOTAL_MS);
     }
     size_t write(uint8_t b) override { return write(&b, 1); }
+    // PubSubClient reads a whole announced message byte by byte without returning, keeping only the
+    // first MQTT_MAX_PACKET_SIZE bytes. Every message the gateway subscribes to is tiny, so a pass
+    // that reads more than MQTT_READ_MAX_PASS bytes (an oversized, perhaps retained, message on a
+    // command topic) drops the connection instead of reading megabytes past the loop watchdog;
+    // PubSubClient then reports the connection lost and the back-off takes over.
+    int read() override {
+        if (!passBudget(1)) return -1;
+        return WiFiClient::read();
+    }
+    int read(uint8_t* buf, size_t size) override {
+        if (!passBudget(size)) return -1;
+        return WiFiClient::read(buf, size);
+    }
+    void startPass() { m_passBytes = 0; }
+
+private:
+    size_t m_passBytes = 0;
+    bool passBudget(size_t n) {
+        m_passBytes += n;
+        if (m_passBytes <= MQTT_READ_MAX_PASS) return true;
+        if (connected()) {
+            Serial.printf("[MQTT] Incoming message over %u bytes: dropping the broker connection\n",
+                          (unsigned)MQTT_READ_MAX_PASS);
+            stop();
+        }
+        return false;
+    }
 };
 
 static MqttSocket s_wifiClient;
@@ -65,14 +96,20 @@ static void dnsTaskBody(void*) {
 /** Starts a lookup unless one is running; never blocks. */
 static void dnsStart(const char* host) {
     if (s_dnsState != DNS_IDLE) return;
+    strncpy(s_dnsHost, host, sizeof(s_dnsHost) - 1);   // set first: a failed task creation below names it too
+    s_dnsHost[sizeof(s_dnsHost) - 1] = '\0';
     if (!s_dnsTask) {
         if (xTaskCreate(dnsTaskBody, "mqttdns", DNS_TASK_STACK, nullptr, 1, &s_dnsTask) != pdPASS) {
             s_dnsTask = nullptr;
+            static bool s_logged = false;
+            if (!s_logged) {
+                s_logged = true;
+                Serial.println("[MQTT] ERROR: could not create the DNS lookup task (no heap?); use an IP address for the broker");
+            }
+            s_dnsState = DNS_FAILED;   // counts as a failed lookup: the back-off applies
             return;
         }
     }
-    strncpy(s_dnsHost, host, sizeof(s_dnsHost) - 1);
-    s_dnsHost[sizeof(s_dnsHost) - 1] = '\0';
     s_dnsState = DNS_RUNNING;
     Serial.printf("[MQTT] Looking up broker host %s...\n", host);
     xTaskNotifyGive(s_dnsTask);
@@ -433,6 +470,7 @@ static void checkMqttConnection() {
 
 void mqttLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
     feedLoopWDT();   // a fresh window: the socket reads below wait at most 2 s, every write at most 2 s without progress
+    s_wifiClient.startPass();   // read budget per pass (MQTT_READ_MAX_PASS)
     checkMqttConnection();
 
     if (s_mqttClient.connected()) {
@@ -484,8 +522,8 @@ bool mqttPublishCameraImage(const char* deviceId, const uint8_t* jpegBuf, size_t
     bool ok = s_mqttClient.beginPublish(topic.c_str(), len, true);
     if (ok) {
         // In pieces, feeding the loop task watchdog between them: a ~35 KB picture to a slow broker
-        // link can take longer than the 5 s watchdog although it keeps moving. (A write() to a
-        // stalled peer still blocks up to ~10 s: that stays a watchdog reboot, by design.)
+        // link can take longer than the 5 s watchdog although it keeps moving. (MqttSocket drops a
+        // broker that accepts nothing for MQTT_WRITE_STALL_MS, or one write after MQTT_WRITE_TOTAL_MS.)
         size_t written = 0;
         while (written < len) {
             const size_t n = (len - written > 1024) ? 1024 : (len - written);

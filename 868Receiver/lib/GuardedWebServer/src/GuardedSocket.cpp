@@ -6,8 +6,8 @@
 #include "GuardedSocket.h"
 #include <lwip/sockets.h>
 
-// lwip/sockets.h maps these names to lwip_*() macros that would break the member calls below
-// (the core's NetworkClient.cpp does the same)
+// Defensive only: with ESP-IDF's lwipopts (LWIP_COMPAT_SOCKETS 0, LWIP_POSIX_SOCKETS_IO_NAMES 0)
+// lwip/sockets.h defines no such macros today; the #undefs keep the member calls safe if it ever does
 #undef connect
 #undef write
 #undef read
