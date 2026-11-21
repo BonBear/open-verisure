@@ -9,6 +9,7 @@
 #include <Preferences.h>
 #include "gateway_diag.h"
 #include "picture_token.h"
+#include "duty_cycle.h"
 #include <string>
 #include <vector>
 
@@ -68,6 +69,7 @@ void testResetWorld() {
     cryptoHostTestRestart();
     gatewayDiagClear();
     pictureTokenInit();
+    dutyCycleInit();
 }
 
 int main(int argc, char** argv) {

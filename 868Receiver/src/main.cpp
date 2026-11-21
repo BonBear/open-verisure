@@ -40,6 +40,7 @@
 #include "image_receiver.h"
 #include "downlink.h"
 #include "picture_token.h"
+#include "duty_cycle.h"
 #include "ha_discovery.h"
 #include "gateway_diag.h"
 #include "radio_task.h"
@@ -50,6 +51,8 @@
 
 static_assert(PIC_TOKEN_MAX_CAMERAS == DOWNLINK_MAX_CAMERAS,
               "picture token and downlink slots are per camera: keep equal");
+static_assert(DUTY_MAX_CAMERAS == DOWNLINK_MAX_CAMERAS,
+              "duty cycle and downlink slots are per camera: keep equal");
 
 /** @brief CRC-16 as the CC1101 computes it (poly 0x8005, init 0xFFFF, no whitening). */
 static uint16_t ccCrc16(const uint8_t* d, size_t n) {
@@ -372,6 +375,7 @@ static void handleRadioFrame(const RadioFrame& item) {
         if (cryptoProcessPacket(frame, packetRssi, rawLqi & 0x7F, activeMasterKey, &telem)) {
             if (haIsMotionCameraSensor(telem.deviceId)) {
                 const uint32_t tokNow = (uint32_t)now;
+                dutyCycleRecordCamPkt24(telem.deviceId, tokNow);
                 if (telem.rawP0 == DOWNLINK_POLL_MARKER) {
                     answerCameraPoll(telem, item.startUs);
                     // a poll always counts, also 0 = unknown (the camera restarted)
@@ -466,6 +470,7 @@ void setup() {
     webPortalInit();
     downlinkInit();
     pictureTokenInit();
+    dutyCycleInit();
     imageReceiverInit();   // prints the PSRAM size; the picture buffers follow with each camera's first picture
     serialCliInit();
     mqttInit();
@@ -561,6 +566,20 @@ void loop() {
         if (pictureTokenTick((uint32_t)millis(), expId, sizeof(expId))) {
             printTimestamp(millis());
             Serial.printf("[Token] Lease expired for %s\n", expId);
+        }
+    }
+    {
+        static uint32_t s_lastGwTxCount = 0;
+        const uint32_t curTx = g_radioStatus.txCount;
+        const uint32_t delta = (uint32_t)(curTx - s_lastGwTxCount);
+        const uint32_t dutyNow = (uint32_t)millis();
+        if (delta > 0) {
+            for (uint32_t i = 0; i < delta; i++) {
+                dutyCycleRecordGwTx(dutyNow);
+            }
+            s_lastGwTxCount = curTx;
+        } else {
+            dutyCycleTick(dutyNow);
         }
     }
     cryptoReplayFlush();

@@ -7,6 +7,7 @@
 #include "crypto.h"
 #include "downlink.h"
 #include "picture_token.h"
+#include "duty_cycle.h"
 #include "ha_discovery.h"
 #include "portal_util.h"     // hostOnly, jsonGetString, jsonGetInt
 #include "ota_update.h"
@@ -142,6 +143,14 @@ button.danger:hover { background: #b91c1c; }
       <div class="stat-box">
         <div class="stat-label">Picture Token</div>
         <div id="pic-token" class="stat-val">Idle</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Band 50 Duty (1h)</div>
+        <div id="duty-b50" class="stat-val">--</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Fallback (868.95)</div>
+        <div id="duty-fb" class="stat-val">0 pics</div>
       </div>
     </div>
 
@@ -407,6 +416,24 @@ async function fetchStatus() {
       const st = tk.state === 'held' ? 'Held' : (tk.state === 'reserved' ? 'Reserved' : 'Idle');
       document.getElementById('pic-token').textContent = (tk.state !== 'idle' && tk.holder)
         ? (st + ' (' + tk.holder + ')') : st;
+    }
+    if (data.duty) {
+      const du = data.duty;
+      let maxCamTenths = 0;
+      if (Array.isArray(du.cameras)) {
+        du.cameras.forEach(c => {
+          if (c.b50_pct_tenths > maxCamTenths) maxCamTenths = c.b50_pct_tenths;
+        });
+      }
+      const b50El = document.getElementById('duty-b50');
+      b50El.textContent = du.gw_tx_1h_ms + ' ms (' + (du.gw_tx_pct_tenths / 10).toFixed(1) + '%) / cam ' + (maxCamTenths / 10).toFixed(1) + '%';
+      const overCount = (du.gw_tx_over_count || 0) + (du.cam_b50_over_count || 0);
+      b50El.style.color = (du.any_b50_over_budget || overCount > 0) ? 'var(--danger)' : '';
+      const fbEl = document.getElementById('duty-fb');
+      fbEl.textContent = du.fallback_pictures > 0
+        ? (du.fallback_pictures + ' pic (' + du.fallback_chunks + ' ch)')
+        : '0 pics';
+      fbEl.style.color = du.fallback_pictures > 0 ? 'var(--warning)' : '';
     }
     if (data.firmware)
       document.getElementById('fw-info').textContent = 'Running: slot ' + data.firmware.partition + ' (' +
@@ -852,6 +879,45 @@ static void handleApiStatus() {
     json += "\"releases\":" + String(tok.releases) + ",";
     json += "\"expiries\":" + String(tok.expiries) + ",";
     json += "\"legacy_claims\":" + String(tok.legacyClaims) + "},";
+
+    DutyCycleStatus duty;
+    dutyCycleGetStatus((uint32_t)now, &duty);
+    json += "\"duty\":{";
+    json += "\"gw_tx_1h_ms\":" + String((unsigned long)duty.gwTx1hMs) + ",";
+    json += "\"gw_tx_pct_tenths\":" + String((unsigned long)duty.gwTxBudgetPctTenths) + ",";
+    json += "\"gw_tx_peak_1h_ms\":" + String((unsigned long)duty.gwTxPeak1hMs) + ",";
+    json += "\"gw_tx_over_count\":" + String((unsigned long)duty.gwTxOverBudgetCount) + ",";
+    json += "\"gw_tx_over_budget\":" + String(duty.gwTxOverBudget ? "true" : "false") + ",";
+    json += "\"gw_tx_packets\":" + String((unsigned long)duty.gwTxPackets) + ",";
+    json += "\"gw_tx_total_ms\":" + String((unsigned long)duty.gwTxTotalMs) + ",";
+    json += "\"fallback_pictures\":" + String((unsigned long)duty.totalFallbackPictures) + ",";
+    json += "\"fallback_chunks\":" + String((unsigned long)duty.totalFallbackChunks) + ",";
+    json += "\"fallback_airtime_ms\":" + String((unsigned long)duty.totalFallbackAirtimeMs) + ",";
+    json += "\"cam_b50_over_count\":" + String((unsigned long)duty.totalCamB50OverBudgetCount) + ",";
+    json += "\"any_b50_over_budget\":" + String(duty.anyB50OverBudget ? "true" : "false") + ",";
+    json += "\"cur_bucket_age_ms\":" + String((unsigned long)duty.curBucketAgeMs) + ",";
+    json += "\"cameras\":[";
+    for (uint8_t i = 0; i < duty.cameraCount; i++) {
+        const CamDutyStatus& c = duty.cameras[i];
+        if (i > 0) json += ",";
+        json += "{\"id\":\"" + jsonEscape(c.deviceId) + "\",";
+        json += "\"b50_1h_ms\":" + String((unsigned long)c.b50_1hMs) + ",";
+        json += "\"b50_pct_tenths\":" + String((unsigned long)c.b50BudgetPctTenths) + ",";
+        json += "\"b50_peak_1h_ms\":" + String((unsigned long)c.b50Peak1hMs) + ",";
+        json += "\"b50_over\":" + String(c.b50OverBudget ? "true" : "false") + ",";
+        json += "\"b50_over_count\":" + String((unsigned long)c.b50OverBudgetCount) + ",";
+        json += "\"b54_1h_ms\":" + String((unsigned long)c.b54_1hMs) + ",";
+        json += "\"b54_pct_tenths\":" + String((unsigned long)c.b54BudgetPctTenths) + ",";
+        json += "\"b54_peak_1h_ms\":" + String((unsigned long)c.b54Peak1hMs) + ",";
+        json += "\"b54_over\":" + String(c.b54OverBudget ? "true" : "false") + ",";
+        json += "\"b54_over_count\":" + String((unsigned long)c.b54OverBudgetCount) + ",";
+        json += "\"pkt24\":" + String((unsigned long)c.pkt24Count) + ",";
+        json += "\"pch_chunks\":" + String((unsigned long)c.pchChunks) + ",";
+        json += "\"fallback_chunks\":" + String((unsigned long)c.fallbackChunks) + ",";
+        json += "\"fallback_pictures\":" + String((unsigned long)c.fallbackPictures) + ",";
+        json += "\"fallback_ms\":" + String((unsigned long)c.fallbackAirtimeMs) + "}";
+    }
+    json += "]},";
 
     json += "\"diag\":{";       // counters since boot (gateway_diag.h)
     gatewayDiagAppendJson(json, gatewayDiagSample());

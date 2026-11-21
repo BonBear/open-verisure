@@ -118,6 +118,7 @@ struct RadioStatus {
     volatile uint8_t  marcState;
     volatile int16_t  rssiDbm;
     volatile uint32_t sampledMs;   // millis() of the last RSSI/MARCSTATE sample
+    volatile uint32_t txCount;     // cumulative STX count on module 0 (never reset by radioDiagReset)
 };
 
 /**
