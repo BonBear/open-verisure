@@ -1,6 +1,6 @@
 # Multi-Agent Engineering Architecture & Guidelines
 
-This document defines the collaboration agreement, the division of responsibilities, the model choices and the quality requirements (Quality Gates) for all AI agents and developers in the **Verisure Sub-1GHz Sensor & Home Assistant Gateway** project.
+This document defines the collaboration agreement, the division of responsibilities, the model choices and the quality requirements (Quality Gates) for all AI agents and developers in the **Verisure Sub-1GHz Sensor & Home Assistant Gateway** project. It is read by both supported agent tools, **Claude Code** (primary) and **Google Antigravity**; section 5 says how each one runs the workflow.
 
 ---
 
@@ -10,11 +10,11 @@ Each agent in the system is optimized for a specific role with an adapted model 
 
 | Role | Subagent / Identity | Recommended Model | Thinking Level (Reasoning) | Tool Permissions | Main Responsibility |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Orchestrator** | Main agent (Antigravity) | `Gemini Flash / Pro` | High | All tools | Analyzes the user's goals, breaks down tasks, directs subagents and synthesizes final answers. |
-| **Hardware & Protocol Analyst** | `hardware_analyst` | **`pro`** | **Maximum (High Thinking)** | Read-Only (Read, Search, Web) | Analyzes TI CC1110/CC1101 datasheets, ESP32-S2 pinmux/DMA, RF 868.950 MHz packets and AES-128 KDF. |
-| **Embedded Coder** | `embedded_coder` | `flash` *(alt. `pro` for complex logic)* | Balanced | Full (Read, Write, Edit) | Writes clean and resource-efficient C/C++ (PlatformIO, SDCC 8051) and Python automation scripts. |
-| **QA & Test Runner** | `qa_tester` | `flash` | Fast / Standard | Execution (Run commands, Tests) | Compiles firmware (`pio run`), runs Python tests, verifies regressions and edge cases. |
-| **Security & Code Reviewer** | `code_reviewer` | **`pro`** | **Maximum (High Thinking)** | Read-Only (Read, Review diff) | Independent audit of memory safety, ISR/interrupts, crypto hygiene, replay filter and coding standard. |
+| **Orchestrator** | Main agent (Claude Code or Antigravity session) | strong tier | High | All tools | Analyzes the user's goals, breaks down tasks, directs subagents and synthesizes final answers. |
+| **Hardware & Protocol Analyst** | `hardware_analyst` | **strong tier** | **Maximum (High Thinking)** | Read-Only (Read, Search, Web) | Analyzes TI CC1110/CC1101 datasheets, ESP32-S2 pinmux/DMA, RF 868.950 MHz packets and AES-128 KDF. |
+| **Embedded Coder** | `embedded_coder` | fast tier *(strong for complex logic)* | Balanced | Full (Read, Write, Edit) | Writes clean and resource-efficient C/C++ (PlatformIO, SDCC 8051) and Python automation scripts. |
+| **QA & Test Runner** | `qa_tester` | fast tier | Fast / Standard | Execution (Run commands, Tests) | Compiles firmware (`pio run`), runs Python tests, verifies regressions and edge cases. |
+| **Security & Code Reviewer** | `code_reviewer` | **strong tier** | **Maximum (High Thinking)** | Read-Only (Read, Review diff) | Independent audit of memory safety, ISR/interrupts, crypto hygiene, replay filter and coding standard. |
 
 ---
 
@@ -102,19 +102,29 @@ The memory bank is grouped by topic (CC1110 general, RF link, crypto/replay/prot
 
 ---
 
-## 5. Running the Workflow in Claude Code
+## 5. Running the Workflow (Claude Code and Antigravity)
 
-The four roles are defined as Claude Code subagents in `.claude/agents/`. The main Claude Code session is the Orchestrator and runs the workflow in section 2 by delegating to them:
+Each role's instructions live once, in `.agents/roles/<role>.md`, and are shared by both tools; the tool-specific agent files only set the model and tools and point there. Edit a role's behaviour in `.agents/roles/`, never in the agent files.
 
-| Role | Claude Code agent | Model / effort | Tools |
+| Role | Shared instructions | Claude Code agent (model / tools) | Antigravity agent (model / tools) |
 | :--- | :--- | :--- | :--- |
-| Hardware & Protocol Analyst | `hardware_analyst` | `opus`, max | Read, Grep, Glob, WebFetch, WebSearch |
-| Embedded Coder | `embedded_coder` | `sonnet` | Read, Write, Edit, Grep, Glob |
-| QA & Test Runner | `qa_tester` | `haiku` | Bash, Read, Grep, Glob |
-| Security & Code Reviewer | `code_reviewer` | `opus`, max | Read, Grep, Glob |
+| Hardware & Protocol Analyst | `.agents/roles/hardware_analyst.md` | `.claude/agents/hardware_analyst.md` (`opus`, max; Read, Grep, Glob, WebFetch, WebSearch) | `.agents/agents/hardware_analyst.md` (`pro`; view_file, grep_search) |
+| Embedded Coder | `.agents/roles/embedded_coder.md` | `.claude/agents/embedded_coder.md` (`sonnet`; Read, Write, Edit, Grep, Glob) | `.agents/agents/embedded_coder.md` (`flash`; view_file, grep_search, replace_file_content) |
+| QA & Test Runner | `.agents/roles/qa_tester.md` | `.claude/agents/qa_tester.md` (`haiku`; Bash, Read, Grep, Glob) | `.agents/agents/qa_tester.md` (`flash`; view_file, grep_search, run_command) |
+| Security & Code Reviewer | `.agents/roles/code_reviewer.md` | `.claude/agents/code_reviewer.md` (`opus`, max; Read, Grep, Glob) | `.agents/agents/code_reviewer.md` (`pro`; view_file, grep_search) |
 
-- `opus` replaces `pro` and `sonnet`/`haiku` replace `flash` from section 1.
+Common to both tools:
+- The main session is the Orchestrator and runs the workflow in section 2 by delegating to the roles. Subagents start without the conversation: pass the task, the files, the diff path and the round number explicitly.
 - `code_reviewer` has no shell, so the Orchestrator saves the diff under `scratch/` (ignored by git) and passes its path.
+- Only the Orchestrator commits, pushes and opens PRs; `main` is protected, so every change goes through a PR with green CI. Prefer CI (push the branch, open a draft PR) over long local test runs.
+- Session hand-over: if `.agents/handover.md` exists (local and git-ignored), the Orchestrator reads it at the start of a session. It holds the current work state and the user's working preferences that must not be committed; update it before ending a session that leaves work in progress.
+
+Claude Code:
+- `.claude/agents/` is loaded at session start; start a new session after changing these files.
 - `qa_tester`'s limits are enforced, not only prompted: `.claude/settings.json` runs `.claude/hooks/qa_bash_guard.py` before every Bash call, and when the caller is `qa_tester` it blocks git commands other than read-only ones, `pio` upload targets, `build_and_flash*.py` without `--compile-only`, OTA, esptool, the bench flashers and nested shells. Other agents and the main session are not affected. Tests: `tests/test_qa_bash_guard.py`.
-- Only the Orchestrator commits, pushes and opens PRs; `main` is protected, so every change goes through a PR with green CI.
-- Claude Code loads `.claude/agents/` at session start; start a new session after changing these files.
+
+Antigravity:
+- AGENTS.md is read as an always-on rule; the agents in `.agents/agents/` are its custom subagents (the `model` field accepts only `pro`, `flash` or `inherit`).
+- Read-only roles get no `run_command` and no write tool. Nothing enforces `qa_tester`'s command limits (there is no hook), so its role file states them as strict rules and the Orchestrator checks its commands.
+- Tool names: `view_file`, `grep_search`, `replace_file_content` and `run_command` are the documented ones; verify them in the installed version (a misspelled tool name can make a subagent hang) and add the file-creation and web tools if the coder must create files or the analyst must read datasheets online.
+- For a review from another model family, the Orchestrator may run the review step in a Claude Code session (`code_reviewer`) on the same diff.

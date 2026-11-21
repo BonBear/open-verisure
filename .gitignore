@@ -72,3 +72,6 @@ MD_CAM/blackfin/jtag/gdbproxy.log
 
 # release packages (release/make_release.py)
 dist/
+
+# local session hand-over for Claude Code and Antigravity (state + preferences, never committed)
+.agents/handover.md
