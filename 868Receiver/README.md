@@ -141,7 +141,7 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
 
 * **Web portal** (port 80, captive portal on first start): status, Wi-Fi/MQTT/key settings, sensor
   list. API: `/api/status`, `/api/replay?id=<ID>` (a sensor's last accepted counter), `/api/radio`, `/api/scan`, `/api/save`, `/api/reboot`, `/api/reset`,
-  `/api/camera.jpg` (newest 320x240 picture, colour or flash), `/api/camera_large.jpg` (640x480),
+  `/api/camera.jpg` (newest 320x240 picture, colour or flash), `/api/camera_large.jpg` (640x480; both take `?id=<camera ID>`, default the camera with the newest picture),
   `/api/camera_test?id=<ID>` (POST: publishes a small test JPEG to MQTT), `/api/picture?id=<ID>&cmd=D1`
   (POST: picture request), `/api/ota` (POST: firmware update, the image as the raw body,
   optional header `X-OTA-MD5`; see above). With a camera the page shows its last picture and picture buttons.

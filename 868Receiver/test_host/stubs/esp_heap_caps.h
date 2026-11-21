@@ -13,3 +13,5 @@
 #define MALLOC_CAP_SPIRAM (1 << 10)
 
 inline void* heap_caps_malloc(size_t, uint32_t) { return nullptr; }
+inline size_t heap_caps_get_total_size(uint32_t) { return 0; }
+inline size_t heap_caps_get_free_size(uint32_t) { return 0; }

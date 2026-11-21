@@ -278,6 +278,7 @@ void setup() {
     // 1. Initialize WebPortal, NVS Config, Serial CLI & MQTT
     webPortalInit();
     downlinkInit();
+    imageReceiverInit();   // prints the PSRAM size; the picture buffers follow with each camera's first picture
     serialCliInit();
     mqttInit();
 

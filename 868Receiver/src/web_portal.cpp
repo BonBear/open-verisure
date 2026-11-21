@@ -438,7 +438,7 @@ function updateCamera(data) {
     'Alarm ' + (data.armed ? 'armed' : 'disarmed') + ' | last poll ' + cam.last_seen_sec + ' s ago';
   if (Date.now() - camLoaded > 15000) {         // the newest picture, at most every 15 s
     camLoaded = Date.now();
-    document.getElementById('cam-img').src = '/api/camera.jpg?t=' + camLoaded;
+    document.getElementById('cam-img').src = '/api/camera.jpg?id=' + encodeURIComponent(cam.id) + '&t=' + camLoaded;
   }
 }
 
@@ -958,11 +958,27 @@ static const uint8_t S_MINIMAL_JPEG[] = {
     0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x37, 0xFF, 0xD9
 };
 
+// Optional ?id=<camera ID> of the picture endpoints: empty = the camera with the newest picture.
+// Answers 400 and returns false for an ID that is not 8 alphanumeric characters.
+static bool cameraIdArg(String& devId) {
+    if (!s_server.hasArg("id")) {
+        devId = "";
+        return true;
+    }
+    devId = s_server.arg("id");
+    bool idOk = devId.length() == 8;
+    for (unsigned i = 0; idOk && i < devId.length(); i++) idOk = isalnum((unsigned char)devId[i]);
+    if (!idOk) s_server.send(400, "text/plain", "Invalid device ID");
+    return idOk;
+}
+
 static void handleApiCameraJpg() {
     if (!authorize(ACCESS_READ)) return;
+    String devId;
+    if (!cameraIdArg(devId)) return;
     size_t len = 0;
     uint16_t missing = 0;
-    const uint8_t* jpg = imageReceiverJpeg(&len, &missing);
+    const uint8_t* jpg = imageReceiverJpeg(&len, &missing, s_server.hasArg("id") ? devId.c_str() : nullptr);
     if (!jpg) {
         s_server.send(404, "text/plain", "no picture yet");
         return;
@@ -973,9 +989,11 @@ static void handleApiCameraJpg() {
 
 static void handleApiCameraLargeJpg() {
     if (!authorize(ACCESS_READ)) return;
+    String devId;
+    if (!cameraIdArg(devId)) return;
     size_t len = 0;
     uint16_t missing = 0;
-    const uint8_t* jpg = imageReceiverJpegLarge(&len, &missing);
+    const uint8_t* jpg = imageReceiverJpegLarge(&len, &missing, s_server.hasArg("id") ? devId.c_str() : nullptr);
     if (!jpg) {
         s_server.send(404, "text/plain", "no large picture yet");
         return;

@@ -20,6 +20,9 @@ bool mqttPublishCameraImage(const char* deviceId, const uint8_t* jpegBuf, size_t
     if (len > hostMqtt.maxLen) hostMqtt.maxLen = len;
     hostMqtt.lastDevice = deviceId;
     hostMqtt.last.assign(jpegBuf, jpegBuf + len);   // reads every byte: ASan checks the range
-    if (hostMqtt.keepAll) hostMqtt.all.push_back(hostMqtt.last);
+    if (hostMqtt.keepAll) {
+        hostMqtt.all.push_back(hostMqtt.last);
+        hostMqtt.allDevice.push_back(hostMqtt.lastDevice);
+    }
     return true;
 }
