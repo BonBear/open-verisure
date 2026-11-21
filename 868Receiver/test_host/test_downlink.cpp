@@ -162,3 +162,53 @@ TEST(downlink_rejects_unknown_commands) {
     CHECK(!downlinkRequestPicture("CAMERA01", 0xD7));
     CHECK(downlinkRequestPicture("CAMERA01", 0xE8));      // HOLD (service)
 }
+
+TEST(downlink_build_plain_pch_flags_and_resend) {
+    uint8_t plain[16];
+
+    // Non-resend without flags: bytes [8..13] are zero
+    downlinkBuildPlain(0x12345678UL, true, 0, 0xABCD, 0x11223344UL, plain);
+    CHECK_EQ(plain[0], 'D');
+    CHECK_EQ(plain[1], 'L');
+    CHECK_EQ(plain[2], 0x12);
+    CHECK_EQ(plain[3], 0x34);
+    CHECK_EQ(plain[4], 0x56);
+    CHECK_EQ(plain[5], 0x78);
+    CHECK_EQ(plain[6], 1);
+    CHECK_EQ(plain[7], 0);
+    for (int i = 8; i <= 13; i++) CHECK_EQ(plain[i], 0);
+    CHECK_EQ(plain[14], 'V');
+    CHECK_EQ(plain[15], 'S');
+
+    // Non-resend with DL_FLAG_PCH: [8] = flags, [9] = channel, [10..13] = 0
+    downlinkBuildPlain(0x00000102UL, false, 0xD1, 0, 0, plain, DL_FLAG_PCH, DL_PCH_CH_869525);
+    CHECK_EQ(plain[6], 0);
+    CHECK_EQ(plain[7], 0xD1);
+    CHECK_EQ(plain[8], DL_FLAG_PCH);
+    CHECK_EQ(plain[9], DL_PCH_CH_869525);
+    for (int i = 10; i <= 13; i++) CHECK_EQ(plain[i], 0);
+
+    // Non-resend with DL_FLAG_PCH + non-zero channel
+    downlinkBuildPlain(1, true, 0, 0, 0, plain, DL_FLAG_PCH | DL_FLAG_GRANT, 2);
+    CHECK_EQ(plain[8], DL_FLAG_PCH | DL_FLAG_GRANT);
+    CHECK_EQ(plain[9], 2);
+    for (int i = 10; i <= 13; i++) CHECK_EQ(plain[i], 0);
+
+    // Non-resend without DL_FLAG_PCH: channel byte [9] stays 0 even if channel arg != 0
+    downlinkBuildPlain(1, true, 0, 0, 0, plain, DL_FLAG_HOLD, 3);
+    CHECK_EQ(plain[8], DL_FLAG_HOLD);
+    CHECK_EQ(plain[9], 0);
+
+    // Resend (0xF0): [8..9] = first (BE), [10..13] = map (LE), flags/channel must NOT overwrite them
+    downlinkBuildPlain(0xAABBCCDDUL, true, DOWNLINK_CMD_RESEND, 0x1234, 0xA5B6C7D8UL, plain,
+                       DL_FLAG_PCH | DL_FLAG_GRANT, 5);
+    CHECK_EQ(plain[7], DOWNLINK_CMD_RESEND);
+    CHECK_EQ(plain[8], 0x12);
+    CHECK_EQ(plain[9], 0x34);
+    CHECK_EQ(plain[10], 0xD8);
+    CHECK_EQ(plain[11], 0xC7);
+    CHECK_EQ(plain[12], 0xB6);
+    CHECK_EQ(plain[13], 0xA5);
+    CHECK_EQ(plain[14], 'V');
+    CHECK_EQ(plain[15], 'S');
+}

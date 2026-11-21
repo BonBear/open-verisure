@@ -16,9 +16,16 @@
 
 #include "ctr_dev.h"
 
+#define RF_CH_MAIN 0
+#define RF_CH_PCH  1
+
 static struct pic_trace s_pic;
 static uint16_t s_bf_len = 100;   /* length of the Blackfin's picture */
 static int s_bf_state;            /* 0 idle, 1 length low, 2 length high, 3 data */
+static bool s_pch = false;
+static uint8_t s_pic_ch = RF_CH_MAIN;
+
+static void radio_set_freq(uint8_t ch) { (void)ch; }
 
 static void clock_xosc(void) {}
 

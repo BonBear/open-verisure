@@ -335,6 +335,30 @@ void radio_init(void) {
     PA_TABLE7 = 0xC2;
 }
 
+#define DL_FLAG_PCH  0x01
+#define RF_CH_MAIN   0
+#define RF_CH_PCH    1
+
+static __xdata bool s_pch = false;
+static __xdata uint8_t s_pch_miss_polls = 0;
+static __xdata uint8_t s_pic_ch = RF_CH_MAIN;
+
+static void radio_set_freq(uint8_t ch) {
+    uint16_t w = 5000;
+    RFST = 0x04; // SIDLE
+    while ((MARCSTATE & 0x1F) != 0x01 && --w) {
+    }
+    if (ch == RF_CH_PCH) {
+        FREQ2 = 0x20; // 869.525162 MHz at 27 MHz (0x203463)
+        FREQ1 = 0x34;
+        FREQ0 = 0x63;
+    } else {
+        FREQ2 = 0x20; // 868.950 MHz at 27 MHz (0x202EEF)
+        FREQ1 = 0x2E;
+        FREQ0 = 0xEF;
+    }
+}
+
 bool radio_send_dma(void) {
     uint16_t timeout;
 
@@ -789,6 +813,7 @@ static bool bf_send_picture(uint8_t cmd, bool motion) {
     if (s_tx_held)
         return false;
     s_pic_tag = tag;
+    s_pic_ch = s_pch ? RF_CH_PCH : RF_CH_MAIN;
     bf_link_xfer(cmd);
     // ~0.83 s per try: 60 tries ~50 s. A cold 640x480 (0xD2) needed ~13 s, but snap_link's
     // AEC wait after power-up can add up to ~15 s more in a scene that keeps changing
@@ -817,6 +842,8 @@ static bool bf_send_picture(uint8_t cmd, bool motion) {
     T1CTL = 0x0D;                // free running, tick 128/27 MHz = 4.74 us
     c = t1_now();
 #endif
+    if (s_pic_ch != RF_CH_MAIN)
+        radio_set_freq(s_pic_ch);
     for (off = 0, idx = 0; off < len; off += n, idx++) {
         n = (len - off) > BF_IMG_CHUNK ? BF_IMG_CHUNK : (uint8_t)(len - off);
 #if BF_IMG_TIMING
@@ -838,6 +865,8 @@ static bool bf_send_picture(uint8_t cmd, bool motion) {
         z++;
 #endif
     }
+    if (s_pic_ch != RF_CH_MAIN)
+        radio_set_freq(RF_CH_MAIN);
 #if BF_IMG_TIMING
     // 0.25 ms = 52.7 ticks
     transmit(false, false, 0xB7, (uint8_t)(t_tx / z / 53));
@@ -948,16 +977,9 @@ static bool radio_receive_dma(uint16_t window) {
 static __xdata uint16_t s_rs_first;  // resend request from the last poll answer: chunk s_rs_first + i
 static __xdata uint32_t s_rs_map;    // for every bit i set (0 = none)
 
-static bool cam_poll(bool motion, bool bf_on) {
-    uint8_t i, state = 0;
-
-    if (s_armed) state |= 0x01;
-    if (bf_on) state |= 0x02;
-    if (s_cmd_ack) state |= 0x04;
-    s_ack_recheck = false;           // recomputed from a valid answer only
-    state |= bat_load_code() << 3;   // bits 7:3: battery voltage under load
-    s_poll_ctr = transmit(motion, false, 0xBA, state);
-    if (s_tx_held || !radio_receive_dma(BF_RX_WINDOW))   // held poll: no answer to wait for
+static bool cam_poll_rx_valid(void) {
+    uint8_t i;
+    if (!radio_receive_dma(BF_RX_WINDOW))
         return false;
     for (i = 0; i < 8; i++)
         if (rx_buf[i] != (uint8_t)DEVICE_ID[i])
@@ -969,11 +991,34 @@ static bool cam_poll(bool motion, bool bf_on) {
     for (i = 0; i < 4; i++)
         if (s_dl_plain[2 + i] != (uint8_t)(s_poll_ctr >> (24 - 8 * i)))
             return false;
+    return true;
+}
+
+static bool cam_poll(bool motion, bool bf_on) {
+    uint8_t state = 0;
+
+    if (s_armed) state |= 0x01;
+    if (bf_on) state |= 0x02;
+    if (s_cmd_ack) state |= 0x04;
+    s_ack_recheck = false;           // recomputed from a valid answer only
+    state |= bat_load_code() << 3;   // bits 7:3: battery voltage under load
+    s_poll_ctr = transmit(motion, false, 0xBA, state);
+    if (s_tx_held) return false;     // held poll: no answer to wait for
+    if (!cam_poll_rx_valid()) {
+        if (s_pch_miss_polls < 3)
+            s_pch_miss_polls++;
+        if (s_pch_miss_polls >= 3)
+            s_pch = false;
+        return false;
+    }
     // the gateway has seen this poll (and with it any acknowledgement)
+    s_pch_miss_polls = 0;
     s_ack_recheck = (state & 0x04) != 0;   // cleared below if the answer carries a command or resend
     s_cmd_ack = false;
     if (s_dl_plain[6] <= 1)
         s_armed = s_dl_plain[6] != 0;
+    if (s_dl_plain[7] != BF_CMD_RESEND)
+        s_pch = ((s_dl_plain[8] & DL_FLAG_PCH) != 0) && (s_dl_plain[9] == 0);
     if ((s_dl_plain[7] >= 0xD1 && s_dl_plain[7] <= 0xD6) ||   // 0xD4 flash, 0xD5/0xD6 flash in the dark
         s_dl_plain[7] == BF_CMD_HOLD) {
         s_dl_cmd = s_dl_plain[7];
@@ -999,6 +1044,8 @@ static void bf_resend(uint16_t first, uint32_t map) {
     if (!s_pic_len)
         return;
     chunks = (s_pic_len + BF_IMG_CHUNK - 1) / BF_IMG_CHUNK;
+    if (s_pic_ch != RF_CH_MAIN)
+        radio_set_freq(s_pic_ch);
     for (k = 0; k < 32 && map; k++, map >>= 1) {
         if (!(map & 1))
             continue;
@@ -1018,6 +1065,8 @@ static void bf_resend(uint16_t first, uint32_t map) {
         WDT_FEED();
         next = idx + 1;
     }
+    if (s_pic_ch != RF_CH_MAIN)
+        radio_set_freq(RF_CH_MAIN);
 }
 
 // Power the Blackfin as bf_jtag_hold() does, without its long JTAG pauses: P1_2 = 1 at

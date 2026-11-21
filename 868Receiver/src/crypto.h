@@ -124,9 +124,10 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
  *        of the picture's start packet (0xB2) and must be close to the device's last accepted
  *        counter, else the chunk is dropped as a replay. Valid chunks go to the image receiver.
  *        Type 0x83 is the same for a chunk resent on the gateway's request.
+ * @param channel Radio channel the packet arrived on (0 = main 868.95 MHz, 1 = PCH 869.525 MHz).
  * @return True if the packet decoded as a picture chunk (taken or dropped as stale).
  */
-bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16]);
+bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16], uint8_t channel = 0);
 
 /**
  * @brief Forget a device's replay state (RAM and NVS), e.g. after reflashing erased its flash,

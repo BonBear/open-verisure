@@ -21,9 +21,10 @@ void imageReceiverInit(void);
  * @param isFirst True if this is the first chunk (SOI).
  * @param isLast True if this is the final chunk (EOI).
  * @param data Pointer to chunkLen bytes of JPEG data.
+ * @param channel Radio channel (0 = main 868.95 MHz, 1 = PCH 869.525 MHz).
  */
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
-                               bool isFirst, bool isLast, const uint8_t* data);
+                               bool isFirst, bool isLast, const uint8_t* data, uint8_t channel = 0);
 
 /** Cameras with their own picture state (reassembly, delta base, resend, pending publish); keep
  *  equal to DOWNLINK_MAX_CAMERAS in downlink.h (static_assert in image_receiver.cpp). A camera gets a slot with its first chunk; when
@@ -42,7 +43,7 @@ const uint8_t* imageReceiverJpegLarge(size_t* len, uint16_t* missing, const char
 /** A chunk resent on the gateway's request (packet type 0x83): patched into the last picture;
  *  once complete it replaces the held first pass and is published after the next poll answer. */
 void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen, bool isLast,
-                                const uint8_t* data);
+                                const uint8_t* data, uint8_t channel = 0);
 
 /** A poll from this camera arrived: finish a picture that is still open (its end was lost). */
 void imageReceiverPollSeen(const char* deviceId);
@@ -66,4 +67,34 @@ void imageReceiverSetDrop(uint32_t n);
 
 /** Call from loop(): finishes a picture whose last chunk was lost (after a pause). */
 void imageReceiverLoop(void);
+
+/** Record whether PCH was advertised in the last poll answer sent to this camera. */
+void imageReceiverNotePollAnswer(const char* deviceId, bool pchAdvertised);
+
+/** Note a 0xB2 picture start packet from this camera (explicit pchAdvertised flag). */
+void imageReceiverNotePicStart(const char* deviceId, bool pchAdvertised);
+
+/** Note a 0xB2 picture start packet using the last imageReceiverNotePollAnswer() state. */
+void imageReceiverNotePicStart(const char* deviceId);
+
+/** True while PCH advertisement is suppressed for this camera due to consecutive misses. */
+bool imageReceiverPchSuppressed(const char* deviceId);
+
+/** Clear PCH miss counter, backoff and suppression for one camera (or all if deviceId == nullptr). */
+void imageReceiverPchReset(const char* deviceId = nullptr);
+
+/** Print per-camera PCH/main chunk counts and suppression state to Serial (CLI 'pch status'). */
+void imageReceiverPchPrintStatus(void);
+
+struct PchCamStats {
+    char deviceId[10];
+    uint32_t pchChunks;
+    uint32_t mainChunks;
+    uint8_t misses;
+    bool suppressed;
+    uint32_t suppressRemSec;
+};
+
+/** Copy per-camera PCH stats into out (up to maxOut entries); returns number written. */
+int imageReceiverPchGetStats(PchCamStats* out, int maxOut);
 

@@ -149,7 +149,7 @@ uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16
 }
 
 void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t first, uint32_t map,
-                        uint8_t out[16]) {
+                        uint8_t out[16], uint8_t flags, uint8_t channel) {
     memset(out, 0, 16);
     out[0] = 'D';
     out[1] = 'L';
@@ -163,6 +163,9 @@ void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t 
         out[8] = (uint8_t)(first >> 8);
         out[9] = (uint8_t)first;
         for (int i = 0; i < 4; i++) out[10 + i] = (uint8_t)(map >> (8 * i));
+    } else {
+        out[8] = flags;
+        out[9] = (flags & DL_FLAG_PCH) ? channel : 0;
     }
     out[14] = 'V';
     out[15] = 'S';
