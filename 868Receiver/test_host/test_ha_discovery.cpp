@@ -8,6 +8,9 @@
 #include "test.h"
 #include "ha_discovery.h"
 #include "gateway_diag.h"
+#include "image_receiver.h"
+#include "mqtt_manager.h"
+#include <stdint.h>
 #include <map>
 #include <string>
 
@@ -251,4 +254,25 @@ TEST(json_checker_rejects_bad_json) {
     CHECK(!Json("{\"a\":01}").ok);
     CHECK(!Json("{\"a\":1,\"a\":2}").ok);
     CHECK(Json("{\"a\":[1,{\"b\":null}],\"c\":\"\\\"\"}").ok);
+}
+
+TEST(mqtt_camera_image_length_guard) {
+    CHECK(!mqttCameraImageLengthOk(23, 0));
+    CHECK(!mqttCameraImageLengthOk(0, 0));
+
+    // "verisure/2NCEKS3T/image" (23 B): 2 + 23 + 65510 = 65535 (max uint16_t)
+    CHECK(mqttCameraImageLengthOk(23, 65510));
+    CHECK(!mqttCameraImageLengthOk(23, 65511));
+    CHECK(!mqttCameraImageLengthOk(23, MAX_IMAGE_SIZE));
+
+    // Max 32-char base topic (".../2NCEKS3T/image" = 47 B): 2 + 47 + 65486 = 65535
+    CHECK(mqttCameraImageLengthOk(47, 65486));
+    CHECK(!mqttCameraImageLengthOk(47, 65487));
+
+    // Topic/payload extremes and wrap-around safety
+    CHECK(!mqttCameraImageLengthOk(65534, 1));
+    CHECK(!mqttCameraImageLengthOk(65533, 1));
+    CHECK(mqttCameraImageLengthOk(65532, 1));
+    CHECK(!mqttCameraImageLengthOk(23, SIZE_MAX));
+    CHECK(!mqttCameraImageLengthOk(0, SIZE_MAX));
 }
