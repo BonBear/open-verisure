@@ -810,8 +810,8 @@ TEST(fuzz_image_slot_eviction) {
     }
 }
 
-// A camera whose buffers cannot be allocated loses its pictures (logged once); the other cameras and
-// the next ones still work. n: the failing allocation is the splice buffer, imgBuf or jpg of the first camera.
+// A camera whose buffers cannot be allocated loses its pictures (logged, retried after a minute); the
+// other cameras and the next ones still work. n: the failing allocation is the splice buffer, imgBuf or jpg of the first camera.
 TEST(fuzz_image_allocation_failure_of_one_slot) {
     Rng r(0x1A6E000D);
     for (int n = 0; n < 3; n++) {
@@ -836,9 +836,166 @@ TEST(fuzz_image_allocation_failure_of_one_slot) {
         CHECK_EQ(hostMqtt.images, 1);
         CHECK(currentOf(CAM).empty());
         CHECK(currentOf(CAM_B) == b);
+        hostAdvanceMillis(59000);                           // not yet: retried once per minute only
+        sendBlob(CAM, a);
+        imageReceiverPublishPending();
+        CHECK_EQ(hostMqtt.images, 1);
+        CHECK(currentOf(CAM).empty());
+        hostAdvanceMillis(1500);                            // the next picture of the camera allocates again
+        sendBlobPublished(CAM, a);
+        CHECK_EQ(hostMqtt.images, 2);
+        CHECK(hostMqtt.lastDevice == CAM);
+        CHECK(hostMqtt.last == a);
+        CHECK(currentOf(CAM) == a);
+        CHECK(currentOf(CAM_B) == b);
         checkOutputs();
         if (fuzzStop("fuzz_image_allocation_failure_of_one_slot", n)) return;
     }
     imageReceiverHostTestFreeBuffers();                     // the next tests allocate again
     resetAll();
+}
+
+// The reassembly buffer is the resend's buffer too: after a resend was cancelled by the camera's next
+// picture, a chunk of that picture that never arrives must be zero (a hole), not the old picture's
+// bytes (the wipe in imageReceiverProcessChunk, imgDirty). The held first pass goes out intact.
+TEST(fuzz_image_new_picture_after_cancelled_resend_has_clean_holes) {
+    Rng r(0x1A6E000E);
+    int tested = 0;
+    for (int it = 0; it < fuzzIters(60); it++) {
+        resetAll();
+        hostAdvanceMillis(1000);
+        std::vector<uint8_t> old;
+        unsigned lost;
+        sendHoleyAndAnswerPoll(r, old, &lost);              // the resend runs, the first pass is held
+        CHECK_EQ(hostMqtt.images, 0);
+        int id = (int)r.below(256);
+        std::vector<uint8_t> np = fuzzAssemble(fuzzMakeJpeg(r, 320, id, r.range(30, 100), r.range(5, 45)));
+        unsigned nOld = chunksOf(old.size()), nNew = chunksOf(np.size());
+        unsigned m = nOld < nNew ? nOld : nNew;
+        if (m < 5) continue;                                // (hole after the header chunks, inside both pictures)
+        unsigned h = r.range(3, m - 2);
+        if (h == lost) continue;
+        hostAdvanceMillis(100);
+        for (unsigned c = 0; c < nNew; c++)
+            if (c != h) chunk(CAM, (uint16_t)c, chunkLen(np, c), c == 0, c + 1 == nNew, &np[c * CHUNK]);
+        CHECK_EQ(hostMqtt.images, 1);                       // finishing flushed the first pass, intact
+        CHECK_EQ(hostMqtt.last.size(), old.size());
+        size_t hole0 = (size_t)lost * CHUNK, hole1 = hole0 + chunkLen(old, lost);
+        for (size_t i = 0; i < old.size(); i++)
+            if (i < hole0 || i >= hole1) CHECK_EQ(hostMqtt.last[i], old[i]);
+        std::vector<uint8_t> got = currentOf(CAM);          // the new picture with a zero hole in chunk h
+        CHECK_EQ(got.size(), np.size());
+        size_t n0 = (size_t)h * CHUNK, n1 = n0 + chunkLen(np, h);
+        for (size_t i = 0; i < got.size() && i < np.size(); i++) CHECK_EQ(got[i], (i >= n0 && i < n1) ? 0 : np[i]);
+        tested++;
+        checkOutputs();
+        if (fuzzStop("fuzz_image_new_picture_after_cancelled_resend_has_clean_holes", it)) return;
+    }
+    CHECK(tested > 0);
+}
+
+/** Pictures whose frame header (SOF0) is not recognised: stored nowhere, published from a copy. */
+static std::vector<uint8_t> headerless(const std::vector<uint8_t>& pic) {
+    std::vector<uint8_t> v = pic;
+    for (size_t i = 2; i + 9 < v.size() && i < 1024; i++)
+        if (v[i] == 0xFF && v[i + 1] == 0xC0) v[i + 1] = 0xC1;
+    return v;
+}
+
+// Pictures kept in a copy buffer (no frame header) are pending per camera: one camera finishing a
+// picture never publishes another camera's pending or held picture (that blocking publish would run
+// before the other camera's poll answer and ignore its hold); each goes out after its own poll answer.
+TEST(fuzz_image_headerless_pictures_of_two_cameras_publish_separately) {
+    Rng r(0x1A6E000F);
+    for (int it = 0; it < fuzzIters(30); it++) {
+        // interleaved, both complete
+        resetAll();
+        hostAdvanceMillis(1000);
+        hostMqtt.keepAll = true;
+        std::vector<uint8_t> a = headerless(fuzzAssemble(randomPicture(r, 320, 1, MAX_IMAGE_SIZE)));
+        std::vector<uint8_t> b = headerless(fuzzAssemble(randomPicture(r, 320, 2, MAX_IMAGE_SIZE)));
+        sendInterleaved(r, CAM, a, CAM_B, b);
+        CHECK_EQ(hostMqtt.images, 0);                       // nothing published by either last chunk
+        imageReceiverAfterPollAnswer(CAM_B);
+        CHECK_EQ(hostMqtt.images, 1);
+        CHECK(hostMqtt.lastDevice == CAM_B);
+        CHECK(hostMqtt.last == b);
+        imageReceiverAfterPollAnswer(CAM);
+        checkPublishedOnce(CAM, a, CAM_B, b);
+        CHECK(currentOf(CAM).empty());                      // not stored without a frame header
+        CHECK(currentOf(CAM_B).empty());
+
+        // A's picture has a hole and its resend runs (held); B finishes a picture meanwhile
+        resetAll();
+        hostAdvanceMillis(1000);
+        std::vector<uint8_t> pic =
+            headerless(fuzzAssemble(fuzzMakeJpeg(r, 320, 3, r.range(60, 200), r.range(5, 45))));   // 6+ chunks
+        unsigned nc = chunksOf(pic.size());
+        REQUIRE(nc > 5);
+        unsigned lost = r.range(3, nc - 2);
+        for (unsigned c = 0; c < nc; c++)
+            if (c != lost) chunk(CAM, (uint16_t)c, chunkLen(pic, c), c == 0, c + 1 == nc, &pic[c * CHUNK]);
+        hostAdvanceMillis(30);
+        imageReceiverPollSeen(CAM);
+        uint16_t first;
+        uint32_t map;
+        CHECK(takeResendRequest(CAM, &first, &map));
+        CHECK_EQ((unsigned)first, lost);
+        imageReceiverAfterPollAnswer(CAM);
+        CHECK_EQ(hostMqtt.images, 0);                       // held
+        std::vector<uint8_t> b2 = headerless(fuzzAssemble(randomPicture(r, 320, 4, MAX_IMAGE_SIZE)));
+        sendBlob(CAM_B, b2);
+        CHECK_EQ(hostMqtt.images, 0);                       // A's held picture was not published by B
+        imageReceiverAfterPollAnswer(CAM_B);
+        CHECK_EQ(hostMqtt.images, 1);
+        CHECK(hostMqtt.lastDevice == CAM_B);
+        CHECK(hostMqtt.last == b2);
+        hostAdvanceMillis(70);
+        resend(CAM, (uint16_t)lost, chunkLen(pic, lost), false, &pic[lost * CHUNK]);
+        imageReceiverPollSeen(CAM);
+        CHECK(!takeResendRequest(CAM, &first, &map));
+        imageReceiverAfterPollAnswer(CAM);
+        CHECK_EQ(hostMqtt.images, 2);                       // only the complete picture of A
+        CHECK(hostMqtt.lastDevice == CAM);
+        CHECK(hostMqtt.last == pic);
+        checkOutputs();
+        if (fuzzStop("fuzz_image_headerless_pictures_of_two_cameras_publish_separately", it)) return;
+    }
+}
+
+// A slot whose resend is running is busy even when nothing is pending (here the first pass was
+// published by the test API), so it is not evicted although it is the oldest; the resend then completes.
+TEST(fuzz_image_slot_with_running_resend_is_not_evicted) {
+    static_assert(IMG_MAX_CAMERAS == 4, "the test uses 4 slots and 5 cameras");
+    Rng r(0x1A6E0010);
+    static const char* others[] = {"CAMC0001", "CAMC0002", "CAMC0003", "CAMC0004"};
+    for (int it = 0; it < fuzzIters(30); it++) {
+        resetAll();
+        hostAdvanceMillis(1000);
+        std::vector<uint8_t> pic;
+        unsigned lost;
+        sendHoleyAndAnswerPoll(r, pic, &lost);              // CAM: resend running, first pass held
+        imageReceiverPublishPending();                      // published: pending is gone, the resend goes on
+        CHECK_EQ(hostMqtt.images, 1);
+        std::vector<uint8_t> p[4];
+        for (int k = 0; k < 4; k++) p[k] = fuzzAssemble(randomPicture(r, 320, 30 + k, MAX_IMAGE_SIZE));
+        for (int k = 0; k < 3; k++) {                       // the other three slots
+            hostAdvanceMillis(1000);
+            sendBlobPublished(others[k], p[k]);
+        }
+        hostAdvanceMillis(1000);
+        sendBlobPublished(others[3], p[3]);                 // no free slot: the oldest idle one (not CAM's) goes
+        CHECK(currentOf(others[0]).empty());
+        for (int k = 1; k < 4; k++) CHECK(currentOf(others[k]) == p[k]);
+        CHECK_EQ(imageReceiverHostTestNoSlotDrops(), 0);
+        int before = hostMqtt.images;
+        resend(CAM, (uint16_t)lost, chunkLen(pic, lost), false, &pic[lost * CHUNK]);   // the resend completes
+        imageReceiverAfterPollAnswer(CAM);
+        CHECK_EQ(hostMqtt.images, before + 1);
+        CHECK(hostMqtt.lastDevice == CAM);
+        CHECK(hostMqtt.last == pic);
+        CHECK(currentOf(CAM) == pic);
+        checkOutputs();
+        if (fuzzStop("fuzz_image_slot_with_running_resend_is_not_evicted", it)) return;
+    }
 }

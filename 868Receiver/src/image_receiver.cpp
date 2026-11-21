@@ -56,11 +56,15 @@
 // only stores the picture and marks it in the camera's slot (pubActive); it is published after that
 // camera's poll answer (imageReceiverAfterPollAnswer), or from imageReceiverLoop()
 // IMG_PUBLISH_DEFER_MS later if no poll comes. pubBuf points to a buffer that stays unchanged until
-// the publish (the slot's jpg, jpgLarge, jpgGray or the shared s_pubImg, never imgBuf which
+// the publish (the slot's jpg, jpgLarge, jpgGray or pubImg, never imgBuf which
 // jpegReset() clears): every jpegFinish() of a camera first flushes that camera's pending picture.
+#define ALLOC_RETRY_MS 60000UL       // a camera whose buffers could not be allocated is retried this often
+static_assert(IMG_MAX_CAMERAS == DOWNLINK_MAX_CAMERAS, "picture slots and downlink slots are per camera: keep equal");
+
 struct CamPic {
     bool used;                       // slot belongs to deviceId
     bool allocFailed;                // its buffers could not be allocated: its pictures are dropped
+    unsigned long allocFailTime;     // when, for the retry
     char deviceId[10];
     unsigned long lastUse;           // last chunk, for evicting the oldest idle slot
 
@@ -69,6 +73,7 @@ struct CamPic {
     uint8_t* jpg;                    // last finished picture
     uint8_t* jpgLarge;               // last finished picture wider than 320
     uint8_t* jpgGray;                // last grayscale picture
+    uint8_t* pubImg;                 // copy for the publish of a picture stored nowhere else (rare)
 
     // reassembly
     uint8_t have[HAVE_BYTES];        // bit per chunk received
@@ -116,7 +121,6 @@ struct CamPic {
 static CamPic* const s_cam = static_cast<CamPic*>(calloc(IMG_MAX_CAMERAS, sizeof(CamPic)));
 static const int s_nCam = s_cam ? IMG_MAX_CAMERAS : 0;   // every loop over the slots uses this
 static uint8_t* s_tmp = nullptr;             // splice output, swapped with a slot's jpg (used within one jpegFinish)
-static uint8_t* s_pubImg = nullptr;          // copy of a picture that is not stored anywhere else
 static uint32_t s_seq = 0;                   // picture counter, tells which camera has the newest picture
 static uint32_t s_noSlotDrops = 0;           // chunks dropped because every slot was busy
 
@@ -160,22 +164,20 @@ static bool publishHeld(const CamPic* c) {
 }
 
 // Mark the picture for publishing. stable: where it is stored (jpg, jpgLarge, jpgGray), or
-// nullptr to copy len bytes of imgBuf to s_pubImg (a picture without frame header, or too
-// big for the gray buffer). Without a buffer for the copy it is published at once.
-// s_pubImg is shared: if another camera's pending picture sits in it, that one is published first
-// (a blocking publish, but only for these rare pictures; every other pending picture has its own buffer).
+// nullptr to copy len bytes of imgBuf to the slot's own pubImg (a picture without frame header, or too
+// big for the gray buffer; allocated on the first need, rare). Without a buffer for the copy it is
+// published at once. Every pending picture has a buffer of its own, so finishing one camera's picture
+// never publishes another camera's (a blocking publish that ignores publishHeld() and the poll order).
 static void queuePublish(CamPic* c, const uint8_t* stable, size_t len) {
     if (!stable) {
-        if (!s_pubImg) s_pubImg = allocBig(MAX_IMAGE_SIZE);
-        if (!s_pubImg) {
+        if (!c->pubImg) c->pubImg = allocBig(MAX_IMAGE_SIZE);
+        if (!c->pubImg) {
             if (!mqttPublishCameraImage(c->deviceId, c->imgBuf, len))
                 Serial.printf("[ImageReceiver] Failed to publish image to MQTT broker.\n");
             return;
         }
-        for (int i = 0; i < s_nCam; i++)
-            if (&s_cam[i] != c && s_cam[i].pubActive && s_cam[i].pubBuf == s_pubImg) publishPending(&s_cam[i]);
-        memcpy(s_pubImg, c->imgBuf, len);
-        stable = s_pubImg;
+        memcpy(c->pubImg, c->imgBuf, len);
+        stable = c->pubImg;
     }
     c->pubBuf = stable;
     c->pubLen = len;
@@ -200,12 +202,14 @@ static void slotClear(CamPic* c) {
     uint8_t* jpg = c->jpg;
     uint8_t* large = c->jpgLarge;
     uint8_t* gray = c->jpgGray;
+    uint8_t* pubImg = c->pubImg;
     if (img && c->used) memset(img, 0, MAX_IMAGE_SIZE);   // (an unused slot's imgBuf is clean already)
     memset(c, 0, sizeof(*c));
     c->imgBuf = img;
     c->jpg = jpg;
     c->jpgLarge = large;
     c->jpgGray = gray;
+    c->pubImg = pubImg;
     c->baseId = -1;
     c->lastIdx = -1;
 }
@@ -238,6 +242,7 @@ static CamPic* assignCam(const char* deviceId, unsigned long now) {
         }
     }
     if (!pick) {
+        if (s_nCam == 0) return nullptr;     // no slot memory at all (reported by imageReceiverInit)
         if ((++s_noSlotDrops & 0x3F) == 1)
             Serial.printf("[ImageReceiver] No free picture slot for %.9s: chunks dropped (%lu so far)\n", deviceId,
                           (unsigned long)s_noSlotDrops);
@@ -252,25 +257,30 @@ static CamPic* assignCam(const char* deviceId, unsigned long now) {
     return pick;
 }
 
-// The slot's big buffers (and the shared splice buffer), allocated once. If one fails the ones got are
-// given back, the failure is logged (once per assignment) and the camera's pictures are dropped:
-// the other cameras are not affected.
+// The slot's big buffers (and the shared splice buffer), allocated once. If one fails the ones this
+// call got are given back, the failure is logged and the camera's pictures are dropped (the other
+// cameras are not affected) until a chunk arrives ALLOC_RETRY_MS later, which tries again.
 static bool slotBuffers(CamPic* c) {
-    if (c->allocFailed) return false;
+    if (c->allocFailed) {
+        // retry on a later chunk of this camera (memory may have come free), at most once per ALLOC_RETRY_MS
+        if (millis() - c->allocFailTime < ALLOC_RETRY_MS) return false;
+        c->allocFailed = false;
+    }
     if (c->imgBuf && c->jpg && s_tmp) return true;
     if (!s_tmp) s_tmp = allocBig(MAX_IMAGE_SIZE);
-    bool fresh = !c->imgBuf;
-    if (!c->imgBuf) c->imgBuf = allocBig(MAX_IMAGE_SIZE);
-    if (!c->jpg) c->jpg = allocBig(MAX_IMAGE_SIZE);
+    bool newImg = !c->imgBuf, newJpg = !c->jpg;
+    if (newImg) c->imgBuf = allocBig(MAX_IMAGE_SIZE);
+    if (newJpg) c->jpg = allocBig(MAX_IMAGE_SIZE);
     if (s_tmp && c->imgBuf && c->jpg) {
-        if (fresh) jpegReset(c);
+        if (newImg) jpegReset(c);
         return true;
     }
-    if (c->imgBuf) free(c->imgBuf);
-    if (c->jpg) free(c->jpg);
-    c->imgBuf = nullptr;
-    c->jpg = nullptr;
+    if (newImg && c->imgBuf) free(c->imgBuf);       // only what this call allocated
+    if (newJpg && c->jpg) free(c->jpg);
+    if (newImg) c->imgBuf = nullptr;
+    if (newJpg) c->jpg = nullptr;
     c->allocFailed = true;
+    c->allocFailTime = millis();
     Serial.printf("[ImageReceiver] No memory for the picture buffers of %s (%u bytes of PSRAM free): its pictures are dropped\n",
                   c->deviceId, (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     return false;
@@ -534,8 +544,8 @@ void imageReceiverInit(void) {
         rsCancel(&s_cam[i]);              // imgBuf is the resend's buffer too
         jpegReset(&s_cam[i]);
     }
-    // the buffers (up to 208 KB per camera, 128 KB for a 320-only camera, plus 64 KB splice and 64 KB
-    // copy buffers) are allocated on a camera's first picture
+    // the buffers (128 KB per camera, +64 KB for a 640 picture, +16 KB for a flash picture, +64 KB for
+    // the rare headerless/oversized-gray copy, plus 64 KB splice buffer once) are allocated when needed
     Serial.printf("[ImageReceiver] PSRAM: %u bytes total, %u free; picture buffers are allocated per camera on its first picture (%d cameras)\n",
                   (unsigned int)heap_caps_get_total_size(MALLOC_CAP_SPIRAM),
                   (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), IMG_MAX_CAMERAS);
@@ -647,11 +657,11 @@ void imageReceiverHostTestFreeBuffers() {
         free(s_cam[i].jpg);
         free(s_cam[i].jpgLarge);
         free(s_cam[i].jpgGray);
-        s_cam[i].imgBuf = s_cam[i].jpg = s_cam[i].jpgLarge = s_cam[i].jpgGray = nullptr;
+        free(s_cam[i].pubImg);
+        s_cam[i].imgBuf = s_cam[i].jpg = s_cam[i].jpgLarge = s_cam[i].jpgGray = s_cam[i].pubImg = nullptr;
     }
     free(s_tmp);
-    free(s_pubImg);
-    s_tmp = s_pubImg = nullptr;
+    s_tmp = nullptr;
 }
 
 /* The n-th next big allocation fails (0 = the next one); slot buffers are allocated in the order

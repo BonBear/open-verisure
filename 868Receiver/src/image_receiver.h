@@ -58,7 +58,7 @@ void imageReceiverPollSeen(const char* deviceId);
  *  publishes the picture waiting for it, if any, unless it is held while its resend runs. */
 void imageReceiverAfterPollAnswer(const char* deviceId);
 
-/** Publish the waiting picture now, whatever device (used by tests). */
+/** Publish every waiting picture now, oldest first, whatever device (used by tests). */
 void imageReceiverPublishPending(void);
 
 /** Test: drop every n-th 56-byte picture chunk (0 = off), to exercise the resend. */

@@ -7,7 +7,6 @@
 #include <Preferences.h>
 #include <string.h>
 
-#define DOWNLINK_MAX_CAMERAS 4
 #define DOWNLINK_CMD_TTL_MS  (15UL * 60UL * 1000UL)   // a request not delivered by then is dropped
 
 struct PendingCommand {

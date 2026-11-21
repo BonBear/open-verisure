@@ -27,6 +27,10 @@
 #define DOWNLINK_STATE_ACK    0x04
 #define DOWNLINK_STATE_LOAD_SHIFT 3   // bits 7:3: battery under load, see above
 
+/** Cameras with a downlink slot (one queued command or resend request each); image_receiver.h's
+ *  IMG_MAX_CAMERAS (picture slots) must equal it. */
+#define DOWNLINK_MAX_CAMERAS  4
+
 /** Battery voltage under load from a poll's state byte, in mV (0 = unknown). */
 static inline uint16_t downlinkLoadMv(uint8_t state) {
     uint8_t v = state >> DOWNLINK_STATE_LOAD_SHIFT;
