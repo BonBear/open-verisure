@@ -10,12 +10,117 @@
 #include "downlink.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <GuardedSocket.h>   // gwsWriteBounded (lib/GuardedWebServer)
 
-static WiFiClient s_wifiClient;
+#define MQTT_WRITE_STALL_MS 2000   // a broker that accepts no byte for this long is dropped
+
+/**
+ * The broker connection. NetworkClient::write() waits up to 10 x 1 s for a broker that stopped
+ * reading, longer than the 5 s loop watchdog; here a write without progress for
+ * MQTT_WRITE_STALL_MS closes the connection instead (PubSubClient then reports it as lost and the
+ * reconnect back-off takes over). The loop watchdog is fed while the broker keeps up.
+ */
+class MqttSocket : public WiFiClient {
+public:
+    using WiFiClient::write;
+    size_t write(const uint8_t* buf, size_t size) override {
+        return gwsWriteBounded(*this, buf, size, MQTT_WRITE_STALL_MS, 0);
+    }
+    size_t write(uint8_t b) override { return write(&b, 1); }
+};
+
+static MqttSocket s_wifiClient;
 static PubSubClient s_mqttClient(s_wifiClient);
 
+/* ---- Broker host name lookup ----
+ * A lookup (getaddrinfo, also .local via mDNS) blocks ~7 s when the DNS server is silent, longer
+ * than the 5 s loop watchdog, so it never runs in loop(): one helper task, not subscribed to the
+ * watchdog, does it and posts the result. The last good address is cached and used for the TCP
+ * connect (by IP: no lookup there); a failed connect starts a refresh in the background. */
 static unsigned long s_lastReconnectAttempt = 0;
 static unsigned long s_reconnectIntervalMs = 5000;
+
+enum { DNS_IDLE = 0, DNS_RUNNING, DNS_OK, DNS_FAILED };
+// The helper task is created once on first use from the heap and never deleted: a static 5 KB stack
+// did not fit .dram0.bss (internal RAM), and one boot-time allocation does not fragment the heap.
+#define DNS_TASK_STACK 5120                         // bytes in ESP-IDF FreeRTOS
+static TaskHandle_t s_dnsTask = nullptr;
+static char s_dnsHost[65];                         // host of the running or last lookup (config size)
+static IPAddress s_dnsResult;                      // written by the task before s_dnsState becomes DNS_OK
+static volatile uint8_t s_dnsState = DNS_IDLE;
+static char s_cachedHost[65];
+static IPAddress s_cachedIp;
+static bool s_cachedValid = false;
+
+static void dnsTaskBody(void*) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        IPAddress ip;
+        const bool ok = (WiFi.hostByName(s_dnsHost, ip) == 1);
+        s_dnsResult = ip;
+        s_dnsState = ok ? DNS_OK : DNS_FAILED;
+    }
+}
+
+/** Starts a lookup unless one is running; never blocks. */
+static void dnsStart(const char* host) {
+    if (s_dnsState != DNS_IDLE) return;
+    if (!s_dnsTask) {
+        if (xTaskCreate(dnsTaskBody, "mqttdns", DNS_TASK_STACK, nullptr, 1, &s_dnsTask) != pdPASS) {
+            s_dnsTask = nullptr;
+            return;
+        }
+    }
+    strncpy(s_dnsHost, host, sizeof(s_dnsHost) - 1);
+    s_dnsHost[sizeof(s_dnsHost) - 1] = '\0';
+    s_dnsState = DNS_RUNNING;
+    Serial.printf("[MQTT] Looking up broker host %s...\n", host);
+    xTaskNotifyGive(s_dnsTask);
+}
+
+/** Takes over a finished lookup (cheap, call on every pass). A failed lookup without a cached
+ *  address counts as a failed connection attempt for the back-off. */
+static void dnsCollect(const char* host) {
+    const uint8_t state = s_dnsState;
+    if (state != DNS_OK && state != DNS_FAILED) return;
+    const bool same = (strcmp(s_dnsHost, host) == 0);   // the setting may have changed meanwhile
+    const bool ok = (state == DNS_OK);
+    if (same && ok) {
+        s_cachedIp = s_dnsResult;
+        strncpy(s_cachedHost, host, sizeof(s_cachedHost) - 1);
+        s_cachedHost[sizeof(s_cachedHost) - 1] = '\0';
+        s_cachedValid = true;
+        Serial.printf("[MQTT] Broker host %s is %s\n", host, s_cachedIp.toString().c_str());
+    } else if (same) {
+        if (s_cachedValid && strcmp(s_cachedHost, host) == 0) {
+            Serial.printf("[MQTT] Cannot resolve broker host %s, keeping the last address\n", host);
+        } else {
+            s_lastReconnectAttempt = millis();
+            s_reconnectIntervalMs = (s_reconnectIntervalMs * 2 > 60000UL) ? 60000UL : s_reconnectIntervalMs * 2;
+            Serial.printf("[MQTT] Cannot resolve broker host %s, next try in %lu s\n", host, s_reconnectIntervalMs / 1000);
+        }
+    }
+    s_dnsState = DNS_IDLE;
+}
+
+/** @return true with the broker's address in *ip; false while a lookup is needed (started here). */
+static bool brokerAddress(const char* host, IPAddress* ip) {
+    if (ip->fromString(host)) return true;               // an IP address needs no lookup
+    if (s_cachedValid && strcmp(s_cachedHost, host) == 0) {
+        *ip = s_cachedIp;
+        return true;
+    }
+    dnsStart(host);
+    return false;
+}
+
+/** After a failed connection: look the host name up again in the background (the broker may have
+ *  a new address); the cached one stays in use until the new one is known. */
+static void dnsRefresh(const char* host) {
+    IPAddress literal;
+    if (!literal.fromString(host)) dnsStart(host);
+}
+
 static unsigned long s_lastGatewayStatePub = 0;
 static bool s_wasConnected = false;
 
@@ -242,25 +347,36 @@ static void checkMqttConnection() {
     const GatewayConfig& cfg = ConfigManager::get();
     if (cfg.mqttHost[0] == '\0') return; // MQTT is not configured
 
+    dnsCollect(cfg.mqttHost);   // takes over a finished host name lookup (a failure paces the retries below)
+
     // Everything below blocks the radio loop, so keep each attempt short and back off
     // (5 s, doubling to 60 s) while the broker stays unreachable.
     unsigned long now = millis();
     if (now - s_lastReconnectAttempt < s_reconnectIntervalMs) return;
+
+    // The host name is resolved in the background (no blocking lookup in loop()); an attempt only
+    // starts once the address is known, and a pending lookup does not use up an attempt.
+    IPAddress brokerIp;
+    if (!brokerAddress(cfg.mqttHost, &brokerIp)) return;
+
     s_lastReconnectAttempt = now;
     s_reconnectIntervalMs = (s_reconnectIntervalMs * 2 > 60000UL) ? 60000UL : s_reconnectIntervalMs * 2;
 
-    s_mqttClient.setServer(cfg.mqttHost, cfg.mqttPort);
+    s_mqttClient.setServer(brokerIp, cfg.mqttPort);
     s_mqttClient.setSocketTimeout(2);   // CONNACK wait, seconds (default 15)
-    feedLoopWDT();   // worst case below: DNS lookup + 1.5 s TCP connect + 2 s CONNACK wait, then the discovery publishes
+    feedLoopWDT();   // a fresh window; worst case below: 1.5 s TCP connect + 2 s CONNACK wait, then the discovery publishes (each write bounded)
 
-    // Open TCP ourselves with a bounded timeout; PubSubClient reuses a connected client.
-    // (A host name still costs one blocking DNS lookup; an IP address does not.)
-    if (!s_wifiClient.connected() && !s_wifiClient.connect(cfg.mqttHost, cfg.mqttPort, 1500)) {
+    // Open TCP ourselves, by IP address and with a bounded timeout; PubSubClient reuses a connected client.
+    if (!s_wifiClient.connected() && !s_wifiClient.connect(brokerIp, cfg.mqttPort, 1500)) {
         Serial.printf("[MQTT] Broker %s:%d not reachable, next try in %lu s\n",
                       cfg.mqttHost, cfg.mqttPort, s_reconnectIntervalMs / 1000);
+        dnsRefresh(cfg.mqttHost);
         return;
     }
-    s_wifiClient.setTimeout(3);   // connect() left 1.5 s send/receive timeouts; JPEG publishes need more
+    // (No s_wifiClient.setTimeout() here: in core 3.x that is Stream::setTimeout() in milliseconds
+    // and only affects readBytes(), which PubSubClient does not use. A write that stalls is bounded
+    // by MqttSocket::write(); the CONNACK wait by setSocketTimeout() above.)
+    feedLoopWDT();   // between the TCP connect and the MQTT CONNECT
 
     // Build unique Client-ID from ESP32-S2 MAC address
     String clientId = "verisure-gw-" + WiFi.macAddress();
@@ -311,10 +427,12 @@ static void checkMqttConnection() {
         Serial.printf("[MQTT] Connection error! rc=%d, next try in %lu s\n",
                       s_mqttClient.state(), s_reconnectIntervalMs / 1000);
         s_wifiClient.stop();
+        dnsRefresh(cfg.mqttHost);
     }
 }
 
 void mqttLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
+    feedLoopWDT();   // a fresh window: the socket reads below wait at most 2 s, every write at most 2 s without progress
     checkMqttConnection();
 
     if (s_mqttClient.connected()) {

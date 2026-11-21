@@ -10,14 +10,14 @@
 #include "portal_util.h"     // hostOnly, jsonGetString, jsonGetInt
 #include "ota_update.h"
 #include <WiFi.h>
-#include <WebServer.h>
+#include <GuardedWebServer.h>   // not the core's <WebServer.h>: bounded run time per request (lib/GuardedWebServer)
 #include <ESPmDNS.h>
 #include <DNSServer.h>
 #include "radio_task.h"
 #include "esp_wifi.h"
 #include <mbedtls/base64.h>
 
-static WebServer s_server(80);
+static GuardedWebServer s_server(80);
 static DNSServer s_dnsServer;
 static bool s_isApMode = false;
 static unsigned long s_rebootAt = 0;
@@ -1029,17 +1029,17 @@ static void handleApiPicture() {
 
 /* POST /api/ota: firmware update. The image is the raw request body (Content-Type
  * application/octet-stream, Content-Length required), optional header X-OTA-MD5: <32 hex>.
- * The WebServer hands the body over in ~1.4 kB pieces (handleApiOtaBody) and calls handleApiOta
- * after the last one. Access is checked on the first piece, before anything is written; a refused
- * upload is read to its end (and ignored) so that the client still gets the error reply. A dropped
- * connection aborts the update. The running firmware stays in every error case. */
-#define OTA_PIECE_TIMEOUT_MS 3000       // max wait for the next bytes of an upload (< the 5 s loop watchdog)
+ * The GuardedWebServer hands the body over in ~1.4 kB pieces (handleApiOtaBody) and calls
+ * handleApiOta after the last one. Access is checked on the first piece, before anything is
+ * written; a refused upload is answered at once and its connection closed. A dropped, stalled
+ * (a piece not complete within 3 s) or too slow connection aborts the update. The running
+ * firmware stays in every error case. The whole upload blocks loop(), so nothing in here (or in
+ * the web server's wait loops) may block longer than the 5 s loop watchdog without feeding it,
+ * and nothing may publish to MQTT: the radio task keeps queueing frames meanwhile (256 entries)
+ * and loop() handles them after the upload (when it failed; a successful one reboots). */
 static bool s_otaBody = false;          // this request's body came as a raw stream
 static bool s_otaAllowed = false;
 static bool s_otaReplied = false;       // refused at the start: reply sent, connection closed
-static void (*s_busyHook)() = nullptr;
-
-void webPortalSetBusyHook(void (*hook)()) { s_busyHook = hook; }
 
 /* A refused upload is answered at once and its connection closed, so the WebServer stops
  * reading the body: otherwise a client announcing a huge Content-Length and sending a byte every
@@ -1057,11 +1057,8 @@ static void handleApiOtaBody() {
     HTTPRaw& raw = s_server.raw();
     switch (raw.status) {
         case RAW_START:
-            // The WebServer waits up to 5 s (HTTP_MAX_POST_WAIT/SEND_WAIT) for the next piece inside
-            // readBytes(), as long as the loop task watchdog (5 s): a stalled client would reboot the
-            // gateway before the read gives up. 3 s leaves the watchdog 2 s of margin; the timeout
-            // restarts with every byte that arrives and is reset by the WebServer for the next request.
-            s_server.client().setTimeout(OTA_PIECE_TIMEOUT_MS);
+            // The web server gives a piece 3 s (GWS_RAW_PIECE_MS) to arrive completely and feeds the
+            // loop watchdog while it waits, so a stalled or trickling client ends in RAW_ABORTED.
             s_otaBody = true;
             s_otaReplied = false;
             s_deferReply = true;
@@ -1095,10 +1092,9 @@ static void handleApiOtaBody() {
             break;
     }
     // the upload blocks loop() until it is complete: feed the loop task watchdog for every piece
-    // (the OTA path must never be killed by it) and keep reading the radio meanwhile
+    // (the OTA path must never be killed by it). Nothing else happens here: no radio frame
+    // handling (it publishes to MQTT and prints, which can block), see the comment above.
     feedLoopWDT();
-    if (s_busyHook) s_busyHook();
-    feedLoopWDT();   // the hook may have published to MQTT
 }
 
 static void handleApiOta() {
@@ -1182,7 +1178,7 @@ void webPortalInit() {
     s_server.on("/api/camera_large.jpg", HTTP_GET, handleApiCameraLargeJpg);
     s_server.on("/api/camera_test", HTTP_POST, handleApiCameraTest);
     s_server.on("/api/picture", HTTP_POST, handleApiPicture);
-    s_server.on("/api/ota", HTTP_POST, handleApiOta, handleApiOtaBody);
+    s_server.onRawUpload("/api/ota", HTTP_POST, handleApiOta, handleApiOtaBody);   // the only route exempt from the 3 s request deadline
 
     // Captive portal probes
     s_server.on("/generate_204", HTTP_GET, handleRoot);

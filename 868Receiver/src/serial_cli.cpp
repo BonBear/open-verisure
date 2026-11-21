@@ -375,12 +375,14 @@ static void processCommand(char* cmd) {
 }
 
 void serialCliLoop() {
-    while (Serial.available()) {
+    // at most 256 bytes per call: a host that streams without a pause must not keep loop() in here
+    for (int n = 0; n < 256 && Serial.available(); n++) {
         char c = (char)Serial.read();
         if (c == '\r') continue;
         if (c == '\n') {
             s_cmdBuf[s_cmdLen] = '\0';
             processCommand(s_cmdBuf);
+            feedLoopWDT();   // a command can run for seconds (scan, connect, setkey...): a fresh window for what follows
             s_cmdLen = 0;
         } else if (s_cmdLen < (int)sizeof(s_cmdBuf) - 1) {
             s_cmdBuf[s_cmdLen++] = c;

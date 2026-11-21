@@ -68,14 +68,33 @@ The web page has the same upload (Firmware Update card).
   rebooting into a just-written update, and in the setup access point (there it could not be
   confirmed, and the portal may have no password yet). A refused request is answered at once and
   its connection closed, so a stalled upload cannot hold the gateway.
-* The upload (~1 MB, ~10 s) blocks the main loop: the radio task keeps reading the FIFO and
-  the received frames are handled for every piece, but the MQTT client and the rest of the
-  loop wait, and flash writes and erases pause every task (a packet can be lost then). If OTA ever leaves the gateway unreachable, flash it over USB as above.
-* **Loop watchdog:** `loopTask` (setup/loop) is subscribed to the 5 s task watchdog, so a hung
-  `loop()` reboots the gateway; the reason shows as `task_wdt` at boot, in the CLI `status` and as
-  `reset_reason` in `/api/status`. The OTA upload feeds the watchdog for every received piece and
-  around the final verification, and gives up on a client that sends nothing for 3 s, so an update
-  is not killed by it. The MQTT reconnect, picture publish and the CLI `scan`/`connect` feed it too.
+* The upload (~1 MB, ~10 s) blocks the main loop: the MQTT client, the CLI and the handling of
+  received frames wait (the radio task keeps reading the FIFO and queues up to 256 frames; they are
+  handled after a failed upload, a successful one reboots), and flash writes and erases pause every
+  task (a packet can be lost then). Nothing publishes to MQTT or prints during the upload, so a
+  slow broker or USB host cannot stall it. If OTA ever leaves the gateway unreachable, flash it over USB as above.
+* **Loop watchdog:** `loopTask` (setup/loop) is subscribed to the 5 s task watchdog (from the end
+  of `setup()`), so a hung `loop()` reboots the gateway; the reason shows as `task_wdt` at boot, in
+  the CLI `status` and as `reset_reason` in `/api/status`. What keeps it from firing wrongly
+  (each blocking path is bounded below 5 s or feeds the watchdog only while it makes progress):
+  * **Web server** (`lib/GuardedWebServer`, a trimmed copy of the Arduino-ESP32 3.3.12 WebServer; the
+    core one blocks loop() for 10+ s before any password check and is not used): request line,
+    headers and body must be complete within 3 s of the first byte, else the client is dropped
+    (408); plain bodies are at most 2 kB (413); multipart bodies are not read. Every response is
+    written in 1.4 kB pieces, the client is dropped after 3 s without progress or 10 s in total.
+  * **OTA upload** (`/api/ota`, the only route exempt from the 3 s limit): refused at once without a
+    valid login; each ~1.4 kB piece must arrive complete within 3 s, else the update is aborted and
+    the running firmware stays. A client that keeps sending can take as long as it likes (only after
+    a valid login); the watchdog is fed per piece and around the final verification.
+  * **MQTT:** the broker host name is resolved in a helper task (a DNS outage cannot stall loop());
+    the last good address is cached and used for the connect. Writes to the broker are bounded: a
+    broker that accepts no byte for 2 s is dropped and the reconnect back-off takes over. The connect,
+    the discovery publishes and the picture publish feed the watchdog while they progress.
+  * **USB serial:** a write waits at most 20 ms for a host that holds the port without reading
+    (output is lost meanwhile, the gateway is not held up); the radio queue handling feeds the
+    watchdog per item; the CLI `scan`/`connect` feed it and the CLI reads at most 256 bytes per pass.
+  * **Left as "reboot is the recovery":** a broker that sends a message byte by byte (each byte
+    within 2 s) and a `loop()` that is stuck elsewhere (a bug, a stuck flash operation).
 
 ## What it does
 

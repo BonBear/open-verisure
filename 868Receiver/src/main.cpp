@@ -240,13 +240,12 @@ static void handleRadioFrame(const RadioFrame& item) {
  * Handles everything the radio task has queued, in arrival order. The first wait may block up to
  * waitMs (it replaces loop()'s old delay(2)), the rest is polled. Bounded to 64 items per
  * call (the queue holds RADIO_QUEUE_DEPTH) so that the other services still run if frames come
- * in faster than they are handled; the rest is taken by the next drain. A re-entrancy guard keeps the OTA busy hook from draining inside a drain.
+ * in faster than they are handled; the rest is taken by the next drain. The loop watchdog is fed per
+ * item: handling one can block (USB serial prints, MQTT publish), 64 of them can take longer than 5 s.
+ * Only loop() calls this (an OTA upload does not: it must not block on prints or MQTT).
  */
 static void radioDrainQueue(uint32_t waitMs) {
-    static bool s_inDrain = false;
     static unsigned long s_lastDrainMs = 0;
-    if (s_inDrain) return;
-    s_inDrain = true;
     unsigned long nowMs = millis();
     if (s_lastDrainMs) {
         uint32_t gapMs = (uint32_t)(nowMs - s_lastDrainMs);
@@ -255,18 +254,19 @@ static void radioDrainQueue(uint32_t waitMs) {
     s_lastDrainMs = nowMs;
     RadioFrame item;
     for (int n = 0; n < 64 && radioReceive(&item, n == 0 ? waitMs : 0); n++) {
+        feedLoopWDT();   // before the item: a poll answer, a publish and the prints follow
         handleRadioFrame(item);
     }
-    s_inDrain = false;
-}
-
-/** An OTA upload blocks loop(): keep handling the received frames (the task keeps reading). */
-static void radioDrainHook() {
-    radioDrainQueue(0);
+    feedLoopWDT();
 }
 
 void setup() {
     Serial.begin(115200);
+    // Serial over USB CDC blocks a write for up to tx_timeout_ms (default 250 ms) while the host
+    // holds the port open without reading, ~10 writes per packet. 20 ms still fits a normal burst
+    // (the CDC FIFO is 64 B and drains at 64 B per USB frame) and bounds a stalled host. Not 0:
+    // that would drop the tail of every burst longer than 64 B, e.g. the CLI 'status' output.
+    Serial.setTxTimeoutMs(20);
     delay(2000);
 
     Serial.println("\n=======================================================");
@@ -318,7 +318,6 @@ void setup() {
 
     lastEventTime = millis();
     lastHeartbeat = lastEventTime;
-    webPortalSetBusyHook(radioDrainHook);   // an OTA upload blocks loop(): keep handling the queued frames
 
     // Subscribe loopTask to the task watchdog (5 s, panic = reboot, reset reason task_wdt). Bench
     // 2026-11-20: loop() hung once after a 2 h soak (HTTP, MQTT and USB CDC dead, ping alive) and

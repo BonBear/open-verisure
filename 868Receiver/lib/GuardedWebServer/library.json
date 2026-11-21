@@ -1,0 +1,8 @@
+{
+  "name": "GuardedWebServer",
+  "version": "1.0.0",
+  "description": "Trimmed copy of the Arduino-ESP32 3.3.12 WebServer with a bounded run time for every request (loop task watchdog)",
+  "license": "LGPL-2.1-or-later",
+  "frameworks": "arduino",
+  "platforms": "espressif32"
+}

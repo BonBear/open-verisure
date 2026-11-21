@@ -54,8 +54,9 @@ static uint8_t  s_pendingDrops = 0;
 static uint32_t s_lastProbeMs = 0;
 static uint32_t s_lastStatusMs = 0;
 
-/** Feed the task WDT, only from the radio task (radioInit() runs in loopTask, which is not
- *  subscribed: esp_task_wdt_reset() would log "task not found" there). */
+/** Feed the task WDT, only from the radio task (radioInit() runs in loopTask, which is only
+ *  subscribed at the end of setup() (enableLoopWDT): esp_task_wdt_reset() would log "task not
+ *  found" there before that). */
 static inline void wdtFeed() {
     if (s_task && xTaskGetCurrentTaskHandle() == s_task) esp_task_wdt_reset();
 }
