@@ -28,7 +28,7 @@ static void printHelp() {
     Serial.println("\n--- VERISURE GATEWAY SERIAL CLI ---");
     Serial.println("  help                       - Show this help menu");
     Serial.println("  status                     - Display gateway and sensor status");
-    Serial.println("  testspi                    - Test CC1101 SPI bus and registers");
+    Serial.println("  testspi [1|2]              - Test CC1101 #1 (default) or #2 SPI bus and registers");
     Serial.println("  scan                       - Scan and list available Wi-Fi networks");
     Serial.println("  connect <ssid> [password]  - Connect to Wi-Fi and save to NVS");
     Serial.println("  setkey <32-hex-characters> - Configure Master AES Key");
@@ -37,7 +37,9 @@ static void printHelp() {
     Serial.println("  drop <n>                   - Test: drop every n-th camera picture chunk (0 = off)");
     Serial.println("  replay reset <ID> [block]  - Forget a device's replay counter (after an unseeded reflash);");
     Serial.println("                               then only its boot packet of blocks 1..block (default 8) is taken");
-    Serial.println("  freqoffset [n]             - Show or set the CC1101 frequency correction (FSCTRL0 steps)");
+    Serial.println("  freqoffset [n]             - Show or set CC1101 #1 frequency correction (FSCTRL0 steps)");
+    Serial.println("  freqoffset2 [n]            - Show or set CC1101 #2 frequency correction (FSCTRL0 steps)");
+    Serial.println("  pch [on|off|cal|status]    - Show or control picture channel module #2");
     Serial.println("  portalpass [<password>|clear] - Show, set (8-64 characters) or clear the web portal password");
     Serial.println("  appass                     - Show the setup access point's password (unique per gateway)");
     Serial.println("  radio [reset]              - Show (or clear) the radio task diagnostics");
@@ -52,15 +54,16 @@ static void printHelp() {
     Serial.println("-----------------------------------\n");
 }
 
-static void runTestSpi() {
-    Serial.println("\n--- SPI & CC1101 HARDWARE DIAGNOSTICS ---");
+static void runTestSpi(uint8_t module) {
+    const uint8_t cs = (module == 1) ? PIN_CS2 : PIN_CS;
+    Serial.printf("\n--- SPI & CC1101 #%u HARDWARE DIAGNOSTICS ---\n", (unsigned)(module + 1));
     Serial.printf("Pins: SCK=GPIO%d, MISO=GPIO%d, MOSI=GPIO%d, CS=GPIO%d\n",
-                  PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
+                  PIN_SCK, PIN_MISO, PIN_MOSI, cs);
 
     // The radio task owns the SPI bus: it runs the pin test and the SRES sequence (radio_task.cpp,
     // radioDoTestSpi) and returns the readings; it also restores the radio registers afterwards.
     RadioTestSpiResult r;
-    if (!radioRequestTestSpi(&r, 1000)) {
+    if (!radioRequestTestSpi(module, &r, 1000)) {
         Serial.println("[-] ERROR: the radio task did not answer (not running or busy).\n");
         return;
     }
@@ -77,13 +80,11 @@ static void runTestSpi() {
     Serial.printf("  VERSION    : 0x%02X (Status: 0x%02X, expected: 0x04 or 0x14)\n", val_ver, st_ver);
     Serial.printf("  MARCSTATE  : 0x%02X (Status: 0x%02X, 0x01=IDLE, 0x0D=RX)\n", val_marc, st_marc);
 
-    // SRES put every register back to its reset value (433 MHz, IDLE): the task restores the radio
-    // only after a valid VERSION, otherwise it takes it offline (and probes for it every 2 s)
     if (val_ver == 0x04 || val_ver == 0x14) {
-        Serial.println("[+] SPI and CC1101 communication OK!");
+        Serial.printf("[+] SPI and CC1101 #%u communication OK!\n", (unsigned)(module + 1));
         Serial.println("[+] Radio registers restored, back in RX.\n");
     } else {
-        Serial.println("[-] ERROR: CC1101 did not respond correctly over SPI.");
+        Serial.printf("[-] ERROR: CC1101 #%u did not respond correctly over SPI.\n", (unsigned)(module + 1));
         Serial.println("[-] Radio offline: the registers are restored once the module answers again.\n");
     }
 }
@@ -92,23 +93,56 @@ static void runTestSpi() {
 static void printRadioDiag() {
     const RadioDiag& d = g_radioDiag;
     const RadioLoopDiag& l = g_radioLoopDiag;
-    Serial.printf("  Radio        : %s | version 0x%02X | MARCSTATE 0x%02X | RSSI %d dBm\n",
+    Serial.printf("  Radio #1     : %s | version 0x%02X | MARCSTATE 0x%02X | RSSI %d dBm (868.950 MHz)\n",
                   g_radioStatus.online ? "online" : "OFFLINE", g_radioStatus.version,
                   g_radioStatus.marcState, (int)g_radioStatus.rssiDbm);
-    Serial.printf("  Radio RX     : frames %lu | FIFO overflows %lu | partial drops %lu | queue drops %lu (high water %lu/%d)\n",
+    Serial.printf("  Radio #1 RX  : frames %lu | FIFO overflows %lu | partial drops %lu | queue drops %lu (high water %lu/%d)\n",
                   (unsigned long)d.frames, (unsigned long)d.fifoOverflows, (unsigned long)d.partialDrops,
                   (unsigned long)d.queueDrops, (unsigned long)d.queueHighWater, RADIO_QUEUE_DEPTH);
     Serial.printf("                 task gap max %lu us | >5 ms %lu | >10 ms %lu | >20 ms %lu | drain gap max %lu ms\n",
                   (unsigned long)d.maxGapUs, (unsigned long)d.gapOver5ms, (unsigned long)d.gapOver10ms,
                   (unsigned long)d.gapOver20ms, (unsigned long)l.maxDrainGapMs);
-    Serial.printf("  Radio TX     : done %lu | late %lu | timeouts %lu | aborted RX %lu | max latency %lu us\n",
+    Serial.printf("  Radio #1 TX  : done %lu | late %lu | timeouts %lu | aborted RX %lu | max latency %lu us\n",
                   (unsigned long)d.txDone, (unsigned long)d.txLate, (unsigned long)d.txTimeouts,
                   (unsigned long)d.txAbortedRx, (unsigned long)d.maxTxLatencyUs);
     Serial.printf("                 poll answers %lu | skipped late %lu | max answer age %lu us\n",
                   (unsigned long)l.pollAnswers, (unsigned long)l.pollLate, (unsigned long)l.maxPollAnswerAgeUs);
-    Serial.printf("  Radio health : slow status reads (>5 ms) %lu | unstable status reads %lu | RX restarts %lu | re-inits %lu | task stack free %lu B\n",
+    Serial.printf("  Radio #1 hlth: slow status reads (>5 ms) %lu | unstable %lu | RX restarts %lu | re-inits %lu | stack free %lu B\n",
                   (unsigned long)d.slowStatusReads, (unsigned long)d.statusUnstable, (unsigned long)d.rxRestarts,
                   (unsigned long)d.rxReinits, (unsigned long)d.stackFreeMin);
+
+    const RadioDiag& d2 = g_radioDiag2;
+    Serial.printf("  Radio #2     : %s | mode %s | version 0x%02X | MARCSTATE 0x%02X | RSSI %d dBm\n",
+                  g_radioStatus2.online ? "online" : "OFFLINE",
+                  radioIsCalMode() ? "CAL 868.950 MHz" : "PCH 869.525 MHz",
+                  g_radioStatus2.version, g_radioStatus2.marcState, (int)g_radioStatus2.rssiDbm);
+    Serial.printf("  Radio #2 RX  : frames %lu | FIFO overflows %lu | partial drops %lu | queue drops %lu | restarts %lu | re-inits %lu\n",
+                  (unsigned long)d2.frames, (unsigned long)d2.fifoOverflows, (unsigned long)d2.partialDrops,
+                  (unsigned long)d2.queueDrops, (unsigned long)d2.rxRestarts, (unsigned long)d2.rxReinits);
+}
+
+static void printPchStatus() {
+    const GatewayConfig& cfg = ConfigManager::get();
+    PchCalStats cal;
+    pchCalGetStats(&cal);
+    Serial.println("\n--- PICTURE CHANNEL (CC1101 #2) ---");
+    Serial.printf("  PCH Enabled  : %s (NVS)\n", cfg.pchEnabled ? "ON" : "OFF");
+    Serial.printf("  Module #2    : %s | mode %s | version 0x%02X | MARCSTATE 0x%02X | RSSI %d dBm\n",
+                  g_radioStatus2.online ? "online" : "OFFLINE",
+                  radioIsCalMode() ? "CAL (868.950 MHz)" : "PCH (869.525 MHz)",
+                  g_radioStatus2.version, g_radioStatus2.marcState, (int)g_radioStatus2.rssiDbm);
+    Serial.printf("  freqoffset2  : %d (%+.1f kHz)\n", cfg.freqOffset2, cfg.freqOffset2 * 1.587);
+    if (cal.count > 0) {
+        float avg = (float)cal.freqEstSum / (float)cal.count;
+        Serial.printf("  CAL stats    : %lu matched pair(s) | avg #2 freqEst %+.2f (%+.1f kHz)\n",
+                      (unsigned long)cal.count, avg, avg * (26000.0f / 16384.0f));
+        Serial.printf("                 last RSSI #1 %d dBm (freqEst %+d) | #2 %d dBm (freqEst %+d)\n",
+                      (int)cal.lastRssi1, (int)cal.lastFreqEst1, (int)cal.lastRssi2, (int)cal.lastFreqEst2);
+        Serial.printf("                 suggested freqoffset2: %d\n", (int)cal.suggestedOffset);
+    } else {
+        Serial.println("  CAL stats    : none yet (run 'pch cal' while a device transmits)");
+    }
+    Serial.println("-----------------------------------\n");
 }
 
 static void printStatus() {
@@ -124,7 +158,8 @@ static void printStatus() {
     char kcv[7];
     cryptoKeyCheckValue(cfg.masterKey, kcv);
     Serial.printf("  Master Key   : set (check value %s)\n", kcv);   // never print the key
-    Serial.printf("  Freq. offset : %d (FSCTRL0, x 1.587 kHz)\n", cfg.freqOffset);
+    Serial.printf("  Freq. offset : %d / %d (FSCTRL0, x 1.587 kHz) | PCH: %s\n",
+                  cfg.freqOffset, cfg.freqOffset2, cfg.pchEnabled ? "on" : "off");
     const GatewayDiagSample ds = gatewayDiagSample();
     const GatewayDiag& d = g_gatewayDiag;
     Serial.printf("  Last reset   : %s\n", ds.resetReason);
@@ -207,8 +242,16 @@ static void processCommand(char* cmd) {
         printHelp();
     } else if (strcmp(cmd, "status") == 0) {
         printStatus();
-    } else if (strcmp(cmd, "testspi") == 0) {
-        runTestSpi();
+    } else if (strcmp(cmd, "testspi") == 0 || strncmp(cmd, "testspi ", 8) == 0) {
+        if (cmd[7] == '\0') {
+            runTestSpi(0);
+        } else {
+            const char* arg = cmd + 8;
+            while (*arg == ' ') arg++;
+            if (strcmp(arg, "1") == 0) runTestSpi(0);
+            else if (strcmp(arg, "2") == 0) runTestSpi(1);
+            else Serial.println("[CLI] Usage: testspi [1|2]");
+        }
     } else if (strcmp(cmd, "radio") == 0) {
         Serial.println();
         printRadioDiag();
@@ -329,7 +372,7 @@ static void processCommand(char* cmd) {
         Serial.printf("[CLI] Alarm is %s\n", downlinkArmed() ? "ARMED" : "DISARMED");
     } else if (strcmp(cmd, "freqoffset") == 0 || strncmp(cmd, "freqoffset ", 11) == 0) {
         if (cmd[10] == '\0') {
-            Serial.printf("[CLI] Frequency offset: %d (x 1.587 kHz)\n", ConfigManager::get().freqOffset);
+            Serial.printf("[CLI] Frequency offset #1: %d (x 1.587 kHz)\n", ConfigManager::get().freqOffset);
         } else {
             char* end;
             long n = strtol(cmd + 11, &end, 10);
@@ -340,11 +383,54 @@ static void processCommand(char* cmd) {
                 ConfigManager::save();
                 // the radio task writes FSCTRL0 (it owns the SPI bus); the new value is in RAM already
                 const bool wasOnline = g_radioStatus.online;
-                const bool applied = radioRequestReinit(200);
-                const char* note = !applied ? " (radio not re-initialized: task busy or not running)"
-                                 : !wasOnline ? " (radio offline: used when the module is detected)" : "";
-                Serial.printf("[CLI] Frequency offset set to %ld (%+.1f kHz) and saved%s.\n", n, n * 1.587, note);
+                const bool applied = radioRequestReinit(0, 200);
+                const char* note = !applied ? " (radio #1 not re-initialized: task busy or not running)"
+                                 : !wasOnline ? " (radio #1 offline: used when the module is detected)" : "";
+                Serial.printf("[CLI] Frequency offset #1 set to %ld (%+.1f kHz) and saved%s.\n", n, n * 1.587, note);
             }
+        }
+    } else if (strcmp(cmd, "freqoffset2") == 0 || strncmp(cmd, "freqoffset2 ", 12) == 0) {
+        if (cmd[11] == '\0') {
+            Serial.printf("[CLI] Frequency offset #2: %d (x 1.587 kHz)\n", ConfigManager::get().freqOffset2);
+        } else {
+            char* end;
+            long n = strtol(cmd + 12, &end, 10);
+            if (end == cmd + 12 || *end != '\0' || n < -128 || n > 127) {
+                Serial.println("[CLI] Error: freqoffset2 takes a number from -128 to 127.");
+            } else {
+                ConfigManager::setFreqOffset2((int8_t)n);
+                ConfigManager::save();
+                pchCalReset();
+                const bool wasOnline = g_radioStatus2.online;
+                const bool applied = radioRequestReinit(1, 200);
+                const char* note = !applied ? " (radio #2 not re-initialized: task busy or not running)"
+                                 : !wasOnline ? " (radio #2 offline: used when the module is detected)" : "";
+                Serial.printf("[CLI] Frequency offset #2 set to %ld (%+.1f kHz) and saved%s.\n", n, n * 1.587, note);
+            }
+        }
+    } else if (strcmp(cmd, "pch") == 0 || strncmp(cmd, "pch ", 4) == 0) {
+        const char* arg = (cmd[3] == '\0') ? "status" : cmd + 4;
+        while (*arg == ' ') arg++;
+        if (*arg == '\0' || strcmp(arg, "status") == 0) {
+            printPchStatus();
+        } else if (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0) {
+            const bool en = (strcmp(arg, "on") == 0);
+            ConfigManager::setPchEnabled(en);
+            ConfigManager::save();
+            const bool applied = radioRequestSetMode(false, 200);
+            Serial.printf("[CLI] Picture channel %s and saved (module #2 mode: PCH 869.525 MHz%s%s).\n",
+                          en ? "ENABLED" : "DISABLED",
+                          applied ? "" : ", task busy",
+                          g_radioStatus2.online ? "" : ", module #2 offline");
+        } else if (strcmp(arg, "cal") == 0) {
+            pchCalReset();
+            const bool applied = radioRequestSetMode(true, 200);
+            Serial.printf("[CLI] Picture channel calibration mode ON (module #2 on 868.950 MHz%s%s).\n",
+                          applied ? "" : ", task busy",
+                          g_radioStatus2.online ? "" : ", module #2 offline");
+            Serial.println("[CLI] Run 'pch status' to inspect matches, 'pch on'/'pch off' to exit CAL mode.");
+        } else {
+            Serial.println("[CLI] Usage: pch [on|off|cal|status]");
         }
     } else if (strcmp(cmd, "appass") == 0) {
         char apPass[64];

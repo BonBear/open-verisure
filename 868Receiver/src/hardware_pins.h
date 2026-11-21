@@ -24,6 +24,7 @@
  * ----------------------------------------------------------------------------
  * 3V3             Power      VCC           Red           3.3V Power Supply
  * GND             Power      GND           Black         Ground Reference
+ * GPIO 2          ADC1_CH1   CSN2 / SS2    -             Optional 2nd CC1101 Chip Select (Active LOW)
  * GPIO 3          ADC1_CH2   CSN / SS      Orange        SPI Chip Select (Active LOW)
  * GPIO 5          ADC1_CH4   MOSI          Blue          SPI Master Out Slave In
  * GPIO 7          ADC1_CH6   SCK           Yellow        SPI Bus Clock (Up to 10 MHz)
@@ -47,6 +48,10 @@
 #define CC1101_PIN_MOSI  5
 #define PIN_MOSI         CC1101_PIN_MOSI
 
-/** @brief SPI Chip Select Pin on ESP32-S2 (ADC1 Domain) */
+/** @brief SPI Chip Select Pin for main CC1101 on ESP32-S2 (ADC1 Domain) */
 #define CC1101_PIN_CS    3
 #define PIN_CS           CC1101_PIN_CS
+
+/** @brief SPI Chip Select Pin for picture-channel CC1101 on ESP32-S2 (ADC1_CH1, not a strapping pin) */
+#define CC1101_PIN_CS2   2
+#define PIN_CS2          CC1101_PIN_CS2

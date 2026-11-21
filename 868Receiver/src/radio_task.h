@@ -63,16 +63,23 @@
 #define RADIO_TASK_PRIO          5     // above loopTask (1); below tcpip 18 / events 19,20 / esp_timer 22 / Wi-Fi 23 / usbd 24
 #define RADIO_TASK_STACK         4096  // bytes (ESP-IDF), static
 #define RADIO_POLL_TICKS         1     // 1 ms at FREERTOS_HZ 1000
-#define RADIO_QUEUE_DEPTH        256   // 256 x 72 B = 18 KB PSRAM (covers MQTT reconnect stalls)
+#define RADIO_QUEUE_DEPTH        256   // 256 x 76 B = 19.5 KB PSRAM (covers MQTT reconnect stalls)
 #define RADIO_CMD_QUEUE_DEPTH    4
 #define RADIO_PARTIAL_TIMEOUT_MS 50    // a frame that stops coming in is dropped after this
 #define RADIO_PROBE_INTERVAL_MS  2000  // offline VERSION probe
 #define RADIO_STATUS_INTERVAL_MS 500   // RSSI/MARCSTATE sample, only between frames
+#define RADIO_RECAL_INTERVAL_MS  300000UL // periodic RX restart (recalibration) when idle
 #define RADIO_TX_TIMEOUT_MS      30
 #define RADIO_TX_MAX_AGE_MS      105   // hard stop: poll frame start -> STX (to be tuned on the bench)
 #define RADIO_STATUS_READ_MAX    4     // bound for readStatusSafe
 #define RADIO_SPI_STALL_US       5000  // a status read this slow = module lost (verified by a VERSION read)
 #define POLL_ANSWER_MAX_AGE_MS   95    // loop-side skip threshold (to be tuned on the bench)
+
+#define RADIO_NUM_MODULES        2
+#define RADIO_CH_MAIN            0
+#define RADIO_CH_PCH             1
+#define RADIO_FLAG_CAL           0x01
+#define RADIO_FLAG_TX_OVERLAP    0x02
 
 enum RadioItemKind : uint8_t { RADIO_ITEM_FRAME, RADIO_ITEM_OVERFLOW, RADIO_ITEM_PARTIAL,
                                RADIO_ITEM_ONLINE, RADIO_ITEM_OFFLINE };
@@ -85,11 +92,22 @@ struct RadioFrame {               // copied by value through the RX queue
     uint8_t  dropsBefore;         // items lost to a full queue just before this one (saturating)
     uint32_t startUs;             // (uint32_t)esp_timer_get_time() at first bytes; differences only
     uint32_t doneUs;              // frame complete / event time
+    uint8_t  module;              // 0 = main (PIN_CS), 1 = picture channel (PIN_CS2)
+    uint8_t  channel;             // RADIO_CH_MAIN or RADIO_CH_PCH
+    uint8_t  flags;               // RADIO_FLAG_CAL | RADIO_FLAG_TX_OVERLAP
+    uint8_t  reserved;
 };
-static_assert(sizeof(RadioFrame) == 72, "layout");
+static_assert(sizeof(RadioFrame) == 76, "layout");
 
-enum RadioCmdType : uint8_t { RADIO_CMD_TX = 1, RADIO_CMD_REINIT, RADIO_CMD_TESTSPI };
-struct RadioCmd { uint8_t type; uint8_t pkt[VERISURE_PACKET_LEN]; uint32_t frameStartUs; uint32_t seq; };
+enum RadioCmdType : uint8_t { RADIO_CMD_TX = 1, RADIO_CMD_REINIT, RADIO_CMD_TESTSPI, RADIO_CMD_SETMODE };
+struct RadioCmd {
+    uint8_t  type;
+    uint8_t  module;
+    uint8_t  arg;
+    uint8_t  pkt[VERISURE_PACKET_LEN];
+    uint32_t frameStartUs;
+    uint32_t seq;
+};
 struct RadioTestSpiResult { uint8_t misoHigh, misoLow, sresSt, partSt, part, verSt, ver, marcSt, marc; };
 
 /** Cached radio state, written by the task only (single writer, aligned <= 32 bit). */
@@ -127,30 +145,37 @@ struct RadioLoopDiag {
 };
 
 extern RadioStatus   g_radioStatus;
+extern RadioStatus   g_radioStatus2;
 extern RadioDiag     g_radioDiag;
+extern RadioDiag     g_radioDiag2;
 extern RadioLoopDiag g_radioLoopDiag;
 
 /** @brief Microsecond timestamp (wraps after 71 min): compare only by unsigned difference. */
 static inline uint32_t radioNowUs() { return (uint32_t)esp_timer_get_time(); }
 
-/** setup(), before the task exists: SPI attach, probe, register init. Returns true if online. */
-bool radioInit(uint8_t* version);
-/** Create the queues and the task. online = result of radioInit(). False (nothing usable, status
- *  stays offline) if the PSRAM queue cannot be created. */
-bool radioTaskStart(bool online);
+/** setup(), before the task exists: SPI attach, probe, register init for both modules.
+ *  Returns true if module 0 is online. */
+bool radioInit(uint8_t* version, uint8_t* version2 = nullptr, bool* online2 = nullptr);
+/** Create the queues and the task. online/online2 = result of radioInit(). False (nothing
+ *  usable, status stays offline) if the PSRAM queue cannot be created. */
+bool radioTaskStart(bool online, bool online2 = false);
 
 /** loop() only: next queue item, waiting up to waitMs (0 = poll). */
 bool radioReceive(RadioFrame* out, uint32_t waitMs);
-/** Queue a 24-byte downlink packet; asynchronous. frameStartUs = startUs of the poll frame. */
+/** Queue a 24-byte downlink packet (module 0 only); asynchronous. frameStartUs = startUs of the poll frame. */
 bool radioRequestTx(const uint8_t pkt[VERISURE_PACKET_LEN], uint32_t frameStartUs);
-/** Re-run the register init (new freqoffset); waits up to waitMs for completion. */
-bool radioRequestReinit(uint32_t waitMs);
-/** Run the CLI testspi sequence in the task; waits up to waitMs for the result. */
-bool radioRequestTestSpi(RadioTestSpiResult* out, uint32_t waitMs);
+/** Re-run the register init (new freqoffset) on module 0 or 1; waits up to waitMs for completion. */
+bool radioRequestReinit(uint8_t module, uint32_t waitMs);
+/** Run the CLI testspi sequence in the task on module 0 or 1; waits up to waitMs for the result. */
+bool radioRequestTestSpi(uint8_t module, RadioTestSpiResult* out, uint32_t waitMs);
+/** Toggle module 1 between PCH (869.525 MHz, calMode=false) and CAL (868.950 MHz, calMode=true). */
+bool radioRequestSetMode(bool calMode, uint32_t waitMs);
+/** Current module 1 mode (false = PCH, true = CAL). */
+bool radioIsCalMode();
 /** Zero all counters/maxima (the task consumes a flag; loop-side counters are cleared at once). */
 void radioDiagReset();
-/** Append the diagnostics as JSON members (no braces) for the /api/status "radio_diag" object. */
-void radioDiagAppendJson(String& out);
+/** Append the diagnostics as JSON members (no braces) for /api/status ("radio_diag" / "radio_diag2"). */
+void radioDiagAppendJson(String& out, uint8_t module = 0);
 
 #ifdef RADIO_EVAL
 /** Evaluation only: the task stops servicing the FIFO once for ms (max 3000, below the task WDT). */

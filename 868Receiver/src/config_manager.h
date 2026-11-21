@@ -30,7 +30,9 @@ struct GatewayConfig {
     char mqttTopic[33];     /**< Base MQTT topic prefix (default "verisure") */
     uint8_t masterKey[16];  /**< 16-byte Master AES Key for device key derivation */
     char masterKeyHex[33];  /**< Hex-encoded representation of Master Key (32 hex chars + null) */
-    int8_t freqOffset;      /**< CC1101 FSCTRL0 frequency correction, 1.587 kHz per step (0 = none) */
+    int8_t freqOffset;      /**< CC1101 #1 FSCTRL0 frequency correction, 1.587 kHz per step (0 = none) */
+    int8_t freqOffset2;     /**< CC1101 #2 FSCTRL0 frequency correction, 1.587 kHz per step (0 = none) */
+    bool pchEnabled;        /**< Picture channel (second CC1101) enabled flag */
 };
 
 /**
@@ -80,10 +82,21 @@ public:
     static bool setMqtt(const char* host, uint16_t port, const char* user, const char* pass, const char* topic);
 
     /**
-     * @brief Set the CC1101 frequency correction (FSCTRL0) in memory; save() stores it.
+     * @brief Set the CC1101 #1 frequency correction (FSCTRL0) in memory; save() stores it.
      * @param steps Signed offset in 1.587 kHz steps (-128..127).
      */
     static void setFreqOffset(int8_t steps);
+
+    /**
+     * @brief Set the CC1101 #2 frequency correction (FSCTRL0) in memory; save() stores it.
+     * @param steps Signed offset in 1.587 kHz steps (-128..127).
+     */
+    static void setFreqOffset2(int8_t steps);
+
+    /**
+     * @brief Enable or disable the picture channel in memory; save() stores it.
+     */
+    static void setPchEnabled(bool enabled);
 
     /**
      * @brief Update Master AES Key from a 32-character hexadecimal string.

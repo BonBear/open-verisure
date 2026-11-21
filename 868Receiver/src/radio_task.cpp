@@ -1,17 +1,15 @@
 /**
  * @file radio_task.cpp
- * @brief CC1101 receive path in its own FreeRTOS task (design: see radio_task.h).
+ * @brief Dual-CC1101 receive/TX path in its own FreeRTOS task (design: see radio_task.h).
  *
- * The CC1101 code moved here from main.cpp (readStatusSafe, enterRxMode, initRadioRegisters, the
- * FIFO servicing of radioService, radioTransmit as radioDoTx). Behaviour is kept, except for: the
- * bounded status re-read, IOCFG2/IOCFG0 = 0x2E, the TX wait (task sleep instead of a busy loop)
- * and the offline/self-heal handling. The functions are static so that nothing outside this file
- * can touch the CC1101 once the task runs.
+ * Uses a minimal static CC1101 SPI driver (4 MHz MODE0, bounded MISO-low wait via gpio_get_level,
+ * explicit IOCFG1 = 0x2E tri-state on both modules) instead of SmartRC-CC1101, which blocked
+ * for 200 ms on a missing module and detached SPI pinmux on Arduino core 3.x.
  */
 
 #include "radio_task.h"
 #include <SPI.h>
-#include <ELECHOUSE_CC1101_SRC_DRV.h>
+#include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
@@ -23,8 +21,67 @@
 #include "config_manager.h"
 #include "hardware_pins.h"
 
+// ---- CC1101 SPI constants (SWRS061I) ----
+#define CC1101_IOCFG2    0x00
+#define CC1101_IOCFG1    0x01
+#define CC1101_IOCFG0    0x02
+#define CC1101_SYNC1     0x04
+#define CC1101_SYNC0     0x05
+#define CC1101_PKTLEN    0x06
+#define CC1101_PKTCTRL1  0x07
+#define CC1101_PKTCTRL0  0x08
+#define CC1101_CHANNR    0x0A
+#define CC1101_FSCTRL1   0x0B
+#define CC1101_FSCTRL0   0x0C
+#define CC1101_FREQ2     0x0D
+#define CC1101_FREQ1     0x0E
+#define CC1101_FREQ0     0x0F
+#define CC1101_MDMCFG4   0x10
+#define CC1101_MDMCFG3   0x11
+#define CC1101_MDMCFG2   0x12
+#define CC1101_MDMCFG1   0x13
+#define CC1101_MDMCFG0   0x14
+#define CC1101_DEVIATN   0x15
+#define CC1101_MCSM2     0x16
+#define CC1101_MCSM1     0x17
+#define CC1101_MCSM0     0x18
+#define CC1101_FOCCFG    0x19
+#define CC1101_BSCFG     0x1A
+#define CC1101_AGCCTRL2  0x1B
+#define CC1101_AGCCTRL1  0x1C
+#define CC1101_AGCCTRL0  0x1D
+#define CC1101_FREND1    0x21
+#define CC1101_FREND0    0x22
+#define CC1101_FSCAL3    0x23
+#define CC1101_FSCAL2    0x24
+#define CC1101_FSCAL1    0x25
+#define CC1101_FSCAL0    0x26
+#define CC1101_TEST2     0x2C
+#define CC1101_TEST1     0x2D
+#define CC1101_TEST0     0x2E
+
+#define CC1101_PATABLE   0x3E
+#define CC1101_TXFIFO    0x3F
+#define CC1101_RXFIFO    0x3F
+
+#define CC1101_SRES      0x30
+#define CC1101_SRX       0x34
+#define CC1101_STX       0x35
+#define CC1101_SIDLE     0x36
+#define CC1101_SFRX      0x3A
+#define CC1101_SFTX      0x3B
+
+#define CC1101_PARTNUM   0x30
+#define CC1101_VERSION   0x31
+#define CC1101_FREQEST   0x32
+#define CC1101_RSSI      0x34
+#define CC1101_MARCSTATE 0x35
+#define CC1101_RXBYTES   0x3B
+
 RadioStatus   g_radioStatus   = { false, 0, 0, 0x01, -100, 0 };
+RadioStatus   g_radioStatus2  = { false, 0, 0, 0x01, -100, 0 };
 RadioDiag     g_radioDiag     = {};
+RadioDiag     g_radioDiag2    = {};
 RadioLoopDiag g_radioLoopDiag = {};
 
 #ifdef RADIO_EVAL
@@ -43,455 +100,726 @@ static QueueHandle_t  s_cmdQ = nullptr;
 static StaticSemaphore_t s_doneBuf;
 static SemaphoreHandle_t s_done = nullptr;
 
-// ---- task-local state ----
-static bool     s_online = false;
+// ---- per-module state ----
+struct RadioModule {
+    uint8_t      index;
+    uint8_t      csPin;
+    bool         canTx;
+    bool         online;
+    bool         calMode;          // module 1 only: false = PCH 869.525 MHz, true = CAL 868.950 MHz
+    bool         stallSuspect;
+    bool         gapValid;
+    uint32_t     lastProbeMs;
+    uint32_t     lastStatusMs;
+    uint32_t     lastRecalMs;
+    uint32_t     lastServiceUs;
+    uint8_t      lastRxBytes;
+    uint8_t      frame[RX_FRAME_LEN];
+    uint8_t      frameLen;
+    uint32_t     frameStartUs;
+    int8_t       frameFreqEst;
+    uint32_t     partialStartUs;
+    bool         partialSet;
+    RadioStatus* status;
+    RadioDiag*   diag;
+};
+
+static RadioModule s_mod[RADIO_NUM_MODULES];
+
+// ---- task-local shared state ----
 static RadioTestSpiResult s_testResult;       // filled by the task, then s_doneSeq is set
-static volatile uint32_t s_doneSeq = 0;       // seq of the last finished REINIT/TESTSPI command
+static volatile uint32_t s_doneSeq = 0;       // seq of the last finished command
 static uint32_t s_nextSeq = 0;                // loop() side: seq of the next request
 static volatile bool s_resetReq = false;
-static volatile bool s_stallSuspect = false;   // set by readStatusSafe, evaluated by the task loop
+static volatile bool s_calMode = false;       // mirrored from s_mod[1].calMode for radioIsCalMode()
 static uint8_t  s_pendingDrops = 0;
-static uint32_t s_lastProbeMs = 0;
-static uint32_t s_lastStatusMs = 0;
+static uint32_t s_lastHwmMs = 0;
 
-/** Feed the task WDT, only from the radio task (radioInit() runs in loopTask, which is only
- *  subscribed at the end of setup() (enableLoopWDT): esp_task_wdt_reset() would log "task not
- *  found" there before that). */
+// Module 0 TX window tracking for RADIO_FLAG_TX_OVERLAP on module 1
+static bool     s_txActive = false;
+static bool     s_hasLastTx = false;
+static uint32_t s_txBeginUs = 0;
+static uint32_t s_lastTxEndUs = 0;
+
+/** Feed the task WDT, only from the radio task (radioInit() runs in loopTask before enableLoopWDT()). */
 static inline void wdtFeed() {
     if (s_task && xTaskGetCurrentTaskHandle() == s_task) esp_task_wdt_reset();
 }
-static uint32_t s_lastHwmMs = 0;
-static uint32_t s_lastServiceUs = 0;
-static bool     s_gapValid = false;
-static uint8_t  s_lastRxBytes = 0;
-
-// frame assembler (task-local)
-static uint8_t  s_frame[RX_FRAME_LEN];
-static uint8_t  s_frameLen = 0;
-static uint32_t s_frameStartUs = 0;
-static int8_t   s_frameFreqEst = 0;     // FREQEST at the start of the frame
-static uint32_t s_partialStartUs = 0;
-static bool     s_partialSet = false;
 
 // volatile read-modify-write helpers (compound operators on volatile are deprecated in C++20)
 static inline void bump(volatile uint32_t& v) { v = v + 1; }
 static inline void maxTo(volatile uint32_t& v, uint32_t x) { if (x > v) v = x; }
 
-static void diagClear() {
-    RadioDiag& d = g_radioDiag;
+static void initModState() {
+    memset(s_mod, 0, sizeof(s_mod));
+    s_mod[0].index  = 0;
+    s_mod[0].csPin  = PIN_CS;
+    s_mod[0].canTx  = true;
+    s_mod[0].status = &g_radioStatus;
+    s_mod[0].diag   = &g_radioDiag;
+
+    s_mod[1].index  = 1;
+    s_mod[1].csPin  = PIN_CS2;
+    s_mod[1].canTx  = false;
+    s_mod[1].status = &g_radioStatus2;
+    s_mod[1].diag   = &g_radioDiag2;
+}
+
+static void diagClearOne(RadioDiag& d) {
     d.frames = 0; d.fifoOverflows = 0; d.partialDrops = 0; d.queueDrops = 0; d.queueHighWater = 0;
     d.maxGapUs = 0; d.gapOver5ms = 0; d.gapOver10ms = 0; d.gapOver20ms = 0;
     d.txDone = 0; d.txLate = 0; d.txTimeouts = 0; d.txAbortedRx = 0; d.maxTxLatencyUs = 0;
     d.slowStatusReads = 0; d.statusUnstable = 0; d.rxRestarts = 0; d.rxReinits = 0;
 }
 
-static void assemblerReset() {
-    s_frameLen = 0;
-    s_partialSet = false;
+static void diagClear() {
+    diagClearOne(g_radioDiag);
+    diagClearOne(g_radioDiag2);
+}
+
+static void assemblerReset(RadioModule& m) {
+    m.frameLen = 0;
+    m.partialSet = false;
+}
+
+static uint8_t moduleChannel(const RadioModule& m) {
+    return (m.index == 0 || m.calMode) ? RADIO_CH_MAIN : RADIO_CH_PCH;
+}
+
+static uint8_t moduleFlags(const RadioModule& m) {
+    return (m.index == 1 && m.calMode) ? RADIO_FLAG_CAL : 0;
+}
+
+static uint8_t expectedFreq1(const RadioModule& m) {
+    return (m.index == 0 || m.calMode) ? 0x6B : 0x71;
+}
+
+// ---- minimal static CC1101 SPI driver ----
+
+/**
+ * @brief (Re)attach SCK/MISO/MOSI to the SPI peripheral; both CS pins stay HIGH outputs
+ *        before SPI.begin() so neither CC1101 is ever selected simultaneously.
+ */
+static void radioSpiAttach() {
+    pinMode(PIN_CS, OUTPUT);
+    digitalWrite(PIN_CS, HIGH);
+    pinMode(PIN_CS2, OUTPUT);
+    digitalWrite(PIN_CS2, HIGH);
+    SPI.end();
+    SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, -1);
 }
 
 /**
- * @brief Safely read a CC1101 status register with de-glitching / double-sampling.
- * @param addr CC1101 status register address.
- * @return Stabilized register value.
- * @note Required by TI CC1101 Errata note when reading status registers while SPI clock is running.
- *       Bounded to RADIO_STATUS_READ_MAX reads (statusUnstable counts a give-up, unless
- *       countUnstable is false: RSSI changes by nature). A read that takes longer than
- *       RADIO_SPI_STALL_US flags a suspected lost module (s_stallSuspect).
+ * @brief Begin an SPI transaction for csPin and wait up to waitUs for SO (MISO) to go LOW
+ *        (CC1101 crystal ready). Uses gpio_get_level so Arduino core 3.x SPI pinmux stays intact.
  */
-static uint8_t readStatusSafe(uint8_t addr, bool countUnstable = true) {
+static bool ccBegin(uint8_t csPin, uint32_t waitUs = 200) {
+    SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(csPin, LOW);
     const uint32_t t0 = radioNowUs();
-    uint8_t val1 = ELECHOUSE_cc1101.SpiReadStatus(addr);
-    uint8_t val2 = ELECHOUSE_cc1101.SpiReadStatus(addr);
+    while (gpio_get_level((gpio_num_t)PIN_MISO) != 0) {
+        if ((uint32_t)(radioNowUs() - t0) >= waitUs) {
+            digitalWrite(csPin, HIGH);
+            SPI.endTransaction();
+            return false;
+        }
+    }
+    return true;
+}
+
+static void ccEnd(uint8_t csPin) {
+    digitalWrite(csPin, HIGH);
+    SPI.endTransaction();
+}
+
+static uint8_t ccStrobe(uint8_t csPin, uint8_t strobe, bool* ok = nullptr) {
+    if (!ccBegin(csPin)) {
+        if (ok) *ok = false;
+        return 0;
+    }
+    uint8_t st = SPI.transfer(strobe);
+    ccEnd(csPin);
+    if (ok) *ok = true;
+    return st;
+}
+
+static bool ccWriteReg(uint8_t csPin, uint8_t addr, uint8_t val) {
+    if (!ccBegin(csPin)) return false;
+    SPI.transfer(addr);
+    SPI.transfer(val);
+    ccEnd(csPin);
+    return true;
+}
+
+static bool ccWriteBurst(uint8_t csPin, uint8_t addr, const uint8_t* buf, uint8_t len) {
+    if (!ccBegin(csPin)) return false;
+    SPI.transfer(addr | 0x40);
+    for (uint8_t i = 0; i < len; i++) SPI.transfer(buf[i]);
+    ccEnd(csPin);
+    return true;
+}
+
+static uint8_t ccReadReg(uint8_t csPin, uint8_t addr, bool* ok = nullptr) {
+    if (!ccBegin(csPin)) {
+        if (ok) *ok = false;
+        return 0;
+    }
+    SPI.transfer(addr | 0x80);
+    uint8_t val = SPI.transfer(0x00);
+    ccEnd(csPin);
+    if (ok) *ok = true;
+    return val;
+}
+
+static uint8_t ccReadStatus(uint8_t csPin, uint8_t addr, bool* ok = nullptr) {
+    if (!ccBegin(csPin)) {
+        if (ok) *ok = false;
+        return 0;
+    }
+    SPI.transfer(addr | 0xC0);
+    uint8_t val = SPI.transfer(0x00);
+    ccEnd(csPin);
+    if (ok) *ok = true;
+    return val;
+}
+
+static bool ccReadBurst(uint8_t csPin, uint8_t addr, uint8_t* buf, uint8_t len) {
+    if (!ccBegin(csPin)) return false;
+    SPI.transfer(addr | 0xC0);
+    for (uint8_t i = 0; i < len; i++) buf[i] = SPI.transfer(0x00);
+    ccEnd(csPin);
+    return true;
+}
+
+static bool ccReset(uint8_t csPin) {
+    digitalWrite(csPin, HIGH);
+    delayMicroseconds(50);
+    digitalWrite(csPin, LOW);
+    delayMicroseconds(50);
+    digitalWrite(csPin, HIGH);
+    delayMicroseconds(50);
+    if (!ccBegin(csPin, 2000)) return false;
+    SPI.transfer(CC1101_SRES);
+    const uint32_t t0 = radioNowUs();
+    bool ready = false;
+    while ((uint32_t)(radioNowUs() - t0) < 2000) {
+        if (gpio_get_level((gpio_num_t)PIN_MISO) == 0) {
+            ready = true;
+            break;
+        }
+    }
+    ccEnd(csPin);
+    return ready;
+}
+
+// ---- CC1101 radio helpers ----
+
+/**
+ * @brief Safely read a CC1101 status register with de-glitching / double-sampling (SWRZ020).
+ */
+static uint8_t readStatusSafe(RadioModule& m, uint8_t addr, bool countUnstable = true) {
+    const uint32_t t0 = radioNowUs();
+    bool ok1 = false, ok2 = false;
+    uint8_t val1 = ccReadStatus(m.csPin, addr, &ok1);
+    uint8_t val2 = ccReadStatus(m.csPin, addr, &ok2);
+    if (!ok1 || !ok2) {
+        m.stallSuspect = true;
+        if ((uint32_t)(radioNowUs() - t0) > RADIO_SPI_STALL_US) bump(m.diag->slowStatusReads);
+        return 0;
+    }
     uint8_t n = 2;
     while (val1 != val2 && n < RADIO_STATUS_READ_MAX) {
         val1 = val2;
-        val2 = ELECHOUSE_cc1101.SpiReadStatus(addr);
+        bool okn = false;
+        val2 = ccReadStatus(m.csPin, addr, &okn);
+        if (!okn) {
+            m.stallSuspect = true;
+            return 0;
+        }
         n++;
     }
-    if (val1 != val2 && countUnstable) bump(g_radioDiag.statusUnstable);
+    if (val1 != val2 && countUnstable) bump(m.diag->statusUnstable);
     if ((uint32_t)(radioNowUs() - t0) > RADIO_SPI_STALL_US) {
-        s_stallSuspect = true;
-        bump(g_radioDiag.slowStatusReads);
+        m.stallSuspect = true;
+        bump(m.diag->slowStatusReads);
     }
     return val2;
+}
+
+static void enterIdle(uint8_t csPin) {
+    ccStrobe(csPin, CC1101_SIDLE);
+    const uint32_t t0 = radioNowUs();
+    while ((uint32_t)(radioNowUs() - t0) < 1000) {
+        bool ok = false;
+        uint8_t marc = ccReadStatus(csPin, CC1101_MARCSTATE, &ok) & 0x1F;
+        if (!ok || marc == 0x01) break;
+        delayMicroseconds(50);
+    }
 }
 
 /**
  * @brief Reset RX FIFO and put CC1101 into continuous receive mode (SRX).
  */
-static void enterRxMode() {
-    ELECHOUSE_cc1101.SpiStrobe(CC1101_SIDLE);
+static void enterRxMode(RadioModule& m) {
+    enterIdle(m.csPin);
+    ccStrobe(m.csPin, CC1101_SFRX);
     delayMicroseconds(100);
-    ELECHOUSE_cc1101.SpiStrobe(CC1101_SFRX);
-    delayMicroseconds(100);
-    ELECHOUSE_cc1101.SpiStrobe(CC1101_SRX);
+    ccStrobe(m.csPin, CC1101_SRX);
+    m.lastRecalMs = millis();
+}
+
+/** Write FREQ2/1/0 for module's current channel; caller must ensure IDLE (or calls enterIdle). */
+static void writeModuleFreq(const RadioModule& m) {
+    enterIdle(m.csPin);
+    if (m.index == 0 || m.calMode) {
+        // 868.950 MHz with 26 MHz crystal: (868.950 * 2^16) / 26.0 = 2190289 = 0x216BD1
+        ccWriteReg(m.csPin, CC1101_FREQ2, 0x21);
+        ccWriteReg(m.csPin, CC1101_FREQ1, 0x6B);
+        ccWriteReg(m.csPin, CC1101_FREQ0, 0xD1);
+    } else {
+        // 869.524963 MHz (picture channel) with 26 MHz crystal: 0x21717A
+        ccWriteReg(m.csPin, CC1101_FREQ2, 0x21);
+        ccWriteReg(m.csPin, CC1101_FREQ1, 0x71);
+        ccWriteReg(m.csPin, CC1101_FREQ0, 0x7A);
+    }
 }
 
 /**
- * @brief (Re)attach SCK/MISO/MOSI to the SPI peripheral; CS stays a GPIO driven by the driver.
- *        Needed after anything called pinMode() on them (core 3.x detaches the pin then).
+ * @brief Configure all CC1101 registers for the given module.
  */
-static void radioSpiAttach() {
-    SPI.end();
-    SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, -1);
-    pinMode(PIN_CS, OUTPUT);
-    digitalWrite(PIN_CS, HIGH);
-}
+static void initModuleRegisters(RadioModule& m) {
+    const uint8_t cs = m.csPin;
+    enterIdle(cs);
 
-/**
- * @brief Configure all CC1101 registers to match the Verisure 868.950 MHz radio profile.
- */
-static void initRadioRegisters() {
-    ELECHOUSE_cc1101.SpiStrobe(CC1101_SIDLE);
+    // No GDO line is wired; IOCFG1 = 0x2E tri-states SO when CSn is HIGH (required on shared SPI)
+    ccWriteReg(cs, CC1101_IOCFG2, 0x2E);
+    ccWriteReg(cs, CC1101_IOCFG1, 0x2E);
+    ccWriteReg(cs, CC1101_IOCFG0, 0x2E);
 
-    // No GDO line is wired: keep both GDO pins high-Z (0x2E)
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_IOCFG2,   0x2E);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_IOCFG0,   0x2E);
+    // Intermediate Frequency (IF) and per-module crystal offset (FSCTRL0, 1.587 kHz/step)
+    const GatewayConfig& cfg = ConfigManager::get();
+    ccWriteReg(cs, CC1101_FSCTRL1, 0x06);
+    ccWriteReg(cs, CC1101_FSCTRL0, (uint8_t)(m.index == 0 ? cfg.freqOffset : cfg.freqOffset2));
 
-    // Intermediate Frequency (IF)
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCTRL1,  0x06);
-    // Frequency offset (FSCTRL0, f_xosc / 2^14 = 1.587 kHz per step, RX and TX), stored in NVS
-    // (CLI "freqoffset <n>", default DEFAULT_FREQ_OFFSET = 0). A module whose crystal runs low
-    // receives the sensors above the channel (FREQEST, logged as "Freq. error" per packet); the
-    // first test module needed 38 (~+60 kHz, beyond the frequency loop's +-50 kHz FOCCFG
-    // FOC_LIMIT BW/4, so weak packets failed their CRC, 2026-11-17). The logged error should
-    // stay near 0.
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCTRL0,  (byte)ConfigManager::get().freqOffset);
-
-    // RF Frequency: 868.950 MHz (with 26.000 MHz crystal on standard CC1101 modules)
-    // Formula: FREQ = (868.950 * 2^16) / 26.0 = 2190289 = 0x216BD1
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FREQ2,    0x21);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FREQ1,    0x6B);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FREQ0,    0xD1);
-    wdtFeed();   // a dead bus (WaitMiso up to 200 ms per access) must not trip the task WDT
+    writeModuleFreq(m);
+    wdtFeed();
 
     // Modem Configuration: 38.383 kBaud, 2-FSK, 4B preamble, 30/32 sync bits
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_MDMCFG4,  0x8A);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_MDMCFG3,  0x83);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_MDMCFG2,  0x03);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_MDMCFG1,  0x22);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_MDMCFG0,  0xF8);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_CHANNR,   0x00);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_DEVIATN,  0x35); // 21.4 kHz deviation
+    ccWriteReg(cs, CC1101_MDMCFG4, 0x8A);
+    ccWriteReg(cs, CC1101_MDMCFG3, 0x83);
+    ccWriteReg(cs, CC1101_MDMCFG2, 0x03);
+    ccWriteReg(cs, CC1101_MDMCFG1, 0x22);
+    ccWriteReg(cs, CC1101_MDMCFG0, 0xF8);
+    ccWriteReg(cs, CC1101_CHANNR,  0x00);
+    ccWriteReg(cs, CC1101_DEVIATN, 0x35);   // 21.4 kHz deviation
     wdtFeed();
 
     // Sync Word: 0xD3 0x91
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_SYNC1,    0xD3);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_SYNC0,    0x91);
+    ccWriteReg(cs, CC1101_SYNC1, 0xD3);
+    ccWriteReg(cs, CC1101_SYNC0, 0x91);
 
     // Automatic Gain Control (AGC)
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_AGCCTRL2, 0x43);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_AGCCTRL1, 0x40);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_AGCCTRL0, 0x95);
+    ccWriteReg(cs, CC1101_AGCCTRL2, 0x43);
+    ccWriteReg(cs, CC1101_AGCCTRL1, 0x40);
+    ccWriteReg(cs, CC1101_AGCCTRL0, 0x95);
     wdtFeed();
 
     // Front-End configuration
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FREND1,   0x56);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FREND0,   0x10);
+    ccWriteReg(cs, CC1101_FREND1, 0x56);
+    ccWriteReg(cs, CC1101_FREND0, 0x10);
 
-    // TX power for the camera downlink (PATABLE[0], ~+10 dBm at 868 MHz)
-    byte pa = 0xC0;
-    ELECHOUSE_cc1101.SpiWriteBurstReg(CC1101_PATABLE, &pa, 1);
+    // Module 0 TX power ~+10 dBm (0xC0); module 1 is RX-only (0x00)
+    uint8_t pa = m.canTx ? 0xC0 : 0x00;
+    ccWriteBurst(cs, CC1101_PATABLE, &pa, 1);
 
-    // Packet Configuration: fixed length RX_PKT_LEN (58) + status bytes, CRC checked in
-    // software (see RX_FRAME_LEN); radioDoTx switches to 24 bytes with CRC for the downlink
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTLEN,   RX_PKT_LEN);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL1, 0x04); // Append RSSI and LQI
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL0, 0x00); // Fixed length mode, CRC off
+    // Packet Configuration: fixed length RX_PKT_LEN (58) + status bytes, software CRC
+    ccWriteReg(cs, CC1101_PKTLEN,   RX_PKT_LEN);
+    ccWriteReg(cs, CC1101_PKTCTRL1, 0x04);   // Append RSSI and LQI
+    ccWriteReg(cs, CC1101_PKTCTRL0, 0x00);   // Fixed length mode, CRC off
     wdtFeed();
 
     // State machine: Autocalibrate IDLE -> RX, Stay in RX after packet
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_MCSM2,    0x07);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_MCSM1,    0x3C); // 0x3C: RXOFF_MODE = Stay in RX!
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_MCSM0,    0x18);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FOCCFG,   0x16);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_BSCFG,    0x6C);
+    ccWriteReg(cs, CC1101_MCSM2,  0x07);
+    ccWriteReg(cs, CC1101_MCSM1,  0x3C);   // 0x3C: RXOFF_MODE = Stay in RX
+    ccWriteReg(cs, CC1101_MCSM0,  0x18);
+    ccWriteReg(cs, CC1101_FOCCFG, 0x16);
+    ccWriteReg(cs, CC1101_BSCFG,  0x6C);
 
     // Frequency Synthesizer Calibration
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCAL3,   0xE9);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCAL2,   0x2A);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCAL1,   0x00);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_FSCAL0,   0x1F);
+    ccWriteReg(cs, CC1101_FSCAL3, 0xE9);
+    ccWriteReg(cs, CC1101_FSCAL2, 0x2A);
+    ccWriteReg(cs, CC1101_FSCAL1, 0x00);
+    ccWriteReg(cs, CC1101_FSCAL0, 0x1F);
     wdtFeed();
 
     // Hardware Test Registers (SWRS033 Table 61)
-    ELECHOUSE_cc1101.SpiWriteReg(0x2C,            0x81);
-    ELECHOUSE_cc1101.SpiWriteReg(0x2D,            0x35);
-    ELECHOUSE_cc1101.SpiWriteReg(0x2E,            0x09);
+    ccWriteReg(cs, CC1101_TEST2, 0x81);
+    ccWriteReg(cs, CC1101_TEST1, 0x35);
+    ccWriteReg(cs, CC1101_TEST0, 0x09);
 
-    enterRxMode();
+    enterRxMode(m);
 }
 
 // ---- queue helpers ----
 
-static void pushItem(RadioFrame& f) {
+static void pushItem(RadioModule& m, RadioFrame& f) {
     f.dropsBefore = s_pendingDrops;
     if (xQueueSend(s_rxQ, &f, 0) == pdTRUE) {
         s_pendingDrops = 0;
-        maxTo(g_radioDiag.queueHighWater, (uint32_t)uxQueueMessagesWaiting(s_rxQ));
+        uint32_t hw = (uint32_t)uxQueueMessagesWaiting(s_rxQ);
+        maxTo(g_radioDiag.queueHighWater, hw);
+        maxTo(g_radioDiag2.queueHighWater, hw);
     } else {
-        bump(g_radioDiag.queueDrops);
+        bump(m.diag->queueDrops);
         if (s_pendingDrops < 255) s_pendingDrops++;
     }
 }
 
-static void postEvent(uint8_t kind, uint8_t arg0) {
+static void postEvent(RadioModule& m, uint8_t kind, uint8_t arg0) {
     RadioFrame f;
     memset(&f, 0, sizeof(f));
     f.kind = kind;
     f.data[0] = arg0;
+    f.module = m.index;
+    f.channel = moduleChannel(m);
+    f.flags = moduleFlags(m);
     f.startUs = f.doneUs = radioNowUs();
-    pushItem(f);
+    pushItem(m, f);
 }
 
 /** FIFO overflow or stalled partial frame: report the bytes read so far and how many were lost. */
-static void postLoss(uint8_t kind, uint8_t lost) {
+static void postLoss(RadioModule& m, uint8_t kind, uint8_t lost) {
     RadioFrame f;
     memset(&f, 0, sizeof(f));
     f.kind = kind;
     f.len = lost;
-    memcpy(f.data, s_frame, s_frameLen);
-    f.freqEst = s_frameFreqEst;
-    f.startUs = s_frameStartUs;
+    memcpy(f.data, m.frame, m.frameLen);
+    f.freqEst = m.frameFreqEst;
+    f.startUs = m.frameStartUs;
     f.doneUs = radioNowUs();
-    pushItem(f);
+    f.module = m.index;
+    f.channel = moduleChannel(m);
+    f.flags = moduleFlags(m);
+    pushItem(m, f);
 }
 
-static void goOffline() {
-    s_online = false;
-    g_radioStatus.online = false;
-    assemblerReset();
-    s_gapValid = false;
-    s_lastProbeMs = millis();
-    postEvent(RADIO_ITEM_OFFLINE, 0);
+static void goOffline(RadioModule& m) {
+    m.online = false;
+    m.status->online = false;
+    assemblerReset(m);
+    m.gapValid = false;
+    m.lastProbeMs = millis();
+    postEvent(m, RADIO_ITEM_OFFLINE, 0);
 }
 
 static bool versionOk(uint8_t v) { return v == 0x04 || v == 0x14; }
 
-// ---- RX service (was radioService in main.cpp, minus the frame handling) ----
+static void markTxOverlap(RadioFrame& f) {
+    if (f.module != 1) return;
+    if (s_txActive) {
+        if ((int32_t)(f.doneUs - s_txBeginUs) >= 0) f.flags |= RADIO_FLAG_TX_OVERLAP;
+    } else if (s_hasLastTx && (uint32_t)(f.doneUs - s_lastTxEndUs) < 1000000UL) {
+        if ((int32_t)(f.startUs - s_lastTxEndUs) <= 0 && (int32_t)(s_txBeginUs - f.doneUs) <= 0) {
+            f.flags |= RADIO_FLAG_TX_OVERLAP;
+        }
+    }
+}
 
-static void radioServiceFifo() {
+// ---- RX service ----
+
+static void radioServiceFifo(RadioModule& m, RadioFrame* completedOut, bool* hasCompleted) {
+    if (hasCompleted) *hasCompleted = false;
+
     const uint32_t nowUs = radioNowUs();
-    uint8_t rxBytesStatus = readStatusSafe(CC1101_RXBYTES);
-    s_lastRxBytes = rxBytesStatus;
+    if (m.gapValid) {
+        const uint32_t gap = (uint32_t)(nowUs - m.lastServiceUs);
+        maxTo(m.diag->maxGapUs, gap);
+        if (gap > 5000) bump(m.diag->gapOver5ms);
+        if (gap > 10000) bump(m.diag->gapOver10ms);
+        if (gap > 20000) bump(m.diag->gapOver20ms);
+    }
+    m.lastServiceUs = nowUs;
+    m.gapValid = true;
+
+    uint8_t rxBytesStatus = readStatusSafe(m, CC1101_RXBYTES);
+    m.lastRxBytes = rxBytesStatus;
+    if (m.stallSuspect) return;
 
     // Check for RX FIFO overflow (Bit 7 = 1)
     if (rxBytesStatus & 0x80) {
-        bump(g_radioDiag.fifoOverflows);
-        postLoss(RADIO_ITEM_OVERFLOW, (uint8_t)(s_frameLen + (rxBytesStatus & 0x7F)));
-        enterRxMode();
-        assemblerReset();
+        bump(m.diag->fifoOverflows);
+        postLoss(m, RADIO_ITEM_OVERFLOW, (uint8_t)(m.frameLen + (rxBytesStatus & 0x7F)));
+        enterRxMode(m);
+        assemblerReset(m);
         return;
     }
 
     uint8_t bytesInFifo = rxBytesStatus & 0x7F;
-    uint8_t need = RX_FRAME_LEN - s_frameLen;
+    uint8_t need = RX_FRAME_LEN - m.frameLen;
     // A frame (60 bytes) nearly fills the 64-byte FIFO, so it is read in pieces while it
     // comes in; the last byte is left in the FIFO until the frame is complete (errata).
     uint8_t take = bytesInFifo >= need ? need : (bytesInFifo > 1 ? bytesInFifo - 1 : 0);
     if (take) {
-        // FREQEST is read while the first bytes come in: the frame is 58 bytes, so after a
-        // 24-byte packet the frequency loop tracks noise for ~7 ms and drifts off
-        if (s_frameLen == 0) {
-            s_frameFreqEst = (int8_t)readStatusSafe(CC1101_FREQEST);
-            // back-dated: the bytes already in the FIFO arrived ~208 us each (38.4 kBd) before now
-            s_frameStartUs = nowUs - (uint32_t)bytesInFifo * 208U;
+        if (m.frameLen == 0) {
+            m.frameFreqEst = (int8_t)readStatusSafe(m, CC1101_FREQEST);
+            m.frameStartUs = nowUs - (uint32_t)bytesInFifo * 208U;
         }
-        ELECHOUSE_cc1101.SpiReadBurstReg(CC1101_RXFIFO, s_frame + s_frameLen, take);
-        s_frameLen += take;
-        s_partialStartUs = nowUs;
-        s_partialSet = true;
+        if (!ccReadBurst(m.csPin, CC1101_RXFIFO, m.frame + m.frameLen, take)) {
+            m.stallSuspect = true;
+            return;
+        }
+        m.frameLen += take;
+        m.partialStartUs = nowUs;
+        m.partialSet = true;
     }
 
-    if (s_frameLen == RX_FRAME_LEN) {
+    if (m.frameLen == RX_FRAME_LEN) {
         RadioFrame f;
-        memcpy(f.data, s_frame, RX_FRAME_LEN);
+        memset(&f, 0, sizeof(f));
+        memcpy(f.data, m.frame, RX_FRAME_LEN);
         f.kind = RADIO_ITEM_FRAME;
         f.len = RX_FRAME_LEN;
-        f.freqEst = s_frameFreqEst;
-        f.startUs = s_frameStartUs;
+        f.freqEst = m.frameFreqEst;
+        f.startUs = m.frameStartUs;
         f.doneUs = radioNowUs();
-        bump(g_radioDiag.frames);
-        pushItem(f);
-        assemblerReset();
-        // RXOFF_MODE = RX (MCSM1 0x3C): the radio is already receiving the next packet.
-        // A flush here cut it off; with picture chunks back to back that lost a third of
-        // them. Restart RX only if the radio left it (e.g. after a TX).
-        if ((readStatusSafe(CC1101_MARCSTATE) & 0x1F) != 0x0D) enterRxMode();
-    } else if (s_frameLen > 0 || bytesInFifo > 0) {
-        // a frame that stops coming in: drop it and restart RX
-        if (!s_partialSet) {
-            s_partialStartUs = nowUs;
-            s_partialSet = true;
+        f.module = m.index;
+        f.channel = moduleChannel(m);
+        f.flags = moduleFlags(m);
+        markTxOverlap(f);
+        bump(m.diag->frames);
+        assemblerReset(m);
+
+        if (completedOut && hasCompleted) {
+            *completedOut = f;
+            *hasCompleted = true;
+        } else {
+            pushItem(m, f);
         }
-        if ((uint32_t)(nowUs - s_partialStartUs) > RADIO_PARTIAL_TIMEOUT_MS * 1000UL) {
-            bump(g_radioDiag.partialDrops);
-            postLoss(RADIO_ITEM_PARTIAL, (uint8_t)(s_frameLen + bytesInFifo));
-            enterRxMode();
-            assemblerReset();
+
+        // RXOFF_MODE = RX (MCSM1 0x3C): restart RX only if the radio left it
+        if ((readStatusSafe(m, CC1101_MARCSTATE) & 0x1F) != 0x0D) enterRxMode(m);
+    } else if (m.frameLen > 0 || bytesInFifo > 0) {
+        if (!m.partialSet) {
+            m.partialStartUs = nowUs;
+            m.partialSet = true;
+        }
+        if ((uint32_t)(nowUs - m.partialStartUs) > RADIO_PARTIAL_TIMEOUT_MS * 1000UL) {
+            bump(m.diag->partialDrops);
+            postLoss(m, RADIO_ITEM_PARTIAL, (uint8_t)(m.frameLen + bytesInFifo));
+            enterRxMode(m);
+            assemblerReset(m);
         }
     } else {
-        s_partialSet = false;
+        m.partialSet = false;
     }
 }
 
-/** RSSI + MARCSTATE sample for the heartbeat/web/MQTT, only while the radio is idle. */
-static void radioSampleStatus() {
-    int raw = readStatusSafe(CC1101_RSSI, false);   // RSSI changes by nature: not "unstable"
-    uint8_t marc = readStatusSafe(CC1101_MARCSTATE) & 0x1F;
-    g_radioStatus.rssiDbm = (int16_t)((raw >= 128) ? ((raw - 256) / 2) - 74 : (raw / 2) - 74);
-    g_radioStatus.marcState = marc;
-    g_radioStatus.sampledMs = millis();
-    // self-heal (we are never in TX here): IDLE, RXFIFO_OVERFLOW or TXFIFO_UNDERFLOW
-    if (marc == 0x01) {
-        // IDLE can also mean the chip was reset (brown-out, glitch): registers are back at their
-        // defaults. FREQ2 is 0x21 in our profile (reset value 0x1E); no VERSION = module gone.
-        if (!versionOk(ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION))) {
-            goOffline();
-        } else if (ELECHOUSE_cc1101.SpiReadReg(CC1101_FREQ2) != 0x21) {
-            initRadioRegisters();
-            bump(g_radioDiag.rxReinits);
+/** RSSI + MARCSTATE sample + self-heal + periodic 300 s recalibration while idle. */
+static void radioSampleStatus(RadioModule& m) {
+    int raw = readStatusSafe(m, CC1101_RSSI, false);   // RSSI changes by nature: not "unstable"
+    uint8_t marc = readStatusSafe(m, CC1101_MARCSTATE) & 0x1F;
+    if (m.stallSuspect) return;
+    m.status->rssiDbm = (int16_t)((raw >= 128) ? ((raw - 256) / 2) - 74 : (raw / 2) - 74);
+    m.status->marcState = marc;
+    m.status->sampledMs = millis();
+
+    // Self-heal (never in TX here): IDLE, SLEEP/invalid, RXFIFO_OVERFLOW, TXFIFO_UNDERFLOW
+    if (marc == 0x01 || marc == 0x00 || marc > 0x16) {
+        if (!versionOk(ccReadStatus(m.csPin, CC1101_VERSION))) {
+            goOffline(m);
+        } else if (ccReadReg(m.csPin, CC1101_FREQ2) != 0x21 ||
+                   ccReadReg(m.csPin, CC1101_FREQ1) != expectedFreq1(m)) {
+            initModuleRegisters(m);
+            bump(m.diag->rxReinits);
         } else {
-            enterRxMode();
-            bump(g_radioDiag.rxRestarts);
+            enterRxMode(m);
+            bump(m.diag->rxRestarts);
         }
     } else if (marc == 0x11 || marc == 0x16) {
-        enterRxMode();
-        bump(g_radioDiag.rxRestarts);
+        enterRxMode(m);
+        bump(m.diag->rxRestarts);
+    } else if (marc == 0x0D && (uint32_t)(millis() - m.lastRecalMs) >= RADIO_RECAL_INTERVAL_MS) {
+        enterRxMode(m);
     }
 }
 
 // ---- commands ----
 
 /**
- * @brief Send one 24-byte packet and return to RX (MCSM1 TXOFF_MODE = IDLE).
+ * @brief Send one 24-byte packet on module 0 (TX is refused on module 1) and return to RX.
+ *        Services module 1's FIFO in 1 ms steps during the ~7 ms TX wait.
  */
 static void radioDoTx(RadioCmd& c) {
+    if (c.module != 0 || !s_mod[0].canTx || !s_mod[0].online) return;
+    RadioModule& m0 = s_mod[0];
+    RadioModule& m1 = s_mod[1];
+
     uint32_t now = radioNowUs();
     if ((uint32_t)(now - c.frameStartUs) > RADIO_TX_MAX_AGE_MS * 1000UL) {
-        bump(g_radioDiag.txLate);
+        bump(m0.diag->txLate);
         return;
     }
-    if (s_frameLen > 0) {
-        bump(g_radioDiag.txAbortedRx);
-        assemblerReset();
+    if (m0.frameLen > 0) {
+        bump(m0.diag->txAbortedRx);
+        assemblerReset(m0);
     }
-    ELECHOUSE_cc1101.SpiStrobe(CC1101_SIDLE);
-    // the camera receives 24 bytes with hardware CRC (RX here uses 58 bytes, CRC off)
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTLEN, VERISURE_PACKET_LEN);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL0, 0x04);
-    ELECHOUSE_cc1101.SpiStrobe(CC1101_SFTX);
-    ELECHOUSE_cc1101.SpiWriteBurstReg(CC1101_TXFIFO, c.pkt, VERISURE_PACKET_LEN);
-    ELECHOUSE_cc1101.SpiStrobe(CC1101_STX);
+    enterIdle(m0.csPin);
+    ccWriteReg(m0.csPin, CC1101_PKTLEN, VERISURE_PACKET_LEN);
+    ccWriteReg(m0.csPin, CC1101_PKTCTRL0, 0x04);
+    ccStrobe(m0.csPin, CC1101_SFTX);
+    ccWriteBurst(m0.csPin, CC1101_TXFIFO, c.pkt, VERISURE_PACKET_LEN);
+    ccStrobe(m0.csPin, CC1101_STX);
     const uint32_t stxUs = radioNowUs();
-    maxTo(g_radioDiag.maxTxLatencyUs, (uint32_t)(stxUs - c.frameStartUs));
-    // 24 bytes + preamble/sync take ~7 ms on air: sleep, then poll once per tick
-    vTaskDelay(pdMS_TO_TICKS(7));
+    maxTo(m0.diag->maxTxLatencyUs, (uint32_t)(stxUs - c.frameStartUs));
+
+    s_txActive = true;
+    s_txBeginUs = stxUs;
+
     bool done = false;
     while (!done && (uint32_t)(radioNowUs() - stxUs) < RADIO_TX_TIMEOUT_MS * 1000UL) {
-        if ((readStatusSafe(CC1101_MARCSTATE) & 0x1F) == 0x01) done = true;
-        else vTaskDelay(1);
+        vTaskDelay(1);
+        esp_task_wdt_reset();
+        if (m1.online && !m1.stallSuspect) radioServiceFifo(m1, nullptr, nullptr);
+        if ((uint32_t)(radioNowUs() - stxUs) >= 5000UL) {
+            if ((readStatusSafe(m0, CC1101_MARCSTATE) & 0x1F) == 0x01) done = true;
+        }
     }
-    if (done) bump(g_radioDiag.txDone); else bump(g_radioDiag.txTimeouts);
-    ELECHOUSE_cc1101.SpiStrobe(CC1101_SIDLE);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTLEN, RX_PKT_LEN);
-    ELECHOUSE_cc1101.SpiWriteReg(CC1101_PKTCTRL0, 0x00);
-    enterRxMode();
-    s_gapValid = false;
+
+    s_lastTxEndUs = radioNowUs();
+    s_txActive = false;
+    s_hasLastTx = true;
+
+    if (done) bump(m0.diag->txDone); else bump(m0.diag->txTimeouts);
+    enterIdle(m0.csPin);
+    ccWriteReg(m0.csPin, CC1101_PKTLEN, RX_PKT_LEN);
+    ccWriteReg(m0.csPin, CC1101_PKTCTRL0, 0x00);
+    enterRxMode(m0);
+    m0.gapValid = false;
 }
 
-/** CLI testspi: the same sequence as before, run here because the task owns the SPI bus. */
-static void radioDoTestSpi() {
+/** CLI testspi for module 0 or 1: keeps the other module's CS HIGH throughout. */
+static void radioDoTestSpi(uint8_t module) {
+    if (module >= RADIO_NUM_MODULES) module = 0;
+    RadioModule& m = s_mod[module];
+    const uint8_t cs = m.csPin;
+    const uint8_t otherCs = s_mod[1 - module].csPin;
     RadioTestSpiResult& r = s_testResult;
-    pinMode(PIN_CS, OUTPUT);
+
+    pinMode(otherCs, OUTPUT);
+    digitalWrite(otherCs, HIGH);
+    pinMode(cs, OUTPUT);
+    digitalWrite(cs, HIGH);
     pinMode(PIN_MISO, INPUT_PULLUP);
 
-    digitalWrite(PIN_CS, HIGH);
     delay(5);
     r.misoHigh = (uint8_t)digitalRead(PIN_MISO);
 
-    digitalWrite(PIN_CS, LOW);
+    digitalWrite(cs, LOW);
     delay(10);
     r.misoLow = (uint8_t)digitalRead(PIN_MISO);
-    digitalWrite(PIN_CS, HIGH);
+    digitalWrite(cs, HIGH);
 
     radioSpiAttach();   // pinMode() above took MISO from the SPI peripheral (core 3.x)
     wdtFeed();
 
     // Manual CC1101 Power-On-Reset Sequence (TI Datasheet 19.1.2)
-    digitalWrite(PIN_CS, HIGH);
+    digitalWrite(cs, HIGH);
     delayMicroseconds(50);
-    digitalWrite(PIN_CS, LOW);
+    digitalWrite(cs, LOW);
     delayMicroseconds(50);
-    digitalWrite(PIN_CS, HIGH);
+    digitalWrite(cs, HIGH);
     delayMicroseconds(50);
-    digitalWrite(PIN_CS, LOW);
-    delay(5); // Wait for SO/MISO to go low
+    digitalWrite(cs, LOW);
+    delay(5);
 
     SPI.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
-    r.sresSt = SPI.transfer(0x30); // CC1101_SRES
-    digitalWrite(PIN_CS, HIGH);
+    r.sresSt = SPI.transfer(CC1101_SRES);
+    digitalWrite(cs, HIGH);
     delay(10);
     wdtFeed();
 
-    // Read PARTNUM (0x30 | 0xC0 = 0xF0) and VERSION (0x31 | 0xC0 = 0xF1)
-    digitalWrite(PIN_CS, LOW);
+    digitalWrite(cs, LOW);
     delayMicroseconds(50);
-    r.partSt = SPI.transfer(0x30 | 0xC0);
+    r.partSt = SPI.transfer(CC1101_PARTNUM | 0xC0);
     r.part = SPI.transfer(0x00);
-    digitalWrite(PIN_CS, HIGH);
+    digitalWrite(cs, HIGH);
     delayMicroseconds(20);
 
-    digitalWrite(PIN_CS, LOW);
+    digitalWrite(cs, LOW);
     delayMicroseconds(50);
-    r.verSt = SPI.transfer(0x31 | 0xC0);
+    r.verSt = SPI.transfer(CC1101_VERSION | 0xC0);
     r.ver = SPI.transfer(0x00);
-    digitalWrite(PIN_CS, HIGH);
+    digitalWrite(cs, HIGH);
 
-    // Read MARCSTATE (0x35 | 0xC0 = 0xF5)
-    digitalWrite(PIN_CS, LOW);
+    digitalWrite(cs, LOW);
     delayMicroseconds(50);
-    r.marcSt = SPI.transfer(0x35 | 0xC0);
+    r.marcSt = SPI.transfer(CC1101_MARCSTATE | 0xC0);
     r.marc = SPI.transfer(0x00);
-    digitalWrite(PIN_CS, HIGH);
+    digitalWrite(cs, HIGH);
     SPI.endTransaction();
 
-    // SRES put every register back to its reset value (433 MHz, IDLE): restore the radio, but
-    // only if the module answered (VERSION valid); otherwise it is gone
     wdtFeed();
     if (versionOk(r.ver)) {
-        initRadioRegisters();
-        assemblerReset();
-        s_gapValid = false;
-    } else if (s_online) {
-        goOffline();
+        initModuleRegisters(m);
+        m.status->version = r.ver;
+        m.status->partnum = r.part;
+        assemblerReset(m);
+        m.gapValid = false;
+        if (!m.online) {
+            m.online = true;
+            m.status->online = true;
+            m.lastStatusMs = millis();
+            postEvent(m, RADIO_ITEM_ONLINE, r.ver);
+        }
+    } else if (m.online) {
+        goOffline(m);
     }
 }
 
 static void radioDoCommand(RadioCmd& c) {
     switch (c.type) {
         case RADIO_CMD_TX:
-            if (s_online) radioDoTx(c);
+            radioDoTx(c);
             break;
-        case RADIO_CMD_REINIT:
-            if (s_online) {
-                if (versionOk(ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION))) {
-                    initRadioRegisters();
-                    assemblerReset();
-                    s_gapValid = false;
+        case RADIO_CMD_REINIT: {
+            uint8_t idx = c.module < RADIO_NUM_MODULES ? c.module : 0;
+            RadioModule& m = s_mod[idx];
+            if (m.online) {
+                if (versionOk(ccReadStatus(m.csPin, CC1101_VERSION))) {
+                    initModuleRegisters(m);
+                    assemblerReset(m);
+                    m.gapValid = false;
                 } else {
-                    goOffline();   // module gone: do not write registers into a dead bus
+                    goOffline(m);
                 }
             }
             s_doneSeq = c.seq;
             xSemaphoreGive(s_done);
             break;
+        }
         case RADIO_CMD_TESTSPI:
-            radioDoTestSpi();
-            s_doneSeq = c.seq;   // after s_testResult is complete
+            radioDoTestSpi(c.module);
+            s_doneSeq = c.seq;
             xSemaphoreGive(s_done);
             break;
+        case RADIO_CMD_SETMODE: {
+            RadioModule& m = s_mod[1];
+            m.calMode = (c.arg != 0);
+            s_calMode = m.calMode;
+            if (m.online) {
+                if (versionOk(ccReadStatus(m.csPin, CC1101_VERSION))) {
+                    writeModuleFreq(m);
+                    assemblerReset(m);
+                    enterRxMode(m);
+                    m.gapValid = false;
+                } else {
+                    goOffline(m);
+                }
+            }
+            s_doneSeq = c.seq;
+            xSemaphoreGive(s_done);
+            break;
+        }
         default:
             break;
     }
@@ -501,7 +829,14 @@ static void radioDoCommand(RadioCmd& c) {
 
 static void radioTaskMain(void*) {
     esp_task_wdt_add(nullptr);
-    s_lastProbeMs = s_lastStatusMs = s_lastHwmMs = millis();
+    const uint32_t bootMs = millis();
+    s_lastHwmMs = bootMs;
+    for (int i = 0; i < RADIO_NUM_MODULES; i++) {
+        s_mod[i].lastProbeMs = bootMs;
+        s_mod[i].lastStatusMs = bootMs;
+        s_mod[i].lastRecalMs = bootMs;
+    }
+
     for (;;) {
         esp_task_wdt_reset();
         if (s_resetReq) {
@@ -516,57 +851,70 @@ static void radioTaskMain(void*) {
         }
 #endif
         const uint32_t nowMs = millis();
-        // 1. Service the FIFO first, so that bytes already in it are read (and a complete frame is
-        //    queued) before a TX command flushes the radio
-        if (s_online) {
-            const uint32_t nowUs = radioNowUs();
-            if (s_gapValid) {
-                const uint32_t gap = (uint32_t)(nowUs - s_lastServiceUs);
-                maxTo(g_radioDiag.maxGapUs, gap);
-                if (gap > 5000) bump(g_radioDiag.gapOver5ms);
-                if (gap > 10000) bump(g_radioDiag.gapOver10ms);
-                if (gap > 20000) bump(g_radioDiag.gapOver20ms);
+
+        // 1. Service both online modules' FIFOs first; push completed frames in startUs order
+        RadioFrame completed[RADIO_NUM_MODULES];
+        bool hasFrame[RADIO_NUM_MODULES] = { false, false };
+        for (int i = 0; i < RADIO_NUM_MODULES; i++) {
+            if (s_mod[i].online) radioServiceFifo(s_mod[i], &completed[i], &hasFrame[i]);
+        }
+        if (hasFrame[0] && hasFrame[1]) {
+            if ((int32_t)(completed[1].startUs - completed[0].startUs) < 0) {
+                pushItem(s_mod[1], completed[1]);
+                pushItem(s_mod[0], completed[0]);
+            } else {
+                pushItem(s_mod[0], completed[0]);
+                pushItem(s_mod[1], completed[1]);
             }
-            s_lastServiceUs = nowUs;
-            s_gapValid = true;
+        } else if (hasFrame[0]) {
+            pushItem(s_mod[0], completed[0]);
+        } else if (hasFrame[1]) {
+            pushItem(s_mod[1], completed[1]);
+        }
 
-            radioServiceFifo();
-
-            if (s_stallSuspect) {
-                s_stallSuspect = false;   // counted in readStatusSafe (slowStatusReads)
-                // a slow read alone (e.g. preempted) is not a lost module: check VERSION
-                if (!versionOk(ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION))) goOffline();
-            } else if (s_online && s_frameLen == 0 && s_lastRxBytes == 0 &&
-                       (uint32_t)(nowMs - s_lastStatusMs) >= RADIO_STATUS_INTERVAL_MS) {
-                s_lastStatusMs = nowMs;
-                radioSampleStatus();
+        // 1b. Per-module stall check & periodic RSSI/MARCSTATE/self-heal/recalibration
+        for (int i = 0; i < RADIO_NUM_MODULES; i++) {
+            RadioModule& m = s_mod[i];
+            if (!m.online) continue;
+            if (m.stallSuspect) {
+                m.stallSuspect = false;
+                if (!versionOk(ccReadStatus(m.csPin, CC1101_VERSION))) goOffline(m);
+            } else if (m.frameLen == 0 && m.lastRxBytes == 0 &&
+                       (uint32_t)(nowMs - m.lastStatusMs) >= RADIO_STATUS_INTERVAL_MS) {
+                m.lastStatusMs = nowMs;
+                radioSampleStatus(m);
             }
         }
 
-        // 2. Commands (TX / REINIT / TESTSPI)
+        // 2. Commands (TX / REINIT / TESTSPI / SETMODE)
         RadioCmd c;
         while (xQueueReceive(s_cmdQ, &c, 0) == pdTRUE) radioDoCommand(c);
 
-        // 3. Offline: probe for the module
-        if (!s_online && (uint32_t)(millis() - s_lastProbeMs) >= RADIO_PROBE_INTERVAL_MS) {
-            s_lastProbeMs = millis();   // fresh: goOffline() earlier in this pass set it after nowMs
-            uint8_t ver = ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION);
-            if (versionOk(ver)) {   // init only with a valid VERSION (never write into a dead bus)
-                initRadioRegisters();
-                g_radioStatus.version = ver;
-                g_radioStatus.partnum = ELECHOUSE_cc1101.SpiReadStatus(CC1101_PARTNUM);
-                assemblerReset();
-                s_gapValid = false;
-                s_online = true;
-                g_radioStatus.online = true;
-                s_lastStatusMs = nowMs;
-                postEvent(RADIO_ITEM_ONLINE, ver);
+        // 3. Independent offline probing every 2 s per module (200 us timeout if absent)
+        for (int i = 0; i < RADIO_NUM_MODULES; i++) {
+            RadioModule& m = s_mod[i];
+            if (!m.online && (uint32_t)(millis() - m.lastProbeMs) >= RADIO_PROBE_INTERVAL_MS) {
+                m.lastProbeMs = millis();
+                uint8_t ver = ccReadStatus(m.csPin, CC1101_VERSION);
+                if (versionOk(ver)) {
+                    initModuleRegisters(m);
+                    m.status->version = ver;
+                    m.status->partnum = ccReadStatus(m.csPin, CC1101_PARTNUM);
+                    assemblerReset(m);
+                    m.gapValid = false;
+                    m.online = true;
+                    m.status->online = true;
+                    m.lastStatusMs = millis();
+                    postEvent(m, RADIO_ITEM_ONLINE, ver);
+                }
             }
         }
 
         if ((uint32_t)(nowMs - s_lastHwmMs) >= 1000) {
             s_lastHwmMs = nowMs;
-            g_radioDiag.stackFreeMin = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
+            uint32_t hwm = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
+            g_radioDiag.stackFreeMin = hwm;
+            g_radioDiag2.stackFreeMin = hwm;
         }
         ulTaskNotifyTake(pdTRUE, RADIO_POLL_TICKS);
     }
@@ -574,42 +922,47 @@ static void radioTaskMain(void*) {
 
 // ---- public API ----
 
-bool radioInit(uint8_t* version) {
-    // setSpiPin() calls pinMode() on the pins, which on Arduino core 3.x detaches them from the
-    // SPI peripheral, so SPI is attached afterwards (the library's own SPI.begin() in Init()
-    // then does nothing).
-    ELECHOUSE_cc1101.setSpiPin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
-    radioSpiAttach();
-    ELECHOUSE_cc1101.Init();
-    delay(50);
-    uint8_t ver = ELECHOUSE_cc1101.SpiReadStatus(CC1101_VERSION);
-    if (version) *version = ver;
-    g_radioStatus.version = ver;
+static bool initOneModule(RadioModule& m, uint8_t* verOut) {
+    ccReset(m.csPin);
+    delay(10);
+    uint8_t ver = ccReadStatus(m.csPin, CC1101_VERSION);
+    if (verOut) *verOut = ver;
+    m.status->version = ver;
     if (!versionOk(ver)) return false;
-    g_radioStatus.partnum = ELECHOUSE_cc1101.SpiReadStatus(CC1101_PARTNUM);
-    initRadioRegisters();
+    m.status->partnum = ccReadStatus(m.csPin, CC1101_PARTNUM);
+    initModuleRegisters(m);
     return true;
 }
 
-bool radioTaskStart(bool online) {
+bool radioInit(uint8_t* version, uint8_t* version2, bool* online2) {
+    initModState();
+    radioSpiAttach();
+    bool on1 = initOneModule(s_mod[0], version);
+    bool on2 = initOneModule(s_mod[1], version2);
+    if (online2) *online2 = on2;
+    return on1;
+}
+
+bool radioTaskStart(bool online, bool online2) {
     if (s_task) return true;
-    // RX queue in PSRAM (static internal RAM did not fit .dram0.bss); task-to-task use only,
-    // never touched from an ISR. Created once at boot, never deleted.
     QueueHandle_t rxQ = xQueueCreateWithCaps(RADIO_QUEUE_DEPTH, sizeof(RadioFrame), MALLOC_CAP_SPIRAM);
-    if (!rxQ) return false;   // nothing published: no queues, no task, status stays offline
+    if (!rxQ) return false;
     QueueHandle_t cmdQ = xQueueCreateStatic(RADIO_CMD_QUEUE_DEPTH, sizeof(RadioCmd), s_cmdQStore, &s_cmdQBuf);
     SemaphoreHandle_t done = xSemaphoreCreateBinaryStatic(&s_doneBuf);
     if (!cmdQ || !done) return false;
     s_rxQ = rxQ;
     s_cmdQ = cmdQ;
     s_done = done;
-    s_online = online;   // task-local, read by the task once it runs
-    g_radioStatus.online = online;   // written before the task exists (single writer afterwards)
+    s_mod[0].online = online;
+    g_radioStatus.online = online;
+    s_mod[1].online = online2;
+    g_radioStatus2.online = online2;
     TaskHandle_t t = xTaskCreateStatic(radioTaskMain, "radio", sizeof(s_taskStack) / sizeof(StackType_t),
                                        nullptr, RADIO_TASK_PRIO, s_taskStack, &s_taskTcb);
     if (!t) {
-        s_online = false;
+        s_mod[0].online = s_mod[1].online = false;
         g_radioStatus.online = false;
+        g_radioStatus2.online = false;
         s_rxQ = s_cmdQ = nullptr;
         s_done = nullptr;
         return false;
@@ -634,24 +987,22 @@ static bool sendCmd(const RadioCmd& c) {
 
 bool radioRequestTx(const uint8_t pkt[VERISURE_PACKET_LEN], uint32_t frameStartUs) {
     RadioCmd c;
+    memset(&c, 0, sizeof(c));
     c.type = RADIO_CMD_TX;
+    c.module = 0;
     memcpy(c.pkt, pkt, VERISURE_PACKET_LEN);
     c.frameStartUs = frameStartUs;
-    c.seq = 0;
     return sendCmd(c);
 }
 
-/**
- * Send a command that signals completion through s_done; false if not sent or timed out. Every
- * request carries a sequence number and the task publishes the seq of the command it finished
- * (s_doneSeq), so a late completion of a timed-out request is recognised and ignored.
- */
-static bool sendAndWait(uint8_t type, uint32_t waitMs) {
+static bool sendAndWait(uint8_t type, uint8_t module, uint8_t arg, uint32_t waitMs) {
     if (!s_task || !s_cmdQ || !s_done) return false;
-    xSemaphoreTake(s_done, 0);   // clear a stale give from an earlier timed-out request
+    xSemaphoreTake(s_done, 0);
     RadioCmd c;
     memset(&c, 0, sizeof(c));
     c.type = type;
+    c.module = module;
+    c.arg = arg;
     c.seq = ++s_nextSeq;
     if (!sendCmd(c)) return false;
     const uint32_t t0 = millis();
@@ -659,20 +1010,26 @@ static bool sendAndWait(uint8_t type, uint32_t waitMs) {
         const uint32_t elapsed = (uint32_t)(millis() - t0);
         const uint32_t remaining = elapsed < waitMs ? waitMs - elapsed : 0;
         if (xSemaphoreTake(s_done, pdMS_TO_TICKS(remaining)) != pdTRUE) return s_doneSeq == c.seq;
-        if (s_doneSeq == c.seq) return true;   // else: a stale completion, keep waiting
+        if (s_doneSeq == c.seq) return true;
     }
 }
 
-bool radioRequestReinit(uint32_t waitMs) {
-    return sendAndWait(RADIO_CMD_REINIT, waitMs);
+bool radioRequestReinit(uint8_t module, uint32_t waitMs) {
+    return sendAndWait(RADIO_CMD_REINIT, module < RADIO_NUM_MODULES ? module : 0, 0, waitMs);
 }
 
-bool radioRequestTestSpi(RadioTestSpiResult* out, uint32_t waitMs) {
-    if (!sendAndWait(RADIO_CMD_TESTSPI, waitMs)) return false;
-    // s_testResult belongs to the finished command (only one request is outstanding; the task
-    // writes it before publishing s_doneSeq and only starts the next command later)
+bool radioRequestTestSpi(uint8_t module, RadioTestSpiResult* out, uint32_t waitMs) {
+    if (!sendAndWait(RADIO_CMD_TESTSPI, module < RADIO_NUM_MODULES ? module : 0, 0, waitMs)) return false;
     if (out) *out = s_testResult;
     return true;
+}
+
+bool radioRequestSetMode(bool calMode, uint32_t waitMs) {
+    return sendAndWait(RADIO_CMD_SETMODE, 1, calMode ? 1 : 0, waitMs);
+}
+
+bool radioIsCalMode() {
+    return s_calMode;
 }
 
 void radioDiagReset() {
@@ -681,9 +1038,8 @@ void radioDiagReset() {
     if (s_task) xTaskNotifyGive(s_task);
 }
 
-void radioDiagAppendJson(String& out) {
-    const RadioDiag& d = g_radioDiag;
-    const RadioLoopDiag& l = g_radioLoopDiag;
+void radioDiagAppendJson(String& out, uint8_t module) {
+    const RadioDiag& d = (module == 1) ? g_radioDiag2 : g_radioDiag;
     out += "\"frames\":" + String((unsigned long)d.frames) + ",";
     out += "\"fifo_overflows\":" + String((unsigned long)d.fifoOverflows) + ",";
     out += "\"partial_drops\":" + String((unsigned long)d.partialDrops) + ",";
@@ -702,11 +1058,14 @@ void radioDiagAppendJson(String& out) {
     out += "\"status_unstable\":" + String((unsigned long)d.statusUnstable) + ",";
     out += "\"rx_restarts\":" + String((unsigned long)d.rxRestarts) + ",";
     out += "\"rx_reinits\":" + String((unsigned long)d.rxReinits) + ",";
-    out += "\"stack_free\":" + String((unsigned long)d.stackFreeMin) + ",";
-    out += "\"poll_answers\":" + String((unsigned long)l.pollAnswers) + ",";
-    out += "\"poll_late\":" + String((unsigned long)l.pollLate) + ",";
-    out += "\"max_poll_answer_age_us\":" + String((unsigned long)l.maxPollAnswerAgeUs) + ",";
-    out += "\"max_drain_gap_ms\":" + String((unsigned long)l.maxDrainGapMs);
+    out += "\"stack_free\":" + String((unsigned long)d.stackFreeMin);
+    if (module == 0) {
+        const RadioLoopDiag& l = g_radioLoopDiag;
+        out += ",\"poll_answers\":" + String((unsigned long)l.pollAnswers) + ",";
+        out += "\"poll_late\":" + String((unsigned long)l.pollLate) + ",";
+        out += "\"max_poll_answer_age_us\":" + String((unsigned long)l.maxPollAnswerAgeUs) + ",";
+        out += "\"max_drain_gap_ms\":" + String((unsigned long)l.maxDrainGapMs);
+    }
 }
 
 #ifdef RADIO_EVAL
