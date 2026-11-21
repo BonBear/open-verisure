@@ -10,6 +10,7 @@
 #include "hardware_pins.h"
 #include "mqtt_manager.h"
 #include "downlink.h"
+#include "picture_token.h"
 #include "crypto.h"
 #include "image_receiver.h"
 #include "gateway_diag.h"
@@ -143,6 +144,33 @@ static void printPchStatus() {
         Serial.println("  CAL stats    : none yet (run 'pch cal' while a device transmits)");
     }
     imageReceiverPchPrintStatus();
+    {
+        PicTokenStatus tok;
+        pictureTokenGetStatus((uint32_t)millis(), &tok);
+        const char* stName = (tok.state == PIC_TOK_HELD) ? "held"
+                           : (tok.state == PIC_TOK_RESERVED) ? "reserved" : "idle";
+        if (tok.state == PIC_TOK_IDLE) {
+            Serial.println("  Token        : idle");
+        } else {
+            Serial.printf("  Token        : %s | holder %s%s | hold %lu ms | lease rem %lu ms\n",
+                          stName, tok.holderId, tok.holderLegacy ? " (legacy)" : "",
+                          (unsigned long)tok.holdMs, (unsigned long)tok.leaseRemMs);
+        }
+        Serial.print("  Token queue  : ");
+        if (tok.waitCount == 0) {
+            Serial.println("empty");
+        } else {
+            for (uint8_t i = 0; i < tok.waitCount; i++) {
+                if (i > 0) Serial.print(", ");
+                Serial.print(tok.waitIds[i]);
+            }
+            Serial.println();
+        }
+        Serial.printf("  Token stats  : grants %lu | holds %lu | releases %lu | expiries %lu | legacy %lu\n",
+                      (unsigned long)tok.grants, (unsigned long)tok.holds,
+                      (unsigned long)tok.releases, (unsigned long)tok.expiries,
+                      (unsigned long)tok.legacyClaims);
+    }
     Serial.println("-----------------------------------\n");
 }
 
@@ -365,6 +393,7 @@ static void processCommand(char* cmd) {
             Serial.println("[CLI] Usage: replay reset <ID> [max block, default 8]");
         } else {
             bool had = cryptoReplayReset(id, (uint32_t)block);
+            pictureTokenRelease(id, (uint32_t)millis());
             Serial.printf("[CLI] Replay state for \"%s\" %s; waiting for a boot packet of blocks 1..%lu "
                           "(power-cycle the device if it has booted already)\n",
                           id, had ? "cleared" : "not found", block ? block : 8UL);

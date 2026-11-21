@@ -335,13 +335,18 @@ void radio_init(void) {
     PA_TABLE7 = 0xC2;
 }
 
-#define DL_FLAG_PCH  0x01
-#define RF_CH_MAIN   0
-#define RF_CH_PCH    1
+#define DL_FLAG_PCH    0x01
+#define DL_FLAG_GRANT  0x02
+#define DL_FLAG_HOLD   0x04
+#define DL_FLAG_TOKEN  0x08
+#define RF_CH_MAIN     0
+#define RF_CH_PCH      1
 
 static __xdata bool s_pch = false;
 static __xdata uint8_t s_pch_miss_polls = 0;
 static __xdata uint8_t s_pic_ch = RF_CH_MAIN;
+static __xdata bool s_token_enabled = false;
+static __xdata bool s_pic_has_token = false;
 
 static void radio_set_freq(uint8_t ch) {
     uint16_t w = 5000;
@@ -743,6 +748,16 @@ static void transmit_big_chunk(uint8_t type, uint16_t chunk_idx, uint8_t chunk_l
                                  // time is sent as a delta; 0 = power off right after each picture
                                  // (120 s until 2026-11-16: it cost ~17 As per picture, ~20x a cold picture
                                  // of ~6 s now; to be decided again after measuring with the Otii)
+#define PIC_TOK_REQ_MARKER      0xBB
+#define PIC_TOK_REL_MARKER      0xB1
+#define PIC_TOK_REL_OK          0x00
+#define PIC_TOK_REL_ERR         0x01
+#define PIC_TOK_REL_ACK_TIMEOUT 0x02
+#define PIC_TOK_RETRY_TICKS     (2 * BF_TICKS_PER_S)
+#define PIC_TOK_HOLD_MAX_TRIES  22
+#define PIC_TOK_NO_ANS_MAX      3
+
+static bool cam_token_acquire(uint8_t cmd, bool motion, bool *has_token);
 
 // Blackfin SPI1 as seen from the CC1110 (measured 2026-11-11, only with P1_2 = 1):
 // P1_4 -> PH1 SPI1_SCK, P1_5 -> PH3 SPI1_MOSI, PH2 SPI1_MISO -> P1_3, and P1_2 = 1
@@ -806,14 +821,9 @@ static bool bf_send_picture(uint8_t cmd, bool motion) {
     uint8_t st = 0, tries, i, n;
     uint16_t len, off, idx;
     uint32_t tag;
+    bool has_token = false;
     s_pic_len = 0;                    // no resends of the last picture from here on
-    tag = transmit(motion, false, 0xB2, cmd);   // picture start: its counter tags the chunks
-    // a held start packet: no picture, the chunks would carry a counter that was not sent (and
-    // that the next packet or picture uses again), so they could be swapped between pictures
-    if (s_tx_held)
-        return false;
-    s_pic_tag = tag;
-    s_pic_ch = s_pch ? RF_CH_PCH : RF_CH_MAIN;
+    s_pic_has_token = false;
     bf_link_xfer(cmd);
     // ~0.83 s per try: 60 tries ~50 s. A cold 640x480 (0xD2) needed ~13 s, but snap_link's
     // AEC wait after power-up can add up to ~15 s more in a scene that keeps changing
@@ -834,7 +844,19 @@ static bool bf_send_picture(uint8_t cmd, bool motion) {
         transmit(false, false, 0xB3, (uint8_t)(len >> 8));   // implausible length (high byte)
         return false;
     }
+    if (s_token_enabled) {
+        if (!cam_token_acquire(cmd, motion, &has_token))
+            return false;
+    }
+    tag = transmit(motion, false, 0xB2, cmd);   // picture start: its counter tags the chunks
+    // a held start packet: no picture, the chunks would carry a counter that was not sent (and
+    // that the next packet or picture uses again), so they could be swapped between pictures
+    if (s_tx_held)
+        return false;
+    s_pic_tag = tag;
+    s_pic_ch = s_pch ? RF_CH_PCH : RF_CH_MAIN;
     s_pic_len = len;
+    s_pic_has_token = has_token;
 #if BF_IMG_TIMING
     {
     uint32_t t_spi = 0, t_tx = 0, t_all = 0;
@@ -994,6 +1016,52 @@ static bool cam_poll_rx_valid(void) {
     return true;
 }
 
+static bool cam_token_acquire(uint8_t cmd, bool motion, bool *has_token) {
+    uint8_t tries, no_ans = 0, w;
+    *has_token = false;
+    for (tries = 0; tries < PIC_TOK_HOLD_MAX_TRIES; tries++) {
+        s_poll_ctr = transmit(motion, false, PIC_TOK_REQ_MARKER, cmd);
+        if (s_tx_held)
+            return false;
+        if (cam_poll_rx_valid()) {
+            no_ans = 0;
+            s_pch_miss_polls = 0;
+            if (s_dl_plain[6] <= 1)
+                s_armed = s_dl_plain[6] != 0;
+            s_pch = ((s_dl_plain[8] & DL_FLAG_PCH) != 0) && (s_dl_plain[9] == 0);
+            s_token_enabled = (s_dl_plain[8] & DL_FLAG_TOKEN) != 0;
+            if (!s_token_enabled) {
+                *has_token = false;
+                return true;
+            }
+            if (s_dl_plain[8] & DL_FLAG_GRANT) {
+                *has_token = true;
+                return true;
+            }
+        } else {
+            if (++no_ans >= PIC_TOK_NO_ANS_MAX) {
+                s_token_enabled = false;
+                s_pch = false;
+                *has_token = false;
+                return true;
+            }
+        }
+        if (tries + 1 < PIC_TOK_HOLD_MAX_TRIES) {
+            for (w = 0; w < PIC_TOK_RETRY_TICKS; w++)
+                delay_ms(10);
+        }
+    }
+    *has_token = false;
+    return false;
+}
+
+static void cam_token_release(uint8_t reason, bool motion) {
+    if (!s_pic_has_token)
+        return;
+    s_pic_has_token = false;
+    transmit(motion, false, PIC_TOK_REL_MARKER, reason);
+}
+
 static bool cam_poll(bool motion, bool bf_on) {
     uint8_t state = 0;
 
@@ -1007,8 +1075,10 @@ static bool cam_poll(bool motion, bool bf_on) {
     if (!cam_poll_rx_valid()) {
         if (s_pch_miss_polls < 3)
             s_pch_miss_polls++;
-        if (s_pch_miss_polls >= 3)
+        if (s_pch_miss_polls >= 3) {
             s_pch = false;
+            s_token_enabled = false;
+        }
         return false;
     }
     // the gateway has seen this poll (and with it any acknowledgement)
@@ -1017,8 +1087,10 @@ static bool cam_poll(bool motion, bool bf_on) {
     s_cmd_ack = false;
     if (s_dl_plain[6] <= 1)
         s_armed = s_dl_plain[6] != 0;
-    if (s_dl_plain[7] != BF_CMD_RESEND)
+    if (s_dl_plain[7] != BF_CMD_RESEND) {
         s_pch = ((s_dl_plain[8] & DL_FLAG_PCH) != 0) && (s_dl_plain[9] == 0);
+        s_token_enabled = (s_dl_plain[8] & DL_FLAG_TOKEN) != 0;
+    }
     if ((s_dl_plain[7] >= 0xD1 && s_dl_plain[7] <= 0xD6) ||   // 0xD4 flash, 0xD5/0xD6 flash in the dark
         s_dl_plain[7] == BF_CMD_HOLD) {
         s_dl_cmd = s_dl_plain[7];
@@ -1210,7 +1282,10 @@ static void cam_alarm_loop(void) {
             // every ~2 minutes) gets a fresh alarm state
             if (s_tamper) {
                 poll = 0;
-                cam_poll(active, bf_on);
+                if (cam_poll(active, bf_on) && !s_rs_map && pic_open) {
+                    pic_open = false;
+                    cam_token_release(PIC_TOK_REL_OK, active);
+                }
                 if (s_armed && !tamper_pic_wait)
                     tamper_pic = true;
             }
@@ -1227,7 +1302,10 @@ static void cam_alarm_loop(void) {
                 // poll first (it already carries the motion flag) for a fresh alarm state,
                 // so the gateway is not busy with the B9 packet while the camera listens
                 poll = 0;
-                cam_poll(true, bf_on);
+                if (cam_poll(true, bf_on) && !s_rs_map && pic_open) {
+                    pic_open = false;
+                    cam_token_release(PIC_TOK_REL_OK, true);
+                }
                 transmit(true, false, 0xB9, 1);
             }
             hold = BF_PIR_HOLD_S * BF_TICKS_PER_S;
@@ -1236,8 +1314,10 @@ static void cam_alarm_loop(void) {
                      (s_armed || active || bf_on) ? BF_POLL_S * BF_TICKS_PER_S :
                      BF_POLL_DISARMED_S * BF_TICKS_PER_S)) {
             poll = 0;
-            if (cam_poll(active, bf_on) && !s_rs_map)
+            if (cam_poll(active, bf_on) && !s_rs_map && pic_open) {
                 pic_open = false;   // answered without a resend request: the picture is done
+                cam_token_release(PIC_TOK_REL_OK, active);
+            }
         }
         if (s_rs_map) {
             if (bf_on) {
@@ -1346,8 +1426,10 @@ static void cam_alarm_loop(void) {
             }
             if (pic_open) {
                 ack_left = ack_left > n ? ack_left - n : 0;
-                if (!ack_left)
+                if (!ack_left) {
                     pic_open = false;   // no acknowledgement within BF_ACK_MAX_S: go on
+                    cam_token_release(PIC_TOK_REL_ACK_TIMEOUT, active);
+                }
             }
             if (P1_7 != 0)
                 hold = hold > n ? hold - n : 0;

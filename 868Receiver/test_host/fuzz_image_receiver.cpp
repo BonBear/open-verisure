@@ -16,6 +16,7 @@
 #include "host_mqtt.h"
 #include "image_receiver.h"
 #include "jpeg_splice.h"
+#include "picture_token.h"
 #include <Arduino.h>
 
 void imageReceiverHostTestRestart();    // image_receiver.cpp, HOST_TEST only
@@ -34,6 +35,7 @@ const char* CAM_B = "CAMB0002";
 void resetAll() {
     imageReceiverHostTestRestart();
     downlinkInit();
+    pictureTokenInit();
     hostMqttReset();
 }
 
@@ -1093,4 +1095,88 @@ TEST(fuzz_image_pch_miss_detector) {
     CHECK(!imageReceiverPchSuppressed(CAM));
 
     imageReceiverPublishPending();
+}
+
+// Phase D Picture Token integration with image_receiver: resend renewal, 0xB1 release promoting
+// a queued waiter, and legacy camera displacement / immediate release on picture completion.
+TEST(fuzz_image_picture_token_integration) {
+    Rng r(0x1A6E0012);
+    std::vector<uint8_t> picA = fuzzAssemble(fuzzMakeJpeg(r, 320, 1, r.range(60, 140), r.range(5, 40)));
+    std::vector<uint8_t> picC = fuzzAssemble(randomPicture(r, 320, 2, MAX_IMAGE_SIZE));
+    unsigned nc = chunksOf(picA.size());
+    REQUIRE(nc > 4);
+    unsigned lost = 2;
+
+    resetAll();
+    hostAdvanceMillis(1000);
+    PicTokenStatus st;
+
+    // 1. CAM acquires token, sends 0xB2 and picture with a hole -> resend keeps token held
+    REQUIRE(pictureTokenRequest(CAM, (uint32_t)millis()));
+    pictureTokenOnPicStart(CAM, (uint32_t)millis());
+    for (unsigned c = 0; c < nc; c++) {
+        hostAdvanceMillis(10);
+        if (c != lost) chunk(CAM, (uint16_t)c, chunkLen(picA, c), c == 0, c + 1 == nc, &picA[c * CHUNK], 1);
+    }
+    hostAdvanceMillis(30);
+    imageReceiverPollSeen(CAM);
+    uint16_t first = 0;
+    uint32_t map = 0;
+    REQUIRE(takeResendRequest(CAM, &first, &map));
+    CHECK_EQ((unsigned)first, lost);
+    pictureTokenOnPollAnswered(CAM, true, (uint32_t)millis());
+    imageReceiverAfterPollAnswer(CAM);
+
+    // CAM_B requests token -> held & queued
+    CHECK(!pictureTokenRequest(CAM_B, (uint32_t)millis()));
+    pictureTokenGetStatus((uint32_t)millis(), &st);
+    CHECK_EQ(st.state, PIC_TOK_HELD);
+    CHECK_STR(st.holderId, CAM);
+    CHECK(!st.holderLegacy);
+    CHECK_EQ(st.waitCount, 1);
+    CHECK_STR(st.waitIds[0], CAM_B);
+
+    // CAM resends lost chunk -> completes picture, still held until ACK/0xB1
+    hostAdvanceMillis(50);
+    resend(CAM, (uint16_t)lost, chunkLen(picA, lost), false, &picA[lost * CHUNK], 1);
+    imageReceiverPollSeen(CAM);
+    CHECK(!takeResendRequest(CAM, &first, &map));
+    pictureTokenOnPollAnswered(CAM, false, (uint32_t)millis());
+    imageReceiverAfterPollAnswer(CAM);
+    CHECK(currentOf(CAM) == picA);
+
+    pictureTokenGetStatus((uint32_t)millis(), &st);
+    CHECK_EQ(st.state, PIC_TOK_HELD);
+    CHECK_STR(st.holderId, CAM);
+
+    // Explicit 0xB1 release promotes CAM_B to RESERVED
+    CHECK(pictureTokenRelease(CAM, (uint32_t)millis()));
+    pictureTokenGetStatus((uint32_t)millis(), &st);
+    CHECK_EQ(st.state, PIC_TOK_RESERVED);
+    CHECK_STR(st.holderId, CAM_B);
+    CHECK_EQ(st.waitCount, 0);
+
+    // 2. Legacy camera ("CAMC0003") starts without 0xBB -> displaces CAM_B to front, then
+    // releases immediately when jpegFinish completes with rsActive == false.
+    const char* LEG = "CAMC0003";
+    pictureTokenOnPicStart(LEG, (uint32_t)millis());
+    pictureTokenGetStatus((uint32_t)millis(), &st);
+    CHECK_EQ(st.state, PIC_TOK_HELD);
+    CHECK_STR(st.holderId, LEG);
+    CHECK(st.holderLegacy);
+    CHECK_EQ(st.waitCount, 1);
+    CHECK_STR(st.waitIds[0], CAM_B);
+
+    sendBlob(LEG, picC);
+    imageReceiverAfterPollAnswer(LEG);
+    CHECK(currentOf(LEG) == picC);
+
+    pictureTokenGetStatus((uint32_t)millis(), &st);
+    CHECK_EQ(st.state, PIC_TOK_RESERVED);
+    CHECK_STR(st.holderId, CAM_B);
+    CHECK_EQ(st.waitCount, 0);
+    CHECK(pictureTokenRequest(CAM_B, (uint32_t)millis()));
+    pictureTokenRelease(CAM_B, (uint32_t)millis());
+    imageReceiverPublishPending();
+    checkOutputs();
 }

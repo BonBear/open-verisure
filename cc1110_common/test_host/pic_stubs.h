@@ -24,12 +24,21 @@ static uint16_t s_bf_len = 100;   /* length of the Blackfin's picture */
 static int s_bf_state;            /* 0 idle, 1 length low, 2 length high, 3 data */
 static bool s_pch = false;
 static uint8_t s_pic_ch = RF_CH_MAIN;
+static bool s_token_enabled = false;
+static bool s_pic_has_token = false;
 
 static void radio_set_freq(uint8_t ch) { (void)ch; }
 
 static void clock_xosc(void) {}
 
 static void delay_ms(uint16_t ms) { (void)ms; }
+
+static bool cam_token_acquire(uint8_t cmd, bool motion, bool *has_token) {
+    (void)cmd;
+    (void)motion;
+    *has_token = false;
+    return true;
+}
 
 static uint32_t transmit(bool is_motion, bool is_por, uint8_t marker, uint8_t arg) {
     uint32_t ctr = s_ctr;

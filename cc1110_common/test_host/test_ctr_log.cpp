@@ -683,7 +683,7 @@ TEST(cam_held_start_packet_sends_no_picture) {
     CHECK(!ok);
     CHECK_EQ(t.npackets, 0);
     CHECK_EQ(t.nchunks, 0);
-    CHECK_EQ(t.bf_cmds, 0);
+    CHECK_EQ(t.bf_cmds, 1);                      // capture runs before 0xB2 (cam_alarm_loop checks pic_ctr_ok first)
     CHECK_EQ(ctr, first);
     // the next slot works: the picture goes out, tagged with its start packet's counter
     REQUIRE(d.picture(0xD3, &ctr, &t, &ok));
