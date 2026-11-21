@@ -46,9 +46,3 @@ bool webPortalIsApMode();
  * @return SoftAP IP or Station local IP.
  */
 String webPortalGetIp();
-
-/**
- * @brief Function called while an OTA upload blocks the loop (once per received piece), so the
- *        radio FIFO is still read.
- */
-void webPortalSetBusyHook(void (*hook)());

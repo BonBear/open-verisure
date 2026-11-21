@@ -68,9 +68,33 @@ The web page has the same upload (Firmware Update card).
   rebooting into a just-written update, and in the setup access point (there it could not be
   confirmed, and the portal may have no password yet). A refused request is answered at once and
   its connection closed, so a stalled upload cannot hold the gateway.
-* The upload (~1 MB, ~10 s) blocks the main loop: the radio FIFO is still read for every
-  received piece, but the MQTT client and the rest of the loop wait, and flash erases can
-  delay a packet. If OTA ever leaves the gateway unreachable, flash it over USB as above.
+* The upload (~1 MB, ~10 s) blocks the main loop: the MQTT client, the CLI and the handling of
+  received frames wait (the radio task keeps reading the FIFO and queues up to 256 frames; they are
+  handled after a failed upload, a successful one reboots), and flash writes and erases pause every
+  task (a packet can be lost then). Nothing publishes to MQTT or prints during the upload, so a
+  slow broker or USB host cannot stall it. If OTA ever leaves the gateway unreachable, flash it over USB as above.
+* **Loop watchdog:** `loopTask` (setup/loop) is subscribed to the 5 s task watchdog (from the end
+  of `setup()`), so a hung `loop()` reboots the gateway; the reason shows as `task_wdt` at boot, in
+  the CLI `status` and as `reset_reason` in `/api/status`. What keeps it from firing wrongly
+  (each blocking path is bounded below 5 s or feeds the watchdog only while it makes progress):
+  * **Web server** (`lib/GuardedWebServer`, a trimmed copy of the Arduino-ESP32 3.3.12 WebServer; the
+    core one blocks loop() for 10+ s before any password check and is not used): request line,
+    headers and body must be complete within 3 s of the first byte, else the client is dropped
+    (408); plain bodies are at most 2 kB (413); multipart bodies are not read. Every response is
+    written in 1.4 kB pieces, the client is dropped after 3 s without progress or 10 s in total.
+  * **OTA upload** (`/api/ota`, the only route exempt from the 3 s limit): refused at once without a
+    valid login; each ~1.4 kB piece must arrive complete within 3 s, else the update is aborted and
+    the running firmware stays. A client that keeps sending can take as long as it likes (only after
+    a valid login); the watchdog is fed per piece and around the final verification.
+  * **MQTT:** the broker host name is resolved in a helper task (a DNS outage cannot stall loop());
+    the last good address is cached and used for the connect. Writes to the broker are bounded: a
+    broker that accepts no byte for 2 s is dropped and the reconnect back-off takes over. The connect,
+    the discovery publishes and the picture publish feed the watchdog while they progress.
+  * **USB serial:** a write waits at most 20 ms for a host that holds the port without reading
+    (output is lost meanwhile, the gateway is not held up); the radio queue handling feeds the
+    watchdog per item; the CLI `scan`/`connect` feed it and the CLI reads at most 256 bytes per pass.
+  * **Left as "reboot is the recovery":** a broker that sends a message byte by byte (each byte
+    within 2 s) and a `loop()` that is stuck elsewhere (a bug, a stuck flash operation).
 
 ## What it does
 
@@ -92,11 +116,14 @@ The web page has the same upload (Firmware Update card).
   picture's first chunk or 5 s of silence. Full 320x240 pictures are the base that deltas are
   spliced into; if a delta has no base the gateway asks the camera for a full picture. Grayscale
   flash pictures and 640x480 pictures are kept apart. Every picture is published on MQTT.
-* **Resend:** a full picture with missing chunks is published as it is, then the gateway asks the
-  camera (with the answer to the poll that follows the picture) for the missing chunks among the
-  32 from the first missing one (a bitmap), repeatedly, until it is complete (tested with every
-  7th chunk dropped: a 640x480 picture complete after 14 rounds in 2.2 s); the complete picture
-  is stored and published again.
+* **Resend:** a full picture with missing chunks is stored and the gateway asks the camera (with
+  the answer to the poll that follows the picture) for the missing chunks among the 32 from the
+  first missing one (a bitmap), repeatedly, until it is complete (tested with every 7th chunk
+  dropped: a 640x480 picture complete after 14 rounds in 2.2 s). A picture is published on MQTT
+  (a blocking call) only after the poll answer, never before it, so the publish does not make the
+  camera's next poll miss its answer deadline; with no poll, after 300 ms. A picture with holes is
+  held while its resend runs: the complete picture replaces it and is published after the answer
+  to the final poll (one publish); if the resend gives up, the picture with holes is published then.
 
 ## MQTT topics (base topic `verisure`)
 
@@ -139,12 +166,25 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   [hardware_gateway_esp32s2.md](../documentation/hardware_gateway_esp32s2.md)),
   `portalpass [<password>|clear]` (show, set or clear the web portal password), `reset` (erase
   all NVS settings), `reboot`. The master key is never printed, only its check value.
+  `radio` shows the radio task's counters and `radio reset` clears them. Only in the
+  evaluation env `lolin_s2_mini_eval` (`-D RADIO_EVAL=1`): `loopblock <ms>` (block loop() once, max 4 s: below the loop watchdog),
+  `wdttest` (block loop() without feeding the watchdog: the gateway must reboot with reset reason
+  `task_wdt`), `radiostall <ms>` (the radio task skips FIFO servicing once) and `polldelay <ms>` (delay the
+  camera poll answers).
+* **`/api/status` `radio_diag`** (radio task counters since boot): `frames`, `fifo_overflows`,
+  `partial_drops`, `queue_drops`, `queue_high_water` (of 256), `max_gap_us` and `gap_gt_5ms/10ms/20ms`
+  (time between FIFO reads), `tx_done`, `tx_late`, `tx_timeouts`, `tx_aborted_rx`,
+  `max_tx_latency_us`, `slow_status_reads` (status reads > 5 ms), `status_unstable`, `rx_restarts`,
+  `rx_reinits`, `stack_free` (bytes), and from loop(): `poll_answers`, `poll_late`,
+  `max_poll_answer_age_us`, `max_drain_gap_ms`. `poll_answers` counts answers queued, `tx_done`
+  those the radio finished sending.
 
 ## Source files
 
 | File | Content |
 | :--- | :--- |
-| `main.cpp` | CC1101 setup, RX loop with software CRC, poll answers |
+| `main.cpp` | Frame handling in loop() (software CRC, crypto, poll answers), drains the radio task's queue |
+| `radio_task.h/.cpp` | CC1101 owner: FreeRTOS task that polls the RX FIFO, queues frames, sends the poll answers (design at the top of the header) |
 | `crypto.cpp/h` | Key derivation, AES, packet parsing, replay filter |
 | `downlink.cpp/h` | Alarm state and queued picture commands for the cameras |
 | `image_receiver.cpp/h`, `jpeg_splice.cpp/h` | Picture reassembly and delta splicing |

@@ -18,6 +18,8 @@ struct HostMqtt {
     size_t maxLen = 0;              // longest picture published
     std::string lastDevice;
     std::vector<uint8_t> last;      // copy of the last picture published
+    bool keepAll = false;           // also keep every picture in all (a test sets it; reset clears it)
+    std::vector<std::vector<uint8_t>> all;
 };
 
 extern HostMqtt hostMqtt;
