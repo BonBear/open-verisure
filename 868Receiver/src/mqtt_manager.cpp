@@ -518,6 +518,12 @@ bool mqttPublishCameraImage(const char* deviceId, const uint8_t* jpegBuf, size_t
     const GatewayConfig& cfg = ConfigManager::get();
     String topic = String(cfg.mqttTopic) + "/" + String(deviceId) + "/image";
 
+    if (!mqttCameraImageLengthOk(topic.length(), len)) {
+        Serial.printf("[MQTT] Refusing Camera Image (%u bytes, topic %u B): exceeds PubSubClient 16-bit length limit\n",
+                      (unsigned int)len, (unsigned int)topic.length());
+        return false;
+    }
+
     // Use PubSubClient streaming publish to support images larger than MQTT_MAX_PACKET_SIZE
     bool ok = s_mqttClient.beginPublish(topic.c_str(), len, true);
     if (ok) {

@@ -33,6 +33,15 @@ void mqttLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets);
 void mqttPublishTelemetry(const VerisureTelemetry& telem);
 
 /**
+ * @brief Check that a camera JPEG payload fits PubSubClient 2.8's uint16_t remaining length.
+ * PubSubClient::buildHeader() takes uint16_t length = 2 + topicLen + payloadLen; larger
+ * payloads wrap modulo 65536 and corrupt the MQTT TCP stream.
+ */
+static inline bool mqttCameraImageLengthOk(size_t topicLen, size_t payloadLen) {
+    return payloadLen > 0 && topicLen <= 65533U && payloadLen <= 65533U - topicLen;
+}
+
+/**
  * @brief Publish a camera JPEG binary image to Home Assistant.
  * @param deviceId 8-character sensor identifier.
  * @param jpegBuf Pointer to JPEG byte array.

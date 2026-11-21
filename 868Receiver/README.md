@@ -9,12 +9,13 @@ reassembles camera pictures.
 
 | ESP32-S2 pin | CC1101 pin | Signal |
 | :---: | :---: | :--- |
-| 3V3 | VCC | 3.3 V |
-| GND | GND | Ground |
-| GPIO 3 | CSN | SPI chip select |
-| GPIO 5 | MOSI | SPI data out |
-| GPIO 7 | SCK | SPI clock |
-| GPIO 9 | MISO / GDO1 | SPI data in |
+| 3V3 | VCC | 3.3 V (shared) |
+| GND | GND | Ground (shared) |
+| GPIO 3 | CSN (#1) | SPI chip select, main CC1101 (868.950 MHz) |
+| GPIO 2 | CSN (#2) | SPI chip select, optional CC1101 #2 (869.525 MHz RX-only, picture channel) |
+| GPIO 5 | MOSI | SPI data out (shared) |
+| GPIO 7 | SCK | SPI clock (shared) |
+| GPIO 9 | MISO / GDO1 | SPI data in (shared) |
 
 > [!IMPORTANT]
 > Use these ADC1-domain pins. The default FSPI pins (GPIO 11/12) put SPI noise into the
@@ -140,7 +141,8 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
 ## Web portal and serial console
 
 * **Web portal** (port 80, captive portal on first start): status, Wi-Fi/MQTT/key settings, sensor
-  list. API: `/api/status`, `/api/replay?id=<ID>` (a sensor's last accepted counter), `/api/radio`, `/api/scan`, `/api/save`, `/api/reboot`, `/api/reset`,
+  list, plus live tiles for **Picture Radio (#2)**, **Radio #2 RSSI**, **PCH Chunks**, **Picture Token**,
+  **Band 50 Duty (1h)** and **Fallback (868.95)**. API: `/api/status`, `/api/replay?id=<ID>` (a sensor's last accepted counter), `/api/radio`, `/api/scan`, `/api/save`, `/api/reboot`, `/api/reset`,
   `/api/camera.jpg` (newest 320x240 picture, colour or flash), `/api/camera_large.jpg` (640x480; both take `?id=<camera ID>`, default the camera with the newest picture),
   `/api/camera_test?id=<ID>` (POST: publishes a small test JPEG to MQTT), `/api/picture?id=<ID>&cmd=D1`
   (POST: picture request), `/api/ota` (POST: firmware update, the image as the raw body,
@@ -155,15 +157,17 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   `X-Gateway: 1` and no foreign `Origin`, and every request needs a `Host` that names the gateway
   (its IP or `verisure-gateway[.local]`). The password crosses the network as plain HTTP: see
   [SECURITY.md](../SECURITY.md).
-* **Serial console** (USB, 115200): `help`, `status`, `testspi`, `scan`,
+* **Serial console** (USB, 115200): `help`, `status`, `testspi [1|2]`, `scan`,
   `connect <ssid> [password]` (join Wi-Fi and save it), `setkey <32 hex characters>` (master key),
   `setmqtt <host> <port> [user] [pass] [topic]`, `alarm [on|off]`,
   `drop <n>` (test: drop every n-th picture chunk to exercise the resend),
   `replay reset <ID> [block]` (forget a device's counter after it was flashed without the
   gateway; then only its boot packet of counter blocks 1..block, default 8, is taken; the waiting
   state survives a gateway restart),
-  `freqoffset [n]` (CC1101 frequency correction in 1.587 kHz steps, default 0; see
+  `freqoffset [n]` / `freqoffset2 [n]` (CC1101 #1 / #2 frequency correction in 1.587 kHz steps, default 0; see
   [hardware_gateway_esp32s2.md](../documentation/hardware_gateway_esp32s2.md)),
+  `pch [on|off|cal|status]` (enable/disable the 869.525 MHz picture channel, switch module #2 to 868.950 MHz calibration mode, or inspect PCH/token/duty status),
+  `duty` (show rolling 1 h band-50 / band-54 duty-cycle and 868.95 MHz fallback counters),
   `portalpass [<password>|clear]` (show, set or clear the web portal password), `reset` (erase
   all NVS settings), `reboot`. The master key is never printed, only its check value.
   `radio` shows the radio task's counters and `radio reset` clears them. Only in the
@@ -171,25 +175,31 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   `wdttest` (block loop() without feeding the watchdog: the gateway must reboot with reset reason
   `task_wdt`), `radiostall <ms>` (the radio task skips FIFO servicing once) and `polldelay <ms>` (delay the
   camera poll answers).
-* **`/api/status` `radio_diag`** (radio task counters since boot): `frames`, `fifo_overflows`,
-  `partial_drops`, `queue_drops`, `queue_high_water` (of 256), `max_gap_us` and `gap_gt_5ms/10ms/20ms`
-  (time between FIFO reads), `tx_done`, `tx_late`, `tx_timeouts`, `tx_aborted_rx`,
-  `max_tx_latency_us`, `slow_status_reads` (status reads > 5 ms), `status_unstable`, `rx_restarts`,
-  `rx_reinits`, `stack_free` (bytes), and from loop(): `poll_answers`, `poll_late`,
-  `max_poll_answer_age_us`, `max_drain_gap_ms`. `poll_answers` counts answers queued, `tx_done`
-  those the radio finished sending.
+* **`/api/status` diagnostics & picture-channel fields:**
+  * `radio_diag` / `radio_diag2` (radio task counters since boot for CC1101 #1 and #2): `frames`, `fifo_overflows`,
+    `partial_drops`, `queue_drops`, `queue_high_water` (of 256), `max_gap_us` and `gap_gt_5ms/10ms/20ms`
+    (time between FIFO reads), `tx_done`, `tx_late`, `tx_timeouts`, `tx_aborted_rx`,
+    `max_tx_latency_us`, `slow_status_reads` (status reads > 5 ms), `status_unstable`, `rx_restarts`,
+    `rx_reinits`, `stack_free` (bytes), and from loop(): `poll_answers`, `poll_late`,
+    `max_poll_answer_age_us`, `max_drain_gap_ms`. `poll_answers` counts answers queued, `tx_done`
+    those the radio finished sending.
+  * `pch`: picture channel state (`enabled`, `online`, `mode` `"pch"`/`"cal"`, `freq_offset2`, `rssi`, `marcstate`, `pch_chunks`, `main_chunks`, and per-camera `cameras[]` with suppression state).
+  * `token`: picture-burst serialization token (`state` `"idle"`/`"held"`/`"reserved"`, `holder`, `legacy`, `hold_ms`, `lease_rem_ms`, `queue`, plus `grants`, `holds`, `releases`, `expiries`, `legacy_claims`).
+  * `duty`: rolling 1 h duty-cycle and fallback accounting (`gw_tx_1h_ms`, `gw_tx_pct_tenths`, `gw_tx_peak_1h_ms`, `gw_tx_over_count`, `gw_tx_over_budget`, `gw_tx_packets`, `gw_tx_total_ms`, `fallback_pictures`, `fallback_chunks`, `fallback_airtime_ms`, `cam_b50_over_count`, `any_b50_over_budget`, `cur_bucket_age_ms`, and per-camera `cameras[]` band 50/54 stats).
 
 ## Source files
 
 | File | Content |
 | :--- | :--- |
 | `main.cpp` | Frame handling in loop() (software CRC, crypto, poll answers), drains the radio task's queue |
-| `radio_task.h/.cpp` | CC1101 owner: FreeRTOS task that polls the RX FIFO, queues frames, sends the poll answers (design at the top of the header) |
+| `radio_task.h/.cpp` | CC1101 owner (minimal built-in CC1101 SPI driver, no SmartRC library): FreeRTOS task that polls the RX FIFO on #1 and optional #2, queues frames, sends the poll answers (design at the top of the header) |
 | `crypto.cpp/h` | Key derivation, AES, packet parsing, replay filter |
 | `downlink.cpp/h` | Alarm state and queued picture commands for the cameras |
-| `image_receiver.cpp/h`, `jpeg_splice.cpp/h` | Picture reassembly and delta splicing |
+| `picture_token.h/.cpp` | Serializes multi-camera picture bursts (`0xBB` token request / `0xB1` release) |
+| `duty_cycle.h/.cpp` | Rolling 1 h band-50 / band-54 airtime and fallback accounting |
+| `image_receiver.cpp/h`, `jpeg_splice.cpp/h` | Per-camera picture reassembly and delta splicing |
 | `mqtt_manager.cpp/h`, `ha_discovery.cpp/h` | MQTT client, discovery, commands |
 | `web_portal.cpp/h`, `serial_cli.cpp/h` | Web portal and serial console |
 | `config_manager.cpp/h`, `sensor_registry.cpp/h` | NVS settings, device cache |
 | `ota_update.cpp/h`, `ota_image.h` | Firmware update over Wi-Fi, image check, rollback |
-| `hardware_pins.h` | CC1101 SPI pins |
+| `hardware_pins.h` | CC1101 SPI pins (`CC1101_PIN_CS` + optional `CC1101_PIN_CS2`) |

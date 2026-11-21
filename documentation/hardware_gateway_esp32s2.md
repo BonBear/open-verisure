@@ -10,10 +10,11 @@ This document describes the complete hardware connection between the **WEMOS LOL
 | :---: | :---: | :---: | :---: | :--- |
 | **VCC** | **3V3** | 3.3V Rail | Power Supply | Regulated 3.3V power from the ESP32-S2 LDO |
 | **GND** | **GND** | Ground | System Ground | Common reference ground |
-| **CSN (SS)** | **GPIO 3** | `GPIO 3` (ADC1_CH2) | Output | Chip Select (active low) |
-| **SCK** | **GPIO 7** | `GPIO 7` (ADC1_CH6) | Output | SPI Clock |
-| **MOSI** | **GPIO 5** | `GPIO 5` (ADC1_CH4) | Output | SPI Master Out Slave In |
-| **MISO (GDO1)**| **GPIO 9** | `GPIO 9` (ADC1_CH8) | Input | SPI Master In Slave Out |
+| **CSN (SS) #1** | **GPIO 3** | `GPIO 3` (ADC1_CH2) | Output | Main CC1101 Chip Select (active low, 868.950 MHz) |
+| **CSN (SS) #2** *(opt.)* | **GPIO 2** | `GPIO 2` (ADC1_CH1) | Output | Optional 2nd CC1101 Chip Select (active low, 869.525 MHz RX-only) |
+| **SCK** | **GPIO 7** | `GPIO 7` (ADC1_CH6) | Output | SPI Clock (shared) |
+| **MOSI** | **GPIO 5** | `GPIO 5` (ADC1_CH4) | Output | SPI Master Out Slave In (shared) |
+| **MISO (GDO1)**| **GPIO 9** | `GPIO 9` (ADC1_CH8) | Input | SPI Master In Slave Out (shared) |
 | **GDO0** | *(Unused)* | – | – | Optional hardware interrupt (polled via SPI) |
 | **GDO2** | *(Unused)* | – | – | Optional interrupt (polled via SPI status) |
 
@@ -97,6 +98,20 @@ By moving the entire SPI bus to **GPIO 3, 5, 7, and 9** (all within the ADC1 dom
 
 ---
 
+## 📷 Optional Second CC1101 (Picture Channel, 869.525 MHz)
+
+Adding a second CC1101 module dedicates a receive-only channel at **869.525 MHz** (EU SRD band 54, 10 % duty cycle) for camera JPEG chunks (`0x82`/`0x83`), keeping the main 868.950 MHz channel free for sensor telemetry, polls and downlinks. Without a second module (or when `pch off` is set), cameras fall back to 868.950 MHz automatically.
+
+* **Shared SPI bus + CS2:** Module #2 shares `3V3`, `GND`, `SCK` (`GPIO 7`), `MOSI` (`GPIO 5`) and `MISO` (`GPIO 9`) with module #1. Its chip select uses **`CS2 = GPIO 2`** (`ADC1_CH1`, non-strapping pin, inner pin of row `2/3` on the LOLIN S2 Mini).
+* **Wiring & decoupling:**
+  * Add an optional **10 kOhm pull-up** from `CSN` to `3V3` so a module stays deselected before GPIO initialization (or if one module is unplugged).
+  * If jumper wires are longer than **10 cm**, place **10 uF + 100 nF decoupling capacitors** across `VCC`/`GND` directly at each CC1101 module.
+  * Keep the two CC1101 antennas **at least 15–20 cm apart** (and away from the ESP32-S2 and USB cable) to avoid detuning or near-field overload.
+* **Verification (`testspi 1|2`):** Run `testspi 1` and `testspi 2` on the serial console to verify SPI wiring and chip detection on each module independently.
+* **Calibration (`pch cal` / `freqoffset2`):** Module #2 is receive-only (869.525 MHz). To calibrate its 26 MHz crystal offset against your sensors, run `pch cal` (switches module #2 temporarily to 868.950 MHz so both modules hear the same packets), wait for a few sensor/camera packets, and run `pch status` to see matched pairs and the suggested `freqoffset2` value. Apply it with `freqoffset2 <n>` and return to picture-channel mode with `pch on` (or `pch off`).
+
+---
+
 ## 🛠️ Source Code Pin Definitions ([`hardware_pins.h`](../868Receiver/src/hardware_pins.h))
 
 ```cpp
@@ -106,7 +121,8 @@ By moving the entire SPI bus to **GPIO 3, 5, 7, and 9** (all within the ADC1 dom
 #define CC1101_PIN_SCK   7  // GPIO 7 (ADC1_CH6)
 #define CC1101_PIN_MISO  9  // GPIO 9 (ADC1_CH8)
 #define CC1101_PIN_MOSI  5  // GPIO 5 (ADC1_CH4)
-#define CC1101_PIN_CS    3  // GPIO 3 (ADC1_CH2)
+#define CC1101_PIN_CS    3  // GPIO 3 (ADC1_CH2, main CC1101)
+#define CC1101_PIN_CS2   2  // GPIO 2 (ADC1_CH1, optional 2nd CC1101, non-strapping)
 ```
 
 ---
