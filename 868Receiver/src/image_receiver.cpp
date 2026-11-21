@@ -9,6 +9,7 @@
 #include <esp_heap_caps.h>
 #include "jpeg_splice.h"
 #include "downlink.h"
+#include "picture_token.h"
 
 /* --------------------------- JPEG chunks (type 0x82) ---------------------------
  * Chunk n carries bytes 40n .. 40n+len-1 of the JPEG (40-byte chunks in 56-byte packets), the
@@ -352,8 +353,10 @@ static bool rsHave(const CamPic* c, uint16_t i) { return (c->rsHave[i >> 3] >> (
 // it does not go out later, ahead of a queued command, and ask for chunks of a picture the
 // gateway no longer completes.
 static void rsCancel(CamPic* c) {
-    if (c->rsActive) downlinkCancelResend(c->deviceId);
+    bool wasActive = c->rsActive;
+    if (wasActive) downlinkCancelResend(c->deviceId);
     c->rsActive = false;
+    if (wasActive) pictureTokenOnPictureDone(c->deviceId, false, (uint32_t)millis());
 }
 
 // Ask for the missing chunks among the 32 from the first missing one (a bitmap, so chunks the
@@ -416,6 +419,7 @@ void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t
     CamPic* c = findCam(deviceId);
     if (!c || !c->rsActive) return;
     noteChunkChannel(c, channel);
+    pictureTokenOnChunk(deviceId, true, (uint32_t)millis());
     size_t off = (size_t)chunkIdx * JPEG_CHUNK;
     if (off + chunkLen > MAX_IMAGE_SIZE) return;
     memcpy(c->imgBuf + off, data, chunkLen);
@@ -438,7 +442,14 @@ void imageReceiverProcessResend(const char* deviceId, uint16_t chunkIdx, uint8_t
 // MQTT (queuePublish: published after the camera's poll answer, see CamPic).
 // endSeen false: the last chunk never came (the blob ended by a pause or the next blob), so
 // the missing count cannot include the lost end; a JPEG gets its EOI back so it decodes.
+static void jpegFinishBody(CamPic* c, size_t len, bool endSeen);
+
 static void jpegFinish(CamPic* c, size_t len, bool endSeen) {
+    jpegFinishBody(c, len, endSeen);
+    pictureTokenOnPictureDone(c->deviceId, c->rsActive, (uint32_t)millis());
+}
+
+static void jpegFinishBody(CamPic* c, size_t len, bool endSeen) {
     finalizePchExpect(c);
     if (len < 4 || !c->imgBuf || !c->jpg || !s_tmp) {
         jpegReset(c);
@@ -621,6 +632,7 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
         s_noResend = false;
     }
     noteChunkChannel(c, channel);
+    pictureTokenOnChunk(deviceId, false, (uint32_t)now);
     c->lastChunkTime = now;
 
     size_t off = (size_t)chunkIdx * JPEG_CHUNK;

@@ -39,6 +39,7 @@
 #include "mqtt_manager.h"
 #include "image_receiver.h"
 #include "downlink.h"
+#include "picture_token.h"
 #include "ha_discovery.h"
 #include "gateway_diag.h"
 #include "radio_task.h"
@@ -46,6 +47,9 @@
 #include <math.h>
 
 #include "hardware_pins.h"
+
+static_assert(PIC_TOKEN_MAX_CAMERAS == DOWNLINK_MAX_CAMERAS,
+              "picture token and downlink slots are per camera: keep equal");
 
 /** @brief CRC-16 as the CC1101 computes it (poly 0x8005, init 0xFFFF, no whitening). */
 static uint16_t ccCrc16(const uint8_t* d, size_t n) {
@@ -171,7 +175,10 @@ static void answerCameraPollNow(const VerisureTelemetry& t, uint32_t frameStartU
     uint8_t cmd = downlinkCommandForPoll(t.deviceId, state, &first, &map);
     const bool advPch = (cmd != DOWNLINK_CMD_RESEND) && ConfigManager::get().pchEnabled &&
                         g_radioStatus2.online && !radioIsCalMode() && !imageReceiverPchSuppressed(t.deviceId);
-    downlinkBuildPlain(t.counter, armed, cmd, first, map, plain, advPch ? DL_FLAG_PCH : 0, DL_PCH_CH_869525);
+    const uint8_t flags = (cmd != DOWNLINK_CMD_RESEND)
+                        ? (uint8_t)(DL_FLAG_TOKEN | (advPch ? DL_FLAG_PCH : 0))
+                        : 0;
+    downlinkBuildPlain(t.counter, armed, cmd, first, map, plain, flags, DL_PCH_CH_869525);
     memcpy(pkt, t.deviceId, 8);
     bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
     memset(key, 0, sizeof(key));
@@ -188,6 +195,7 @@ static void answerCameraPollNow(const VerisureTelemetry& t, uint32_t frameStartU
         return;
     }
     if (cmd != DOWNLINK_CMD_RESEND) imageReceiverNotePollAnswer(t.deviceId, advPch);
+    pictureTokenOnPollAnswered(t.deviceId, cmd == DOWNLINK_CMD_RESEND, (uint32_t)millis());
     g_radioLoopDiag.pollAnswers++;
     Serial.printf("[Downlink] -> %s: armed %d, cmd 0x%02X (poll %lu, camera state 0x%02X)",
                   t.deviceId, armed ? 1 : 0, cmd, (unsigned long)t.counter, state);
@@ -210,6 +218,69 @@ static void answerCameraPollNow(const VerisureTelemetry& t, uint32_t frameStartU
  */
 static void answerCameraPoll(const VerisureTelemetry& t, uint32_t frameStartUs) {
     answerCameraPollNow(t, frameStartUs);
+    imageReceiverAfterPollAnswer(t.deviceId);
+}
+
+/**
+ * @brief Answer a camera 0xBB picture token request immediately within its RX window.
+ *        Does not touch downlink commands or resend state (always cmd = 0).
+ */
+static void answerCameraTokenReqNow(const VerisureTelemetry& t, uint32_t frameStartUs) {
+    uint8_t key[16], plain[16], pkt[VERISURE_PACKET_LEN];
+    if (!t.hasCounter) {
+        Serial.printf("[Token] %s token request without persistent counter: not answered\n", t.deviceId);
+        return;
+    }
+    const uint32_t ageUs = radioNowUs() - frameStartUs;
+    if (ageUs > POLL_ANSWER_MAX_AGE_MS * 1000UL) {
+        g_radioLoopDiag.pollLate++;
+        Serial.printf("[Token] %s: 0xBB answer skipped, frame is %lu ms old (limit %u ms)\n",
+                      t.deviceId, (unsigned long)(ageUs / 1000), (unsigned)POLL_ANSWER_MAX_AGE_MS);
+        return;
+    }
+    if (!cryptoDeriveDeviceKey(ConfigManager::get().masterKey, t.deviceId, key)) return;
+
+    const uint32_t nowMs = (uint32_t)millis();
+    PicTokenStatus before;
+    pictureTokenGetStatus(nowMs, &before);
+    const bool wasActiveHolder = (before.state == PIC_TOK_HELD &&
+                                  strncmp(before.holderId, t.deviceId, 8) == 0);
+    const bool granted = pictureTokenRequest(t.deviceId, nowMs);
+    const bool advPch = ConfigManager::get().pchEnabled && g_radioStatus2.online &&
+                        !radioIsCalMode() && !imageReceiverPchSuppressed(t.deviceId);
+    const uint8_t flags = (uint8_t)(DL_FLAG_TOKEN |
+                                    (advPch ? DL_FLAG_PCH : 0) |
+                                    (granted ? DL_FLAG_GRANT : DL_FLAG_HOLD));
+    const bool armed = downlinkArmed();
+    downlinkBuildPlain(t.counter, armed, 0, 0, 0, plain, flags, DL_PCH_CH_869525);
+    memcpy(pkt, t.deviceId, 8);
+    bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
+    memset(key, 0, sizeof(key));
+    if (!ok) {
+        if (granted && !wasActiveHolder) pictureTokenRelease(t.deviceId, nowMs);
+        return;
+    }
+    {
+        const uint32_t sendAgeUs = radioNowUs() - frameStartUs;
+        if (sendAgeUs > g_radioLoopDiag.maxPollAnswerAgeUs) g_radioLoopDiag.maxPollAnswerAgeUs = sendAgeUs;
+    }
+#ifdef RADIO_EVAL
+    if (g_radioEvalPollDelayMs) delay(g_radioEvalPollDelayMs);
+#endif
+    if (!radioRequestTx(pkt, frameStartUs)) {
+        Serial.printf("[Token] %s: 0xBB answer not queued (radio command queue full)\n", t.deviceId);
+        if (granted && !wasActiveHolder) pictureTokenRelease(t.deviceId, nowMs);
+        return;
+    }
+    imageReceiverNotePollAnswer(t.deviceId, advPch);
+    g_radioLoopDiag.pollAnswers++;
+    Serial.printf("[Token] -> %s: %s (cmd 0x%02X, ctr %lu)%s\n",
+                  t.deviceId, granted ? "GRANT" : "HOLD", t.rawP1, (unsigned long)t.counter,
+                  advPch ? ", pch" : "");
+}
+
+static void answerCameraTokenReq(const VerisureTelemetry& t, uint32_t frameStartUs) {
+    answerCameraTokenReqNow(t, frameStartUs);
     imageReceiverAfterPollAnswer(t.deviceId);
 }
 
@@ -300,13 +371,25 @@ static void handleRadioFrame(const RadioFrame& item) {
         VerisureTelemetry telem;
         if (cryptoProcessPacket(frame, packetRssi, rawLqi & 0x7F, activeMasterKey, &telem)) {
             if (haIsMotionCameraSensor(telem.deviceId)) {
+                const uint32_t tokNow = (uint32_t)now;
                 if (telem.rawP0 == DOWNLINK_POLL_MARKER) {
                     answerCameraPoll(telem, item.startUs);
                     // a poll always counts, also 0 = unknown (the camera restarted)
                     telem.batteryLoadMv = downlinkLoadMv(telem.rawP1);
                 } else {
-                    if (telem.rawP0 == 0xB2)
+                    if (telem.rawP0 == PIC_TOKEN_REQ_MARKER) {
+                        answerCameraTokenReq(telem, item.startUs);
+                    } else if (telem.rawP0 == PIC_TOKEN_REL_MARKER) {
+                        if (pictureTokenRelease(telem.deviceId, tokNow)) {
+                            printTimestamp(now);
+                            Serial.printf("[Token] Released by %s (reason 0x%02X)\n", telem.deviceId, telem.rawP1);
+                        }
+                    } else if (telem.rawP0 == 0xB2) {
+                        pictureTokenOnPicStart(telem.deviceId, tokNow);
                         imageReceiverNotePicStart(telem.deviceId);
+                    } else if (telem.rawP0 == 0x00 || telem.rawP0 == 0xB8 || telem.rawP0 == 0xB3) {
+                        pictureTokenRelease(telem.deviceId, tokNow);
+                    }
                     // other packets keep the last value the camera reported
                     const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
                     if (prev) telem.batteryLoadMv = prev->lastTelem.batteryLoadMv;
@@ -382,6 +465,7 @@ void setup() {
     // 1. Initialize WebPortal, NVS Config, Serial CLI & MQTT
     webPortalInit();
     downlinkInit();
+    pictureTokenInit();
     imageReceiverInit();   // prints the PSRAM size; the picture buffers follow with each camera's first picture
     serialCliInit();
     mqttInit();
@@ -472,6 +556,13 @@ void loop() {
     // which must not happen while chunks are still queued
     radioDrainQueue(0);
     imageReceiverLoop();
+    {
+        char expId[9];
+        if (pictureTokenTick((uint32_t)millis(), expId, sizeof(expId))) {
+            printTimestamp(millis());
+            Serial.printf("[Token] Lease expired for %s\n", expId);
+        }
+    }
     cryptoReplayFlush();
 
     // 2. Wait for the next frame (replaces the old delay(2))

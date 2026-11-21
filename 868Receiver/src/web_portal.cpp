@@ -6,6 +6,7 @@
 #include "mqtt_manager.h"
 #include "crypto.h"
 #include "downlink.h"
+#include "picture_token.h"
 #include "ha_discovery.h"
 #include "portal_util.h"     // hostOnly, jsonGetString, jsonGetInt
 #include "ota_update.h"
@@ -125,6 +126,22 @@ button.danger:hover { background: #b91c1c; }
       <div class="stat-box">
         <div class="stat-label">Active Sensors</div>
         <div id="sensor-count" class="stat-val">0</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Picture Radio (#2)</div>
+        <div id="pch-radio" class="stat-val">--</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Radio #2 RSSI (Noise Floor)</div>
+        <div id="pch-rssi" class="stat-val">--</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">PCH Chunks</div>
+        <div id="pch-chunks" class="stat-val">0</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Picture Token</div>
+        <div id="pic-token" class="stat-val">Idle</div>
       </div>
     </div>
 
@@ -377,6 +394,20 @@ async function fetchStatus() {
     document.getElementById('radio-rssi').innerText = data.radio.rssi + ' dBm';
     document.getElementById('radio-packets').innerText = data.radio.total_packets;
     document.getElementById('sensor-count').innerText = data.sensors.length;
+    if (data.pch) {
+      const p = data.pch;
+      document.getElementById('pch-radio').textContent = !p.online ? 'Offline'
+        : (p.mode === 'cal' ? 'CAL 868.95 MHz' : ('869.525 MHz (' + (p.enabled ? 'ON' : 'OFF') + ')'));
+      document.getElementById('pch-rssi').textContent = p.online ? (p.rssi + ' dBm') : '--';
+      document.getElementById('pch-chunks').textContent = p.main_chunks > 0
+        ? (p.pch_chunks + ' (+' + p.main_chunks + ' main)') : String(p.pch_chunks);
+    }
+    if (data.token) {
+      const tk = data.token;
+      const st = tk.state === 'held' ? 'Held' : (tk.state === 'reserved' ? 'Reserved' : 'Idle');
+      document.getElementById('pic-token').textContent = (tk.state !== 'idle' && tk.holder)
+        ? (st + ' (' + tk.holder + ')') : st;
+    }
     if (data.firmware)
       document.getElementById('fw-info').textContent = 'Running: slot ' + data.firmware.partition + ' (' +
         data.firmware.state + '), MD5 ' + data.firmware.md5;
@@ -799,6 +830,28 @@ static void handleApiStatus() {
         json += "\"suppress_rem_sec\":" + String(pchCams[i].suppressRemSec) + "}";
     }
     json += "]},";
+
+    PicTokenStatus tok;
+    pictureTokenGetStatus((uint32_t)now, &tok);
+    const char* tokState = (tok.state == PIC_TOK_HELD) ? "held"
+                         : (tok.state == PIC_TOK_RESERVED) ? "reserved" : "idle";
+    json += "\"token\":{";
+    json += "\"state\":\"" + String(tokState) + "\",";
+    json += "\"holder\":\"" + jsonEscape(tok.holderId) + "\",";
+    json += "\"legacy\":" + String(tok.holderLegacy ? "true" : "false") + ",";
+    json += "\"hold_ms\":" + String(tok.holdMs) + ",";
+    json += "\"lease_rem_ms\":" + String(tok.leaseRemMs) + ",";
+    json += "\"queue\":[";
+    for (uint8_t i = 0; i < tok.waitCount; i++) {
+        if (i > 0) json += ",";
+        json += "\"" + jsonEscape(tok.waitIds[i]) + "\"";
+    }
+    json += "],";
+    json += "\"grants\":" + String(tok.grants) + ",";
+    json += "\"holds\":" + String(tok.holds) + ",";
+    json += "\"releases\":" + String(tok.releases) + ",";
+    json += "\"expiries\":" + String(tok.expiries) + ",";
+    json += "\"legacy_claims\":" + String(tok.legacyClaims) + "},";
 
     json += "\"diag\":{";       // counters since boot (gateway_diag.h)
     gatewayDiagAppendJson(json, gatewayDiagSample());

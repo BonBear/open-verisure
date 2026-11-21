@@ -188,20 +188,20 @@ TEST(downlink_build_plain_pch_flags_and_resend) {
     CHECK_EQ(plain[9], DL_PCH_CH_869525);
     for (int i = 10; i <= 13; i++) CHECK_EQ(plain[i], 0);
 
-    // Non-resend with DL_FLAG_PCH + non-zero channel
-    downlinkBuildPlain(1, true, 0, 0, 0, plain, DL_FLAG_PCH | DL_FLAG_GRANT, 2);
-    CHECK_EQ(plain[8], DL_FLAG_PCH | DL_FLAG_GRANT);
+    // Non-resend with DL_FLAG_TOKEN | DL_FLAG_PCH + non-zero channel
+    downlinkBuildPlain(1, true, 0, 0, 0, plain, DL_FLAG_TOKEN | DL_FLAG_PCH | DL_FLAG_GRANT, 2);
+    CHECK_EQ(plain[8], DL_FLAG_TOKEN | DL_FLAG_PCH | DL_FLAG_GRANT);
     CHECK_EQ(plain[9], 2);
     for (int i = 10; i <= 13; i++) CHECK_EQ(plain[i], 0);
 
     // Non-resend without DL_FLAG_PCH: channel byte [9] stays 0 even if channel arg != 0
-    downlinkBuildPlain(1, true, 0, 0, 0, plain, DL_FLAG_HOLD, 3);
-    CHECK_EQ(plain[8], DL_FLAG_HOLD);
+    downlinkBuildPlain(1, true, 0, 0, 0, plain, DL_FLAG_TOKEN | DL_FLAG_HOLD, 3);
+    CHECK_EQ(plain[8], DL_FLAG_TOKEN | DL_FLAG_HOLD);
     CHECK_EQ(plain[9], 0);
 
     // Resend (0xF0): [8..9] = first (BE), [10..13] = map (LE), flags/channel must NOT overwrite them
     downlinkBuildPlain(0xAABBCCDDUL, true, DOWNLINK_CMD_RESEND, 0x1234, 0xA5B6C7D8UL, plain,
-                       DL_FLAG_PCH | DL_FLAG_GRANT, 5);
+                       DL_FLAG_TOKEN | DL_FLAG_PCH | DL_FLAG_GRANT, 5);
     CHECK_EQ(plain[7], DOWNLINK_CMD_RESEND);
     CHECK_EQ(plain[8], 0x12);
     CHECK_EQ(plain[9], 0x34);

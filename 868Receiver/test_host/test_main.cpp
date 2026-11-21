@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include "gateway_diag.h"
+#include "picture_token.h"
 #include <string>
 #include <vector>
 
@@ -66,6 +67,7 @@ void testResetWorld() {
     hostSetMillis(100000);
     cryptoHostTestRestart();
     gatewayDiagClear();
+    pictureTokenInit();
 }
 
 int main(int argc, char** argv) {
