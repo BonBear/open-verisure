@@ -26,9 +26,9 @@ Checks:
      against the colour picture (the gateway keeps it as the base)
   8. picture/set D5 / D6 -> a picture (colour delta / 640x480 with light, grayscale flash
      picture in the dark; both are accepted, the log says which)
-  9. (--gateway-restart) after "reboot" a delta without base makes the gateway ask for 0xD1,
-     and a full picture arrives (needs BF_KEEP_ON_S longer than the reboot plus a poll,
-     else the camera sends a full picture right away)
+  9. (--gateway-restart) queues HOLD (cmd 0xE8) after a D3 so the Blackfin keeps its SDRAM
+     reference alive (BF_HOLD_S, 10 min) across "reboot"; a D3 after the restart then lacks a
+     gateway base, making the gateway ask for 0xD1 and receive a full picture
 Exit code 0 when every check passed.
 """
 import argparse
@@ -277,21 +277,38 @@ def main() -> int:
         r = log.wait(poll_rx + ": " + want, 240, m)
         check(f"alarm {state}", r is not None, f"delivered after {r[0] - t0:.0f} s" if r else "not delivered in 240 s")
 
-    # 6. base picture after a gateway restart (Blackfin still holds the reference)
+    # 6. base picture after a gateway restart (HOLD keeps the Blackfin reference alive)
     if args.gateway_restart:
         m = log.mark()
         publish(f"{dev}/picture/set", "D3")      # make sure the camera has a fresh reference
-        log.wait(picture_rx, 120, m)
-        log.send("reboot")
-        time.sleep(3)
-        log.wait(r"MQTT.*[Cc]onnected", 40, log.mark())
-        m = log.mark()
-        publish(f"{dev}/picture/set", "D3")
-        q = log.wait(r"No base for this delta: full picture 0xD1 for " + dev + " queued", 120, m)
-        j = log.wait(r"\[ImageReceiver\] JPEG from " + dev, 180, q[2] + 1) if q else None
-        check("base after gateway restart", j is not None,
-              ("0xD1 queued, full picture " + j[1].split("] ", 1)[1]) if j else
-              ("0xD1 queued but no full picture" if q else "no base request (was the delta a full picture?)"))
+        d = log.wait(poll_rx + r".*cmd 0xD3", DELIVER_WAIT_S, m)
+        r = log.wait(picture_rx, 120, d[2] + 1) if d else None
+        h = None
+        c = None
+        if r:
+            publish(f"{dev}/picture/set", "HOLD")    # keep Blackfin on (BF_HOLD_S = 10 min) across reboot
+            h = log.wait(poll_rx + r".*cmd 0xE8", 110, r[2] + 1)
+        if h:
+            log.send("reboot")
+            time.sleep(3)
+            c = log.wait(r"\[MQTT\] Connected to broker", 40, log.mark())
+        if c:
+            m = log.mark()
+            publish(f"{dev}/picture/set", "D3")
+            q = log.wait(r"No base for this delta: full picture 0xD1 for " + dev + " queued", 120, m)
+            j = log.wait(r"\[ImageReceiver\] JPEG from " + dev, 180, q[2] + 1) if q else None
+            check("base after gateway restart", j is not None,
+                  ("0xD1 queued, full picture " + j[1].split("] ", 1)[1]) if j else
+                  ("0xD1 queued but no full picture" if q else
+                   "no base request (was the delta a full picture?)"))
+        elif not d:
+            check("base after gateway restart", False, f"pre-reboot D3 not delivered in {DELIVER_WAIT_S} s")
+        elif not r:
+            check("base after gateway restart", False, "pre-reboot D3 picture not received in 120 s")
+        elif not h:
+            check("base after gateway restart", False, "HOLD 0xE8 not delivered in 110 s before reboot")
+        else:
+            check("base after gateway restart", False, "gateway did not reconnect to MQTT after reboot")
 
     log.stop = True
     client.loop_stop()

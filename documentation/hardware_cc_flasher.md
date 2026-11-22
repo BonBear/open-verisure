@@ -1,6 +1,6 @@
 # CC-Flasher & Programming: ESP32 to the Verisure CC1110 Debug Headers
 
-This document details the wiring, pinout, and flashing routine for programming the **Texas Instruments CC1110F32** microcontroller on the Verisure door sensor (header **J2**) and the GW MD CAM2 motion camera (header **J6**) using an **ESP32 running [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher)** (Aaron Christophel's open-source CC-Debugger implementation).
+This document details the wiring, pinout, and flashing routine for programming the **Texas Instruments CC1110F32** microcontroller on the Verisure door sensor (header **J2**) and the GW MD CAM2 motion camera (header **J6**) using an **ESP32 running [BonBear/ESP_CC_Flasher](https://github.com/BonBear/ESP_CC_Flasher)** (a fork of Aaron Christophel's [atc1441/ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher) adding USB serial commands `serial_cmd.cpp`, the ESP32-C3 Super Mini environment, per-env `CC_MDNS_NAME`, and git-ignored `src/secrets.h`).
 
 ---
 

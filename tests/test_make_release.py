@@ -36,6 +36,7 @@ def test_all_under_prefix(package):
 @pytest.mark.parametrize("path", [
     "README.md", "LICENSE", "requirements.txt", "derive_key.py", "cc1110_tools.py",
     "868Receiver/platformio.ini", "868Receiver/src/secrets.h.example",
+    "868Receiver/lib/GuardedWebServer/src/GuardedWebServer.h",
     "VerisureDoorSensor/main.c", "VerisureDoorSensor/config.h.example",
     "VerisureDoorSensor/build_and_flash.py", "MD_CAM/build_and_flash_md_cam.py",
     "MD_CAM/firmware/config.h.example",
@@ -45,7 +46,10 @@ def test_expected_files(package, path):
     assert f"{name}/{path}" in names
 
 
-@pytest.mark.parametrize("d", ["cc1110_common/", "documentation/", "868Receiver/src/", "MD_CAM/blackfin/"])
+@pytest.mark.parametrize("d", [
+    "cc1110_common/", "documentation/", "868Receiver/src/", "868Receiver/lib/GuardedWebServer/",
+    "MD_CAM/blackfin/",
+])
 def test_expected_dirs(package, d):
     _, name, names = package
     assert any(n.startswith(f"{name}/{d}") for n in names)
