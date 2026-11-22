@@ -143,6 +143,32 @@ jobs:
         # only public test keys, every secrets.h/config.h is written to a temporary directory
         run: python -m pytest tests -q
 
+  python-lint:
+    name: Python lint (ruff fatal errors)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install "ruff>=0.6"
+      - name: Check Python syntax and undefined names
+        # Fatal/bug rules only (E9 syntax, F63 invalid ops, F7 syntax in comments/types, F82 undefined names)
+        run: ruff check --select E9,F63,F7,F82 .
+
+  release-package:
+    name: Release package check (zip & links)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Build release zip and verify links
+        # Fast check without --check firmware rebuilds (those already run in the gateway/cc1110 jobs)
+        run: python release/make_release.py --out "$RUNNER_TEMP/release"
+
   key:
     name: Key derivation (derive_key.py)
     runs-on: ubuntu-24.04

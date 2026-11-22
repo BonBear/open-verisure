@@ -56,7 +56,10 @@ flowchart TD
 - Edge cases are tested (e.g. rolling sequence counter, packet overflow, interrupted serial communication).
 
 ### Phase 4: Security Review (Security Reviewer)
-- The reviewer runs with the `pro` model for deep reasoning capability.
+- **Risk-tiered review (token efficiency):**
+  - **Sensitive changes** (RF protocol, crypto/KDF/replay filter, ISRs/DMA, flash/counter log, firmware memory safety, credentials/auth, CI/security gates): run `code_reviewer` on `pro` (High Thinking).
+  - **Low-risk changes** (helper/bench scripts, non-security refactors, build tooling): run `code_reviewer` on `flash` (1 quick pass).
+  - **Pure docs, comments, or test-only additions**: no separate `code_reviewer` subagent is required; CI gates + Orchestrator inspection suffice.
 - Checks:
   - No hardcoded master keys or sensitive secrets in the repo.
   - Correct handling of the AES-128 KDF and protection against replay attacks.
@@ -78,10 +81,12 @@ To save tokens and prevent mistakes, the following strict rules apply:
 1. **No secrets in Git:** Master encryption keys, unique device keys or personal Wi-Fi/MQTT credentials must never be hardcoded or checked in outside of local `.env` files or interactive configurators.
 2. **Read-only for reviewers:** The subagents `hardware_analyst` and `code_reviewer` do not have tool permissions to modify files. This guarantees an objective review without unintended side effects.
 3. **Resource efficiency:**
-   - Simple code changes and test runs are run on `flash` for minimal latency and token consumption.
-   - `pro` (High Thinking) is reserved for Architecture/Hardware analysis and the final Security Review.
+   - Simple code changes and targeted test runs use `flash` for minimal latency and token consumption.
+   - `pro` (High Thinking) is reserved for Architecture/Hardware analysis and Security Review of sensitive changes (Phase 4).
+   - **Reuse subagents across rounds:** on Round 2/3, continue the existing `embedded_coder`, `qa_tester`, or `code_reviewer` via messaging (`send_message`) instead of spawning a cold subagent, so loaded files and prompt cache stay warm.
+   - **Offload full verification to CI:** locally run only the fast, targeted check for the changed component (e.g. the affected `pytest` file or single `sdcc`/`pio` build) and let GitHub Actions run the full matrix (all firmwares, host ASan tests, `ruff`, `cppcheck`, `gitleaks`, `CodeQL`, release package check) for free.
 4. **English in the repository:** Everything committed to the repository (documentation, TODO, code comments, memory bank entries, file names) is written in English.
-5. **Deterministic gates before LLM review:** CI runs these gates on every push and pull request: SDCC warning-free builds, the key guard (`check_secrets.py`), gitleaks, cppcheck and CodeQL. `qa_tester` runs cppcheck locally before review when it is installed. The reviewer does not repeat what these check, but ALWAYS reviews changes that weaken them (new `cppcheck-suppress` or `gitleaks:allow` markers, allowlist entries in `.gitleaks.toml` or `check_secrets.py`, edits to the workflows or their scripts) and still checks credentials (Wi-Fi, MQTT and portal passwords are only partly covered by the gates) and 16-bit integer arithmetic in CC1110 code. A CI failure on the PR goes back to the Coder and counts as a round.
+5. **Deterministic gates before LLM review:** CI runs these gates on every push and pull request: SDCC warning-free builds, Python lint (`ruff` fatal errors), release packaging check, the key guard (`check_secrets.py`), gitleaks, cppcheck and CodeQL. `qa_tester` runs cppcheck locally before review when it is installed. The reviewer does not repeat what these check, but ALWAYS reviews changes that weaken them (new `cppcheck-suppress` or `gitleaks:allow` markers, allowlist entries in `.gitleaks.toml` or `check_secrets.py`, edits to the workflows or their scripts) and still checks credentials (Wi-Fi, MQTT and portal passwords are only partly covered by the gates) and 16-bit integer arithmetic in CC1110 code. A CI failure on the PR goes back to the Coder and counts as a round.
 
 ---
 
