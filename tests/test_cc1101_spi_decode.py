@@ -153,8 +153,29 @@ def test_fifo_and_status_write(tmp_path, capsys):
     run(tmp_path, "7F 05 AA BB\nFF 00 00\nF0\n70 01\n")
     cap = capsys.readouterr()
     assert "WRITE TX FIFO burst: 3 byte(s) = 05 AA BB" in cap.out
-    assert "READ  RX FIFO burst" in cap.out
+    assert "READ  RX FIFO burst: byte count unknown (no MISO)" in cap.out
+    assert "0 byte(s)" not in cap.out
     assert "INVALID write to status register PARTNUM" in cap.out
+
+
+def test_rx_fifo_miso_known_vs_unknown(tmp_path, capsys):
+    # Saleae without MISO column -> unknown byte count, not "0 byte(s)"
+    no_miso = ("name,type,start_time,duration,mosi\n"
+               '"SPI",enable,0.0,0.1,\n"SPI",result,0.1,0.1,0xFF\n'
+               '"SPI",result,0.2,0.1,0x00\n"SPI",result,0.3,0.1,0x00\n'
+               '"SPI",disable,0.4,0.1,\n')
+    assert run(tmp_path, no_miso) == 0
+    out = capsys.readouterr().out
+    assert "READ  RX FIFO burst: byte count unknown (no MISO)" in out
+    assert "0 byte(s)" not in out
+
+    # Saleae with MISO values -> exact count and bytes
+    with_miso = ('name,type,start_time,duration,"mosi","miso"\n'
+                 '"SPI",enable,0.0,0.1,,\n"SPI",result,0.1,0.1,0xFF,0x0F\n'
+                 '"SPI",result,0.2,0.1,0x00,0xAA\n"SPI",result,0.3,0.1,0x00,0xBB\n'
+                 '"SPI",disable,0.4,0.1,,\n')
+    assert run(tmp_path, with_miso) == 0
+    assert "READ  RX FIFO burst: 2 byte(s) = AA BB" in capsys.readouterr().out
 
 
 def test_wor_timeout(tmp_path, capsys):

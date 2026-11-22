@@ -14,11 +14,13 @@ still has EXIF.
 Output goes to --out (default: next to the input, file name suffixed `_clean`; the originals
 stay, with their GPS data, so delete them yourself). An input is never overwritten unless
 --in-place is given; with --in-place and --rename the original is removed after the renamed
-copy was written. An output that equals any input, or one already written in the same run
-(same name from two folders), is refused. Inputs already named `*_clean` are skipped in the
-default mode. --rename takes old=new pairs (repeatable) or
-the path of a mapping file with one `old new` pair per line (# comments allowed); names are
-matched on the input file name.
+copy was written. An output that equals any input, is a symlink, or was already written in the
+same run (same name from two folders) is refused. Symlinked inputs (files or directories) are
+skipped. In the default mode (neither --out nor --in-place), inputs whose filename stem ends with
+`_clean` (exact suffix before the extension, unless listed in --rename) are skipped so
+re-running does not double-suffix outputs. --rename takes old=new pairs (repeatable) or the path
+of a mapping file with one `old new` pair per line (# comments allowed); names are matched on
+the input file name.
 
 Requires Pillow (pip install -r requirements.txt).
 """
@@ -38,10 +40,16 @@ JPEG_EXT = (".jpg", ".jpeg")
 def collect(inputs):
     files = []
     for p in inputs:
-        if os.path.isdir(p):
+        if os.path.islink(p):
+            print(f"[!] symlink skipped: {p}", file=sys.stderr)
+        elif os.path.isdir(p):
             for n in sorted(os.listdir(p)):
                 if n.lower().endswith(JPEG_EXT):
-                    files.append(os.path.join(p, n))
+                    fp = os.path.join(p, n)
+                    if os.path.islink(fp):
+                        print(f"[!] symlink skipped: {fp}", file=sys.stderr)
+                    elif os.path.isfile(fp):
+                        files.append(fp)
         elif os.path.isfile(p):
             files.append(p)
         else:
@@ -90,26 +98,28 @@ def had_gps(im):
 def process(src, dst, max_side, quality):
     """Write the cleaned copy of src to dst; returns (size_before, size_after, gps_present)."""
     before = os.path.getsize(src)
-    with Image.open(src) as im:
-        gps = had_gps(im)
-        im = ImageOps.exif_transpose(im)
-        im = im.convert("RGB")
-        w, h = im.size
-        long_side = max(w, h)
-        if long_side > max_side:
-            s = max_side / long_side
-            im = im.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS)
-        # a fresh image has no info/exif; save without exif/icc/xmp arguments
-        clean = Image.new("RGB", im.size)
-        clean.paste(im)
-        tmp = dst + ".tmp"
-        try:
+    tmp = dst + ".tmp"
+    try:
+        with Image.open(src) as im:
+            gps = had_gps(im)
+            im = ImageOps.exif_transpose(im)
+            im = im.convert("RGB")
+            w, h = im.size
+            long_side = max(w, h)
+            if long_side > max_side:
+                s = max_side / long_side
+                im = im.resize((max(1, round(w * s)), max(1, round(h * s))), Image.LANCZOS)
+            # a fresh image has no info/exif; save without exif/icc/xmp arguments
+            clean = Image.new("RGB", im.size)
+            clean.paste(im)
             clean.save(tmp, "JPEG", quality=quality, optimize=True)
-        except BaseException:
-            if os.path.exists(tmp):
+        os.replace(tmp, dst)
+    finally:
+        if os.path.lexists(tmp):
+            try:
                 os.remove(tmp)
-            raise
-    os.replace(tmp, dst)
+            except OSError:
+                pass
     return before, os.path.getsize(dst), gps
 
 
@@ -133,7 +143,14 @@ def main(argv=None):
         print("[-] no input files", file=sys.stderr)
         return 1
     if a.out:
-        os.makedirs(a.out, exist_ok=True)
+        if (os.path.islink(a.out) or os.path.exists(a.out)) and not os.path.isdir(a.out):
+            print(f"[-] --out is not a directory: {a.out}", file=sys.stderr)
+            return 1
+        try:
+            os.makedirs(a.out, exist_ok=True)
+        except OSError as e:
+            print(f"[-] --out {a.out}: {e}", file=sys.stderr)
+            return 1
     key = lambda p: os.path.normcase(os.path.realpath(p))  # noqa: E731
     input_keys = {key(f) for f in files}
     written = set()
@@ -141,15 +158,20 @@ def main(argv=None):
     for src in files:
         base = os.path.basename(src)
         name = ren.get(base, base)
+        orig_stem, _ = os.path.splitext(base)
         stem, ext = os.path.splitext(name)
         if a.in_place:
             dst = os.path.join(os.path.dirname(src), name)
         else:
-            if not a.out and not ren and stem.endswith("_clean"):
+            if not a.out and base not in ren and orig_stem.endswith("_clean") and len(orig_stem) > len("_clean"):
                 print(f"[!] {base}: already a _clean output, skipped", file=sys.stderr)
                 continue
             outdir = a.out or os.path.dirname(src)
             dst = os.path.join(outdir, name if a.out else f"{stem}_clean{ext or '.jpg'}")
+        if os.path.islink(dst):
+            print(f"[-] {base}: output {dst} is a symlink, refused", file=sys.stderr)
+            bad += 1
+            continue
         dk = key(dst)
         if dk in input_keys and not (a.in_place and dk == key(src)):
             print(f"[-] {base}: output {dst} is another input, refused", file=sys.stderr)
@@ -173,7 +195,11 @@ def main(argv=None):
         if not ok:
             bad += 1
         elif a.in_place and dk != key(src):
-            os.remove(src)  # renamed in place: the original (with its metadata) must not stay
+            try:
+                os.remove(src)  # renamed in place: the original (with its metadata) must not stay
+            except OSError as e:
+                print(f"[-] {base}: could not remove original {src}: {e}", file=sys.stderr)
+                bad += 1
     return 1 if bad else 0
 
 
