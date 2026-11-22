@@ -201,8 +201,13 @@ def decode(txns, warns):
                 log.append(f"{when}WRITE PATABLE{' burst' if burst else ''}: {hexs(bs)}")
         elif addr == FIFO_ADDR:
             if rd:
-                log.append(f"{when}READ  RX FIFO{' burst' if burst else ''}: {len(rdata)} byte(s)"
-                           + (f" = {hexs(rdata)}" if rdata else ""))
+                if rdata:
+                    detail = f"{len(rdata)} byte(s) = {hexs(rdata)}"
+                elif not data:
+                    detail = "0 byte(s)"
+                else:
+                    detail = "byte count unknown (no MISO)"
+                log.append(f"{when}READ  RX FIFO{' burst' if burst else ''}: {detail}")
             else:
                 log.append(f"{when}WRITE TX FIFO{' burst' if burst else ''}: {len(data)} byte(s)"
                            f" = {hexs(data)}")

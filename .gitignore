@@ -68,6 +68,7 @@ Desktop.ini
 .antigravity/
 .agents/*.json
 .mcp.json
+.claude/worktrees/
 MD_CAM/blackfin/jtag/gdbproxy.log
 
 # release packages (release/make_release.py)

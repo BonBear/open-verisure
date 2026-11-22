@@ -244,6 +244,37 @@ Silicon Labs AN785 recommends a 26 MHz crystal for 868 MHz designs (the family d
    (frequency, modulation, rate), then compare.
 3. Record what you find in the worksheet's radio section.
 
+## 6. Gateway sniff command (eval build)
+
+Bench test plan for the `sniff [on|off|all|unknown]` CLI on the evaluation build (`RADIO_EVAL=1`,
+branch `feat/gateway-sniff` / PR #47):
+
+1. **Flash the eval build:**
+   ```
+   pio run -d 868Receiver -e lolin_s2_mini_eval -t upload --upload-port COM9
+   ```
+2. **Commands & expected output:**
+   - `sniff` -> `[CLI] Sniff mode: off` (default at boot; not stored in NVS).
+   - `sniff on` or `sniff unknown` -> `[CLI] Sniff mode: unknown (rejected or bad-CRC frames)`.
+     Trigger an unpaired/bad-CRC transmission or tamper on a non-paired device: prints
+     `[Sniff#<module>] ch=<ch> len=<n> crc56=<ok|bad> crc24=<ok|bad> rssi=<dBm> lqi=<n> fe=<kHz> <hex>`
+     only for rejected (`[Security]`) or invalid-CRC frames, not for valid paired sensors.
+   - `sniff all` -> `[CLI] Sniff mode: all (every frame)`. Every non-CAL frame on module #1 (`868.950 MHz`)
+     and #2 (`869.525 MHz` PCH) is dumped *after* packet handling and any camera poll answer.
+   - `sniff off` -> `[CLI] Sniff mode: off`. Stops `[Sniff#n]` lines immediately.
+   - Invalid argument (e.g. `sniff foo`) -> `[CLI] Usage: sniff [on|off|all|unknown]`.
+3. **Pass criteria:**
+   - **Rate limit (20 lines/s):** Under `sniff all` during a burst (>20 frames/s, e.g. camera picture
+     chunks), at most 20 `[Sniff#n]` lines print per 1000 ms window, and
+     `[Sniff] <N> line(s) suppressed (rate limit 20/s)` appears once at the start of the next window.
+   - **Poll deadline preserved:** Under `sniff all`, camera polls (`0xBA`) still receive timely
+     answers (`radio` diagnostics `skipped late` remains 0; `all` dump runs after `answerCameraPoll`).
+   - **`off` stops output:** Zero `[Sniff#n]` lines appear after `sniff off` (and after `reboot`).
+4. **Reflash the release build** when finished so `RADIO_EVAL` commands are not left active:
+   ```
+   pio run -d 868Receiver -e lolin_s2_mini -t upload --upload-port COM9
+   ```
+
 ## Sources
 
 TI SWRS061 (CC1101), SLAS272 (MSP430F149), SLAS655H (MSP430F5435A), SLAU319 (MSP430 BSL); Silicon
