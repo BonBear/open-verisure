@@ -174,7 +174,13 @@ More: [Home Assistant & MQTT](../documentation/homeassistant_mqtt.md).
   evaluation env `lolin_s2_mini_eval` (`-D RADIO_EVAL=1`): `loopblock <ms>` (block loop() once, max 4 s: below the loop watchdog),
   `wdttest` (block loop() without feeding the watchdog: the gateway must reboot with reset reason
   `task_wdt`), `radiostall <ms>` (the radio task skips FIFO servicing once) and `polldelay <ms>` (delay the
-  camera poll answers).
+  camera poll answers) and `sniff [on|off|all|unknown]` (print the raw bytes of frames as
+  `[Sniff#<module>] ch=<ch> len=<n> crc56=<ok|bad> crc24=<ok|bad> rssi=<dBm> lqi=<n> fe=<kHz> <hex>`: `on`/`unknown` only
+  frames that were rejected or had a CRC error, `all` every frame of the main/PCH channel, `off` (default at boot, not
+  stored) stops; at most 20 lines per second). The CC1101 only delivers frames with sync word D3 91 and its fixed
+  packet length (58 B), so a device with another sync word, bit rate or packet format never shows up there: use an SDR.
+  `crc56` and `crc24` are the gateway's software CRC-16 checked after the first 56 bytes (camera image packet) and
+  after the first 24 bytes (normal sensor packet) of the frame; `ok` means that CRC matches the two bytes that follow.
 * **`/api/status` diagnostics & picture-channel fields:**
   * `radio_diag` / `radio_diag2` (radio task counters since boot for CC1101 #1 and #2): `frames`, `fifo_overflows`,
     `partial_drops`, `queue_drops`, `queue_high_water` (of 256), `max_gap_us` and `gap_gt_5ms/10ms/20ms`

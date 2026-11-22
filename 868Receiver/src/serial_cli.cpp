@@ -16,6 +16,9 @@
 #include "image_receiver.h"
 #include "gateway_diag.h"
 #include "radio_task.h"
+#ifdef RADIO_EVAL
+#include "sniff_format.h"
+#endif
 #include <WiFi.h>
 #include "esp_wifi.h"
 
@@ -51,6 +54,7 @@ static void printHelp() {
     Serial.println("  wdttest                    - Eval: block loop() without feeding the watchdog (reboots, reset reason task_wdt)");
     Serial.println("  radiostall <ms>            - Eval: the radio task skips FIFO servicing once for <ms> (max 3000)");
     Serial.println("  polldelay <ms>             - Eval: delay every camera poll answer by <ms> before it is queued (0 = off)");
+    Serial.println("  sniff [on|off|all|unknown] - Eval: dump rejected/bad-CRC frames ('on'/'unknown') or every frame ('all') as [Sniff#n] lines; no argument shows the mode");
 #endif
     Serial.println("  reset                      - Factory reset all NVS settings");
     Serial.println("  reboot                     - Restart gateway microcontroller");
@@ -378,6 +382,27 @@ static void processCommand(char* cmd) {
         if (ms > 500) ms = 500;
         g_radioEvalPollDelayMs = (uint32_t)ms;
         Serial.printf("[CLI] Poll answers delayed by %lu ms (max 500)%s\n", ms, ms ? "" : " (off)");
+    } else if (strcmp(cmd, "sniff") == 0 || strncmp(cmd, "sniff ", 6) == 0) {
+        const char* arg = cmd + 5;
+        while (*arg == ' ') arg++;
+        bool ok = true;
+        if (*arg == '\0') {
+            // plain "sniff": show the mode below
+        } else if (strcmp(arg, "on") == 0 || strcmp(arg, "unknown") == 0) {
+            g_sniffMode = SNIFF_UNKNOWN;
+        } else if (strcmp(arg, "all") == 0) {
+            g_sniffMode = SNIFF_ALL;
+        } else if (strcmp(arg, "off") == 0) {
+            g_sniffMode = SNIFF_OFF;
+        } else {
+            ok = false;
+            Serial.println("[CLI] Usage: sniff [on|off|all|unknown]");
+        }
+        if (ok) {
+            const uint8_t m = g_sniffMode;
+            Serial.printf("[CLI] Sniff mode: %s\n", m == SNIFF_ALL ? "all (every frame)" :
+                          m == SNIFF_UNKNOWN ? "unknown (rejected or bad-CRC frames)" : "off");
+        }
 #endif
     } else if (strcmp(cmd, "scan") == 0) {
         runScan();
