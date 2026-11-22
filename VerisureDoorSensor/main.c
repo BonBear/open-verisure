@@ -239,6 +239,9 @@ void clock_init(void) {
 #define TICKS_PER_S       2
 #define HEARTBEAT_TICKS   ((uint16_t)HEARTBEAT_INTERVAL_SEC * TICKS_PER_S)
 #define SHOCK_HOLD_TICKS  (1 * TICKS_PER_S)   // a shock is reported for ~1 s, then cleared
+#define REED_MIN_GAP      4U                  // ~2 s after the first reed change (0.5 s/tick)
+#define REED_MAX_GAP      600U                // doubles up to ~5 min
+#define REED_CALM         1200U               // ~10 min without a reed change resets backoff
 
 volatile __data uint8_t g_tick = 0;   // set by the sleep timer every 0.5 s
 volatile __data uint8_t g_p0ifg = 0;  // port 0 / port 1 edges seen by the ISRs
@@ -280,18 +283,18 @@ void p1_isr(void) __interrupt(P1INT_VECTOR) {
  * the falling edge when it closes. Port 1 has one edge setting for all its pins (P1ICON):
  * falling; a shock pulse has both edges, so it wakes either way.
  */
-static void enter_pm2(uint8_t shock_level, uint8_t last_reed, uint8_t last_tamper) {
+static void enter_pm2(uint8_t shock_level, uint8_t last_reed, uint8_t last_tamper, bool reed_irq_en) {
     uint8_t reed = P1_7, tamper = P0_1, d;
 
     // a change since the last report (e.g. while the packet was being sent): report it now
-    // instead of at the next tick
-    if (reed != last_reed || tamper != last_tamper)
+    // instead of at the next tick (unless reed is in backoff, so rattling sleeps in PM2)
+    if ((reed_irq_en && reed != last_reed) || tamper != last_tamper)
         return;
 
     EA = 0;
     PICTL |= 0x03;                       // P1ICON, P0ICON: falling edge
     if (reed) {
-        P1IEN = 0x84;                    // reed open: wake when it closes; shock
+        P1IEN = reed_irq_en ? 0x84 : 0x04; // reed open: wake when it closes (unless in backoff); shock
     } else {
         P1INP |= 0x80;                   // reed closed: no pull-up, polled at the tick
         P1IEN = 0x04;                    // shock only
@@ -310,7 +313,7 @@ static void enter_pm2(uint8_t shock_level, uint8_t last_reed, uint8_t last_tampe
     P0IE = 1;
 
     // race check: a level changed while arming, or a tick or edge is already pending
-    if (P1_7 != reed || P0_1 != tamper || P1_2 != shock_level || g_tick || g_p0ifg || g_p1ifg) {
+    if ((reed_irq_en && P1_7 != reed) || P0_1 != tamper || P1_2 != shock_level || g_tick || g_p0ifg || g_p1ifg) {
         EA = 1;
         return;
     }
@@ -434,7 +437,7 @@ static void sleep_ticks(uint16_t ticks) {
     while (ticks) {
         uint8_t t;
         clock_rcosc();
-        enter_pm2(P1_2, P1_7, P0_1);
+        enter_pm2(P1_2, P1_7, P0_1, false);
         WDT_FEED();
         P1INP &= ~0x80;              // pull-ups back on (enter_pm2 drops them for closed switches)
         P0INP &= ~0x02;
@@ -809,6 +812,13 @@ void main(void) {
     uint8_t last_tamper = P0_1;
     uint8_t shock_hold = 0;          // ticks the shock is still reported
     uint16_t hb_ticks = 0;           // ticks since the last packet
+    // XDATA storage keeps main()'s DSEG frame within the 95-byte --model-small budget
+    static __xdata uint16_t s_reed_gap;      // ticks until the next reed-triggered packet may go out
+    static __xdata uint16_t s_reed_backoff;
+    static __xdata uint16_t s_reed_calm;
+    s_reed_gap = 0;
+    s_reed_backoff = REED_MIN_GAP;
+    s_reed_calm = 0;
     bool prev_safe = (last_reed == 0 && last_tamper == 0);
     bool first_packet = true;
 
@@ -839,9 +849,24 @@ void main(void) {
             uint8_t curr_reed = P1_7;
             uint8_t curr_tamper = P0_1;
             uint8_t curr_p1_2 = P1_2;
+            if (tick) {
+                if (hb_ticks < 0xFFFF) hb_ticks++;
+                if (s_reed_gap > 0) s_reed_gap--;
+                if (s_reed_calm < REED_CALM) {
+                    s_reed_calm++;
+                    if (s_reed_calm >= REED_CALM)
+                        s_reed_backoff = REED_MIN_GAP;
+                }
+            }
             if (curr_reed != last_reed) {
-                last_reed = curr_reed;
-                send_immediate = true;
+                s_reed_calm = 0;
+                if (!s_reed_gap) {
+                    last_reed = curr_reed;
+                    send_immediate = true;
+                    s_reed_gap = s_reed_backoff;
+                    s_reed_backoff = (s_reed_backoff < REED_MAX_GAP / 2U)
+                        ? (uint16_t)(s_reed_backoff * 2U) : REED_MAX_GAP;
+                }
             }
             if (curr_tamper != last_tamper) {
                 last_tamper = curr_tamper;
@@ -858,7 +883,6 @@ void main(void) {
                 shock_hold = SHOCK_HOLD_TICKS + 1;
             }
             if (tick) {
-                if (hb_ticks < 0xFFFF) hb_ticks++;
                 if (shock_hold && !shock_event && --shock_hold == 0)
                     send_immediate = true;   // the shock is over: send the clear state
                 if (!send_immediate && hb_ticks >= HEARTBEAT_TICKS)
@@ -879,6 +903,7 @@ void main(void) {
             bool returned_to_safe = (send_immediate && is_currently_safe && !prev_safe);
             bool entered_alert = (send_immediate && !is_currently_safe);
 
+            last_reed = reed_val;
             prev_safe = is_currently_safe;
             hb_ticks = 0;
 
@@ -970,7 +995,7 @@ void main(void) {
             clock_rcosc();
         }
 
-        enter_pm2(p1_2_prev, last_reed, last_tamper);   // CPU on the HS RCOSC here
+        enter_pm2(p1_2_prev, last_reed, last_tamper, s_reed_gap == 0);   // CPU on the HS RCOSC here
         WDT_FEED();
         // pull-ups back on for reed and tamper before they are read (enter_pm2 drops them
         // for a closed switch). Without the crystal start there is no 4 ms gap any more, so
