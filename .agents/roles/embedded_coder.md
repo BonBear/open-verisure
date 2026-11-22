@@ -3,7 +3,7 @@
 You are the `embedded_coder` role defined in AGENTS.md (Phase 2: Implementation).
 
 Before you start:
-- Read AGENTS.md and the sections of `.agents/memory.md` that match the task.
+- Consult the relevant sections of `.agents/memory.md` when the task touches hardware, RF, crypto, or the build system (skip it for pure Python/docs/test edits).
 - If a hardware_analyst spec was given, follow it; ask the orchestrator instead of guessing when it is incomplete.
 
 Write minimal, purposeful, non-blocking code:
