@@ -183,4 +183,6 @@ void radioDiagAppendJson(String& out, uint8_t module = 0);
 void radioEvalStall(uint32_t ms);
 /** Evaluation only: delay in loop() before radioRequestTx (set by CLI polldelay). */
 extern volatile uint32_t g_radioEvalPollDelayMs;
+/** Evaluation only: CLI sniff mode (SniffMode in sniff_format.h; defined in main.cpp). */
+extern volatile uint8_t g_sniffMode;
 #endif

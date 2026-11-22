@@ -44,6 +44,9 @@
 #include "ha_discovery.h"
 #include "gateway_diag.h"
 #include "radio_task.h"
+#ifdef RADIO_EVAL
+#include "sniff_format.h"
+#endif
 #include <WiFi.h>
 #include <math.h>
 
@@ -287,6 +290,33 @@ static void answerCameraTokenReq(const VerisureTelemetry& t, uint32_t frameStart
     imageReceiverAfterPollAnswer(t.deviceId);
 }
 
+#ifdef RADIO_EVAL
+/** Evaluation only (CLI sniff): which frames are dumped as [Sniff#n] lines. Off at boot. */
+volatile uint8_t g_sniffMode = SNIFF_OFF;
+
+/**
+ * Print-only dump of one frame (never touches crypto, replay, MQTT or downlink). Rate limited to
+ * SNIFF_MAX_LINES_PER_SEC per second so a noisy band cannot stall loop(); the lines refused in a
+ * window are reported once when the next window starts.
+ */
+static void sniffDump(const RadioFrame& item, bool crcBig, bool crcSmall, int rssiDbm, unsigned lqi,
+                      float feKhz) {
+    static SniffLimiter s_limiter;
+    uint32_t suppressed;
+    const bool allow = sniffAllow(s_limiter, (uint32_t)millis(), &suppressed);
+    if (suppressed) Serial.printf("[Sniff] %lu line(s) suppressed (rate limit %d/s)\n",
+                                  (unsigned long)suppressed, SNIFF_MAX_LINES_PER_SEC);
+    if (!allow) return;
+    // Over-the-air bytes only (the two status bytes after them are shown as rssi/lqi); the formatter
+    // clamps again to sizeof(item.data).
+    const size_t airLen = (item.len < RX_PKT_LEN) ? item.len : RX_PKT_LEN;
+    char line[SNIFF_LINE_MAX];
+    sniffFormatLine(line, sizeof(line), (unsigned)item.module + 1U, item.channel, item.data, airLen,
+                    sizeof(item.data), crcBig, crcSmall, rssiDbm, lqi, feKhz);
+    Serial.println(line);
+}
+#endif
+
 /** Handles one item from the radio task's queue (a complete frame or a radio event). */
 static void handleRadioFrame(const RadioFrame& item) {
     unsigned long now = millis();
@@ -367,6 +397,9 @@ static void handleRadioFrame(const RadioFrame& item) {
 
     if (crcBig) {
         if (!cryptoProcessBigPacket(frame, activeMasterKey, item.channel)) {
+#ifdef RADIO_EVAL
+            if (g_sniffMode == SNIFF_UNKNOWN) sniffDump(item, crcBig, crcSmall, packetRssi, rawLqi & 0x7F, freqErrKhz);
+#endif
             printTimestamp(now);
             Serial.printf("[Security] Module #%u big packet rejected (invalid key or type).\n", modNum);
         }
@@ -416,15 +449,27 @@ static void handleRadioFrame(const RadioFrame& item) {
             Serial.printf("    Pins    : P0=0x%02X P1=0x%02X P2=0x%02X (P2_0=%d) RST_CAUSE=%u\n\n",
                           telem.rawP0, telem.rawP1, telem.rawP2, telem.rawP2 & 0x01, telem.rawRst);
         } else {
+#ifdef RADIO_EVAL
+            if (g_sniffMode == SNIFF_UNKNOWN) sniffDump(item, crcBig, crcSmall, packetRssi, rawLqi & 0x7F, freqErrKhz);
+#endif
             printTimestamp(now);
             Serial.println("[Security] Packet received but rejected (invalid key, spoofing, or replay attack).");
         }
     } else {
+#ifdef RADIO_EVAL
+        if (g_sniffMode == SNIFF_UNKNOWN) sniffDump(item, crcBig, crcSmall, packetRssi, rawLqi & 0x7F, freqErrKhz);
+#endif
         printTimestamp(now);
         Serial.printf("[Radio#%u] Packet received with invalid CRC (dropped): RSSI %d dBm, freq. error %+.1f kHz%s\n",
                       modNum, packetRssi, freqErrKhz,
                       (item.flags & RADIO_FLAG_TX_OVERLAP) ? " [TX_OVERLAP]" : "");
     }
+#ifdef RADIO_EVAL
+    // 'sniff all': after every branch above, so it never delays a poll answer (95 ms deadline).
+    // The only early return after the frame kind switch is the CAL block (CAL frames are not
+    // dumped); keep it that way, or this line is skipped.
+    if (g_sniffMode == SNIFF_ALL) sniffDump(item, crcBig, crcSmall, packetRssi, rawLqi & 0x7F, freqErrKhz);
+#endif
 }
 
 /**
