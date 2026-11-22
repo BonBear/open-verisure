@@ -91,22 +91,7 @@ void p1_isr(void) __interrupt(P1INT_VECTOR) {
  * Delays
  * ============================================================================ */
 
-/** @brief Busy-wait ms delay calibrated for 27 MHz (takes 2x longer on 13.5 MHz RCOSC). */
-/* Watchdog (WDCTL, 32 kHz clock, also runs in PM2): resets the chip if it is not fed for
- * ~1 s, e.g. if the CPU never wakes from PM2 again (seen once on 2026-11-16: no poll after
- * the first, only a power cycle helped). Started first thing in main(); fed in delay_ms, after
- * every sleep, in the flash routines and per picture chunk. Feeding before it is started has no effect. */
-#define WDT_FEED() do { WDCTL = 0xA8; WDCTL = 0x58; } while (0)
-
-void delay_ms(uint16_t ms) {
-    while (ms--) {
-        if (WDCTL & 0x08)           // per ms: delay_ms(1100) takes ~3 s (runs ~2.75x slow)
-            WDT_FEED();
-        for (uint16_t i = 0; i < 2180; i++) {
-            __asm nop __endasm;
-        }
-    }
-}
+#include "../../cc1110_common/delay.c"
 
 /* ============================================================================
  * AES-128 Coprocessor
@@ -118,30 +103,7 @@ void delay_ms(uint16_t ms) {
  * Battery (VDD/3)
  * ============================================================================ */
 
-/* VDD/3 against the internal 1.25 V reference. The first conversion is thrown away. */
-uint16_t read_battery_mv(void) {
-    uint8_t n;
-    uint16_t timeout;
-    for (n = 0; n < 2; n++) {
-        ADCCON3 = 0x3F; // Internal 1.25V ref, 12-bit, VDD/3
-        timeout = 5000;
-        while (!(ADCCON1 & 0x80) && --timeout);
-        if (n == 0)
-            (void)ADCL, (void)ADCH;   // reading ADCH clears EOC for the next conversion
-    }
-
-    uint16_t adc = ((uint16_t)ADCL >> 4) | ((uint16_t)ADCH << 4);
-    return (uint16_t)(((uint32_t)adc * 3750UL) / 2047UL);
-}
-
-/* After PM2 the reading is ~110 mV low for several ms (2026-11-17, Otii at 3.0 V: 2861 mV
- * ~3 ms after waking, 2969 mV after ~11 ms more, 2976 mV at boot), presumably while the
- * reference settles; two conversions in a row did not help. So a reading right after PM2
- * waits ~11 ms first (~1 uA on average at one poll per 2 minutes). */
-uint16_t read_battery_idle_mv(void) {
-    delay_ms(4);   // delay_ms runs ~2.75x slow: ~11 ms
-    return read_battery_mv();
-}
+#include "../../cc1110_common/battery_adc.c"
 
 /* The camera runs on CR123A lithium cells (3.0 V nominal), whose idle voltage stays flat until
  * near the end, while a worn cell sags under load. The Blackfin needs at least ~2.4 V at VBAT
@@ -277,73 +239,7 @@ static bool s_tamper;       // reported in flags bit 2
  * ============================================================================ */
 
 #include "../../cc1110_common/radio_cca.c"
-
-void radio_init(void) {
-    RFST = 0x04; // SIDLE
-    delay_ms(1);
-
-    SYNC1 = 0xD3;
-    SYNC0 = 0x91;
-
-    PKTLEN   = PACKET_LEN;
-    PKTCTRL1 = 0x04;
-    PKTCTRL0 = 0x04;
-
-    CHANNR  = 0x00;
-    FSCTRL1 = 0x06;
-    FSCTRL0 = 0x00;
-
-    FREQ2 = 0x20; // 868.950 MHz (0x202EEF)
-    FREQ1 = 0x2E;
-    FREQ0 = 0xEF;
-
-    MDMCFG4 = 0x8A; // 38.418 kBaud at 27 MHz, 2-FSK
-    MDMCFG3 = 0x75;
-    MDMCFG2 = 0x03;
-    MDMCFG1 = 0x22;
-    MDMCFG0 = 0xF8;
-    DEVIATN = 0x35;
-
-    MCSM2 = 0x07;
-#if RF_CCA_ENABLE
-    MCSM1 = 0x30;
-#else
-    MCSM1 = 0x00;
-#endif
-    MCSM0 = 0x18;
-
-    FOCCFG = 0x16;
-    BSCFG  = 0x6C;
-
-    AGCCTRL2 = 0x43;
-#if RF_CCA_ENABLE
-    AGCCTRL1 = 0x40 | (RF_CCA_ABS_THR & 0x0F);
-#else
-    AGCCTRL1 = 0x40;
-#endif
-    AGCCTRL0 = 0x91;
-
-    FREND1 = 0x56;
-    FREND0 = 0x10;
-
-    FSCAL3 = 0xE9;
-    FSCAL2 = 0x2A;
-    FSCAL1 = 0x00;
-    FSCAL0 = 0x1F; // Charge pump calibration must remain 0x1F
-
-    TEST2 = 0x81;
-    TEST1 = 0x35;
-    TEST0 = 0x09;
-
-    PA_TABLE0 = 0xC2; // +10 dBm
-    PA_TABLE1 = 0xC2;
-    PA_TABLE2 = 0xC2;
-    PA_TABLE3 = 0xC2;
-    PA_TABLE4 = 0xC2;
-    PA_TABLE5 = 0xC2;
-    PA_TABLE6 = 0xC2;
-    PA_TABLE7 = 0xC2;
-}
+#include "../../cc1110_common/radio_init.c"
 
 #define DL_FLAG_PCH    0x01
 #define DL_FLAG_GRANT  0x02

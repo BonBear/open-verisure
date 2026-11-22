@@ -2,8 +2,9 @@
 """Cut the persistent packet counter code out of a CC1110 main.c for the host tests.
 
 The tests compile the real code, so nothing is copied by hand: this script writes, with #line
-directives pointing back at main.c,
-  - the WDT_FEED() macro, the dma_desc_t typedef and the dma_desc variable,
+directives pointing back at main.c (and cc1110_common/delay.c for WDT_FEED()),
+  - the WDT_FEED() macro (resolved from the #include of cc1110_common/delay.c), the dma_desc_t
+    typedef and the dma_desc variable,
   - the region from '#define CTR_PAGE0' to the end of ctr_boot() (the log constants, ctr_buf,
     ctr_page, ctr_next, the #include of cc1110_common/ctr_log.c and ctr_boot),
   - the counter rule run before every packet (the one call ctr_use(ctr >> 8), whose result says
@@ -95,11 +96,21 @@ def main():
     src_name = src_path.replace("\\", "/")
     parts = []
 
-    def chunk(start, end):
-        parts.append('#line %d "%s"\n%s\n' % (line_of(text, start), src_name, text[start:end]))
+    def chunk_from(file_text, file_name, start, end):
+        parts.append('#line %d "%s"\n%s\n' % (line_of(file_text, start), file_name, file_text[start:end]))
 
-    m = one(r"^#define WDT_FEED\(\).*$", text, "WDT_FEED() macro")
-    chunk(m.start(), m.end())
+    def chunk(start, end):
+        chunk_from(text, src_name, start, end)
+
+    inc = one(r'^#include\s+"([^"]*cc1110_common/delay\.c)"', text,
+              "cc1110_common/delay.c include")
+    delay_path = os.path.normpath(os.path.join(os.path.dirname(src_path), inc.group(1)))
+    with open(delay_path, encoding="utf-8") as f:
+        delay_text = f.read()
+    if re.search(r"^#define WDT_FEED\(\)", text, re.MULTILINE):
+        die("unexpected WDT_FEED() macro in %s (expected only in %s)" % (src_path, delay_path))
+    m = one(r"^#define WDT_FEED\(\).*$", delay_text, "WDT_FEED() macro in %s" % delay_path)
+    chunk_from(delay_text, delay_path.replace("\\", "/"), m.start(), m.end())
     m = one(r"^typedef struct \{[^}]*\} dma_desc_t;", text, "dma_desc_t typedef")
     chunk(m.start(), m.end())
     m = one(r"^static __xdata dma_desc_t dma_desc;", text, "dma_desc variable")

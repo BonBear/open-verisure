@@ -109,27 +109,11 @@ volatile __xdata uint8_t g_last_rfif = 0;
 volatile __xdata uint16_t g_tx_count = 0;
 volatile __xdata uint16_t g_tx_fail = 0;
 
-/**
- * @brief Busy-wait software millisecond delay.
- * @param ms Number of milliseconds to delay.
- * @note Nominally 1 ms per pass (2100 NOP iterations); with the loop overhead and the watchdog
- *       check it runs ~2.75x longer (measured on the camera's CC1110, same loop). Use it only
- *       where a longer wait is harmless.
- */
-/* Watchdog (WDCTL, 32 kHz clock, also runs in PM2): resets the chip if it is not fed for ~1 s,
- * e.g. if the CPU never wakes from PM2 again. Started first thing in main(); fed after every
- * sleep, in delay_ms and in the flash routines. Feeding before it is started has no effect. */
-#define WDT_FEED() do { WDCTL = 0xA8; WDCTL = 0x58; } while (0)
+/* ============================================================================
+ * Delays & Watchdog
+ * ============================================================================ */
 
-void delay_ms(uint16_t ms) {
-    while (ms--) {
-        if (WDCTL & 0x08)
-            WDT_FEED();
-        for (uint16_t i = 0; i < 2100; i++) {
-            __asm nop __endasm;
-        }
-    }
-}
+#include "../cc1110_common/delay.c"
 
 /* ============================================================================
  * Hardware Cryptographic Engine (AES-128 Coprocessor)
@@ -141,43 +125,7 @@ void delay_ms(uint16_t ms) {
  * Battery Voltage Monitoring (Internal ADC)
  * ============================================================================ */
 
-/**
- * @brief Measure the battery supply voltage (VDD) using the internal ADC.
- * @return Battery voltage in millivolts (e.g. 3050 mV).
- * @note Uses the internal 1.25V bandgap voltage reference and VDD/3 channel.
- */
-uint16_t read_battery_mv(void) {
-    // ADCCON3 configuration:
-    // EREF[7:6] = 00 (Internal 1.25V reference)
-    // EDIV[5:4] = 11 (12-bit decimation rate)
-    // ECH[3:0]  = 1111 (VDD/3 single-ended channel)
-    // Value = 0x3F
-    ADCCON3 = 0x3F;
-
-    // Poll for End-Of-Conversion (ADCCON1 bit 7 = EOC)
-    uint16_t timeout = 5000;
-    while (!(ADCCON1 & 0x80) && --timeout);
-
-    // Read 12-bit signed/unsigned result (left-justified across ADCH:ADCL)
-    uint16_t adc = ((uint16_t)ADCL >> 4) | ((uint16_t)ADCH << 4);
-
-    // Formula: VDD = 3 * (adc / 2047) * 1250 mV = (adc * 3750) / 2047
-    uint32_t mv = ((uint32_t)adc * 3750UL) / 2047UL;
-    return (uint16_t)mv;
-}
-
-/**
- * @brief Battery voltage after a wake-up from PM2.
- * @note On the camera's CC1110 the reading was ~110 mV low for several ms after PM2 (2026-11-17:
- *       2861 mV ~3 ms after waking, 2969 mV ~11 ms later, 2976 mV at boot; a second conversion
- *       right away did not help), presumably while the reference settles. So wait ~11 ms
- *       (delay_ms runs ~2.75x slow) and discard one conversion first.
- */
-uint16_t read_battery_idle_mv(void) {
-    delay_ms(4);
-    read_battery_mv();
-    return read_battery_mv();
-}
+#include "../cc1110_common/battery_adc.c"
 
 /**
  * @brief Convert millivolts to an approximate battery percentage.
@@ -510,99 +458,7 @@ void setup_gpio(void) {
  * ============================================================================ */
 
 #include "../cc1110_common/radio_cca.c"
-
-/**
- * @brief Initialize the built-in CC1100 radio core.
- * @details Configures RF frequency, modulation, data rate, sync word, and power.
- *
- * Register Calculation details:
- * - Reference RF Crystal: 27.000 MHz (X1)
- * - Target Frequency: 868.950 MHz
- *   FREQ = (868.950 * 2^16) / 27.000 = 2109167 = 0x202EEF (FREQ2=0x20, FREQ1=0x2E, FREQ0=0xEF)
- * - Data Rate: 38.418 kBaud
- *   MDMCFG4 = 0x8A, MDMCFG3 = 0x75: (256 + 117) * 2^10 * 27 MHz / 2^28 = 38,418 Baud
- *   (the gateway's CC1101 runs 38,383 Baud with its 26 MHz crystal, 0.09 % apart)
- * - Modulation: 2-FSK with 21.4 kHz frequency deviation (DEVIATN = 0x35)
- * - Sync Word: 0xD3 0x91 (30/32 bits match)
- * - Output Power: +10 dBm (PA_TABLE0 = 0xC2)
- */
-void radio_init(void) {
-    RFST = 0x04; // SIDLE strobe: put radio into idle state
-    delay_ms(2);
-
-    // Synchronization Word: 0xD3 0x91 (Matches gateway receiver)
-    SYNC1 = 0xD3;
-    SYNC0 = 0x91;
-
-    // Packet Configuration: Fixed length 24 bytes + hardware 2-byte CRC
-    PKTLEN   = PACKET_LEN;
-    PKTCTRL1 = 0x04; // Append status bytes (RSSI, LQI/CRC)
-    PKTCTRL0 = 0x04; // Fixed length mode, CRC calculation enabled
-
-    // Intermediate Frequency (IF)
-    CHANNR  = 0x00;
-    FSCTRL1 = 0x06;
-    FSCTRL0 = 0x00;
-
-    // Frequency synthesis (868.950 MHz at 27.000 MHz crystal)
-    FREQ2 = 0x20;
-    FREQ1 = 0x2E;
-    FREQ0 = 0xEF;
-
-    // Modem configuration (38.418 kBaud, 2-FSK, 4B preamble, 30/32 sync bits)
-    MDMCFG4 = 0x8A;
-    MDMCFG3 = 0x75;
-    MDMCFG2 = 0x03; // 2-FSK, 30/32 sync word bits
-    MDMCFG1 = 0x22; // 4 bytes preamble
-    MDMCFG0 = 0xF8;
-    DEVIATN = 0x35; // 21.4 kHz deviation
-
-    // State machine transitions: Autocalibrate IDLE -> TX, return to IDLE after packet
-    MCSM2 = 0x07;
-#if RF_CCA_ENABLE
-    MCSM1 = 0x30; // CCA_MODE=11 (RSSI < threshold unless receiving), IDLE after RX/TX
-#else
-    MCSM1 = 0x00; // Return to IDLE after TX
-#endif
-    MCSM0 = 0x18; // Autocalibrate whenever transitioning from IDLE to TX
-
-    FOCCFG = 0x16;
-    BSCFG  = 0x6C;
-
-    // Automatic Gain Control (AGC)
-    AGCCTRL2 = 0x43;
-#if RF_CCA_ENABLE
-    AGCCTRL1 = 0x40 | (RF_CCA_ABS_THR & 0x0F);
-#else
-    AGCCTRL1 = 0x40;
-#endif
-    AGCCTRL0 = 0x91;
-
-    // Front-End configuration
-    FREND1 = 0x56;
-    FREND0 = 0x10; // Select PA_TABLE0 for transmit power
-
-    // Frequency Synthesizer Calibration registers (SWRS033 Table 61)
-    FSCAL3 = 0xE9;
-    FSCAL2 = 0x2A;
-    FSCAL1 = 0x00;
-    FSCAL0 = 0x1F; // Critical: Must remain 0x1F (synthesizer charge pump calibration)
-
-    // Hardware Test Registers (SWRS033 Table 61)
-    TEST2 = 0x81;
-    TEST1 = 0x35;
-    TEST0 = 0x09;
-
-    // Power Amplifier Table: +10 dBm (0xC2) across all entries
-    PA_TABLE0 = 0xC2;
-    PA_TABLE1 = 0xC2;
-    PA_TABLE2 = 0xC2;
-    PA_TABLE3 = 0xC2;
-    PA_TABLE4 = 0xC2;
-    PA_TABLE5 = 0xC2;
-    PA_TABLE6 = 0xC2;
-    PA_TABLE7 = 0xC2;
-}
+#include "../cc1110_common/radio_init.c"
 
 /* ============================================================================
  * Packet Transmission Engines (DMA vs CPU-Polled)
