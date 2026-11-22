@@ -23,6 +23,7 @@ INCLUDE = [
     "README.md", "CHANGELOG.md", "LICENSE", "SECURITY.md", "requirements.txt",
     "derive_key.py", "cc1110_tools.py", "port_selector.py", "monitor.py",
     "868Receiver/README.md", "868Receiver/platformio.ini", "868Receiver/.gitignore", "868Receiver/src",
+    "868Receiver/lib",
     "cc1110_common",
     "VerisureDoorSensor/README.md", "VerisureDoorSensor/main.c", "VerisureDoorSensor/config.h.example",
     "VerisureDoorSensor/build_and_flash.py",

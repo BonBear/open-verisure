@@ -117,11 +117,11 @@ CC1110, and for the camera the ADI Blackfin GCC toolchain. The scripts run on Wi
    browser asks for that password (any user name). For a gateway that is already on Wi-Fi without
    one, set it on the serial console: `portalpass <password>`. The serial console (`help`) also
    shows the status and the key's check value.
-3. **Flasher.** Build [ESP_CC_Flasher](https://github.com/atc1441/ESP_CC_Flasher) for the ESP32
-   and wire it to the device's debug header
+3. **Flasher.** Build [BonBear/ESP_CC_Flasher](https://github.com/BonBear/ESP_CC_Flasher) (fork
+   of `atc1441/ESP_CC_Flasher`) for the ESP32 and wire it to the device's debug header
    ([documentation/hardware_cc_flasher.md](documentation/hardware_cc_flasher.md)). The scripts use
-   it over Wi-Fi (`http://cc.local`, default) or over its USB serial port (`--serial`), which needs
-   the serial command firmware (`serial_cmd.cpp`, not published yet: see TODO.md).
+   it over Wi-Fi (`http://cc.local`, default) or over its USB serial port (`--serial`, using
+   `serial_cmd.cpp`).
    **Never power the camera from the flasher's 3V3.**
 4. **First door sensor.** With the ID from its label (the key comes from `secrets.h`):
    ```bash
