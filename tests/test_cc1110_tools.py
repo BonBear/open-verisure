@@ -213,7 +213,7 @@ class FakeSerial:
         assert self.is_open
         self.written.append(bytes(b))
         word = bytes(b).split(b" ")[0].strip()
-        if word in (b"PING", b"INIT", b"FLASH"):
+        if word in (b"PING", b"INIT", b"FLASH", b"READ"):
             self._queue(word.decode())
         else:
             self._queue("DATA")
@@ -294,3 +294,236 @@ def test_flash_serial_locked_allowed(port, capsys):
     cc1110_tools.flash_serial("COM_TEST", binp, allow_locked=True)
     out = capsys.readouterr().out
     assert "--erase" in out and "SUCCEEDED" in out
+
+
+# ---------------------------------------------------------------- parse_ctr_log
+
+def _ctr_entry(block: int) -> bytes:
+    zeros = 24 - bin(block).count("1")
+    return bytes([block & 0xFF, zeros, (block >> 8) & 0xFF, (block >> 16) & 0xFF])
+
+
+def _make_ctr_log(page0=(), page1=()) -> bytes:
+    buf = bytearray(b"\xff" * cc1110_tools.CTR_LOG_SIZE)
+    for idx, entry in enumerate(page0):
+        buf[idx * 4:idx * 4 + 4] = entry
+    for idx, entry in enumerate(page1):
+        off = 1024 + idx * 4
+        buf[off:off + 4] = entry
+    return bytes(buf)
+
+
+def test_parse_ctr_log_erased_and_zero():
+    assert cc1110_tools.parse_ctr_log(b"\xff" * cc1110_tools.CTR_LOG_SIZE) is None
+    assert cc1110_tools.parse_ctr_log(b"\x00" * cc1110_tools.CTR_LOG_SIZE) is None
+
+
+def test_parse_ctr_log_single_entry():
+    log = _make_ctr_log(page0=[_ctr_entry(42)])
+    assert cc1110_tools.parse_ctr_log(log) == 42
+
+
+def test_parse_ctr_log_rollover_both_directions():
+    # Page 1 newer than page 0
+    log_p1_newer = _make_ctr_log(
+        page0=[_ctr_entry(10), _ctr_entry(11)],
+        page1=[_ctr_entry(12), _ctr_entry(15)],
+    )
+    assert cc1110_tools.parse_ctr_log(log_p1_newer) == 15
+
+    # Rollover back to page 0: page 0 has higher block than page 1
+    log_p0_newer = _make_ctr_log(
+        page0=[_ctr_entry(500), _ctr_entry(505)],
+        page1=[_ctr_entry(498), _ctr_entry(499)],
+    )
+    assert cc1110_tools.parse_ctr_log(log_p0_newer) == 505
+
+
+def test_parse_ctr_log_torn_write_rejected():
+    valid = _ctr_entry(0x010203)  # b0=0x03, check=20 (0x14), b1=0x02, b2=0x01
+    # 1-bit left at 1 in block byte b0 (0 -> 1)
+    torn_block = bytes([valid[0] | 0x04, valid[1], valid[2], valid[3]])
+    # 1-bit left at 1 in check byte (0 -> 1)
+    torn_check = bytes([valid[0], valid[1] | 0x01, valid[2], valid[3]])
+    log = _make_ctr_log(page0=[_ctr_entry(7), torn_block, torn_check])
+    assert cc1110_tools.parse_ctr_log(log) == 7
+    assert cc1110_tools.parse_ctr_log(_make_ctr_log(page0=[torn_block, torn_check])) is None
+
+
+def test_parse_ctr_log_b2_ff_rejected_even_if_check_matches():
+    # 0xFF0000 has 16 zero bits; check == 16 matches, yet b2 == 0xFF must be rejected
+    fake_ff = bytes([0x00, 16, 0x00, 0xFF])
+    assert cc1110_tools.parse_ctr_log(_make_ctr_log(page0=[fake_ff])) is None
+    assert cc1110_tools.parse_ctr_log(_make_ctr_log(page0=[_ctr_entry(9), fake_ff])) == 9
+
+
+@pytest.mark.parametrize("bad_len", [0, 4, cc1110_tools.CTR_LOG_SIZE - 1, cc1110_tools.CTR_LOG_SIZE + 1])
+def test_parse_ctr_log_wrong_length_raises(bad_len):
+    with pytest.raises(ValueError):
+        cc1110_tools.parse_ctr_log(b"\xff" * bad_len)
+
+
+# ---------------------------------------------------------------- read_flash_serial
+
+def _read_script_for(payload: bytes, chunk_bytes: int = 32):
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    hex_lines = [payload[i:i + chunk_bytes].hex() for i in range(0, len(payload), chunk_bytes)]
+    return {
+        "PING": ["#PONG"],
+        "READ": [f"#DATA {len(payload)} {crc:08x}", *hex_lines, "#DONE OK"],
+    }
+
+
+def test_read_flash_serial_ok(port):
+    fs, _ = port
+    payload = _make_ctr_log(page0=[_ctr_entry(123)], page1=[_ctr_entry(456)])
+    fs.script = _read_script_for(payload)
+    got = cc1110_tools.read_flash_serial("COM_TEST", cc1110_tools.CTR_LOG_ADDR, cc1110_tools.CTR_LOG_SIZE)
+    assert got == payload
+    s = fs.instances[0]
+    assert s.port == "COM_TEST" and s.baudrate == 115200 and s.timeout == 0.5
+    assert s.dtr_at_open is False and s.rts_at_open is False
+    assert not s.is_open
+    assert s.written == [b"PING\n", b"READ 7800 2048\n"]
+
+
+def test_read_flash_serial_bad_crc(port):
+    fs, _ = port
+    payload = b"\xAA" * 64
+    fs.script = {
+        "PING": ["#PONG"],
+        "READ": [f"#DATA {len(payload)} 00000000", payload.hex(), "#DONE OK"],
+    }
+    assert cc1110_tools.read_flash_serial("COM_TEST", 0x7800, 64) is None
+    assert not fs.instances[0].is_open
+
+
+def test_read_flash_serial_wrong_or_truncated_length(port):
+    fs, _ = port
+    payload = b"\x55" * 64
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    # Header announces wrong length
+    fs.script = {"PING": ["#PONG"], "READ": [f"#DATA 32 {crc:08x}", payload[:32].hex(), "#DONE OK"]}
+    assert cc1110_tools.read_flash_serial("COM_TEST", 0x7800, 64) is None
+    assert not fs.instances[-1].is_open
+
+    # Payload shorter than announced length
+    short = payload[:32]
+    fs.script = {
+        "PING": ["#PONG"],
+        "READ": [f"#DATA 64 {zlib.crc32(short) & 0xFFFFFFFF:08x}", short.hex(), "#DONE OK"],
+    }
+    assert cc1110_tools.read_flash_serial("COM_TEST", 0x7800, 64) is None
+    assert not fs.instances[-1].is_open
+
+
+@pytest.mark.parametrize("err_line", [
+    "#ERR unknown command",
+    "#ERR locked",
+    "#ERR no_target",
+    "#ERR other",
+    "#DATA malformed",
+    "#DATA abc 00000000",
+])
+def test_read_flash_serial_err_responses(port, err_line):
+    fs, _ = port
+    fs.script = {"PING": ["#PONG"], "READ": [err_line]}
+    assert cc1110_tools.read_flash_serial("COM_TEST", 0x7800, 64) is None
+    s = fs.instances[0]
+    assert s.dtr_at_open is False and s.rts_at_open is False
+    assert not s.is_open
+
+
+def test_read_flash_serial_ping_timeout(port):
+    fs, _ = port
+    fs.script = {"PING": []}
+    assert cc1110_tools.read_flash_serial("COM_TEST", 0x7800, 64) is None
+    assert not fs.instances[0].is_open
+
+
+def test_read_flash_serial_missing_done_timeout(port):
+    fs, _ = port
+    payload = b"\x11" * 64
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    fs.script = {"PING": ["#PONG"], "READ": [f"#DATA 64 {crc:08x}", payload.hex()]}
+    assert cc1110_tools.read_flash_serial("COM_TEST", 0x7800, 64) is None
+    assert not fs.instances[0].is_open
+
+
+def test_read_flash_serial_invalid_hex(port):
+    fs, _ = port
+    fs.script = {"PING": ["#PONG"], "READ": ["#DATA 4 00000000", "zzzzzzzz", "#DONE OK"]}
+    assert cc1110_tools.read_flash_serial("COM_TEST", 0x7800, 4) is None
+    assert not fs.instances[0].is_open
+
+
+def test_read_flash_serial_open_oserror(monkeypatch):
+    class FailSerial(FakeSerial):
+        def open(self):
+            raise OSError("port busy")
+
+    FakeSerial.instances = []
+    monkeypatch.setitem(sys.modules, "serial", types.SimpleNamespace(Serial=FailSerial))
+    assert cc1110_tools.read_flash_serial("COM_BUSY", 0x7800, 64) is None
+    assert not FakeSerial.instances[0].is_open
+
+
+# ---------------------------------------------------------------- counter_seed + serial_port
+
+def test_counter_seed_device_higher_than_gateway(gateway, port, capsys):
+    fs, _ = port
+    gateway.counters[TEST_DEVICE_ID] = 10 << 8  # gw_seed = 12
+    log = _make_ctr_log(page0=[_ctr_entry(20)])  # dev_seed = 23
+    fs.script = _read_script_for(log)
+    seed = cc1110_tools.counter_seed(gateway.url, TEST_DEVICE_ID, serial_port="COM_TEST")
+    assert seed == 23
+    assert "above gateway" in capsys.readouterr().out
+
+
+def test_counter_seed_gateway_higher_than_device(gateway, port, capsys):
+    fs, _ = port
+    gateway.counters[TEST_DEVICE_ID] = 50 << 8  # gw_seed = 52
+    log = _make_ctr_log(page0=[_ctr_entry(20)])  # dev_seed = 23
+    fs.script = _read_script_for(log)
+    seed = cc1110_tools.counter_seed(gateway.url, TEST_DEVICE_ID, serial_port="COM_TEST")
+    assert seed == 52
+    assert "gateway seed 52 is higher" in capsys.readouterr().out
+
+
+def test_counter_seed_unknown_gateway_uses_device_log(gateway, port):
+    fs, _ = port
+    log = _make_ctr_log(page1=[_ctr_entry(17)])  # dev_seed = 20
+    fs.script = _read_script_for(log)
+    seed = cc1110_tools.counter_seed(gateway.url, TEST_DEVICE_ID, serial_port="COM_TEST")
+    assert seed == 20
+
+
+@pytest.mark.parametrize("err_line", ["#ERR unknown command", "#ERR locked"])
+def test_counter_seed_flasher_fallback_to_gateway(gateway, port, err_line):
+    fs, _ = port
+    gateway.counters[TEST_DEVICE_ID] = 8 << 8  # gw_seed = 10
+    fs.script = {"PING": ["#PONG"], "READ": [err_line]}
+    seed = cc1110_tools.counter_seed(gateway.url, TEST_DEVICE_ID, serial_port="COM_TEST")
+    assert seed == 10
+
+
+def test_counter_seed_no_seed_skips_serial_and_gateway(gateway, port):
+    fs, _ = port
+    seed = cc1110_tools.counter_seed(gateway.url, TEST_DEVICE_ID, no_seed=True, serial_port="COM_TEST")
+    assert seed == 1
+    assert gateway.requests == []
+    assert fs.instances == []
+
+
+def test_counter_seed_exceeds_block_max_exits(gateway, port):
+    fs, _ = port
+    log = _make_ctr_log(page0=[_ctr_entry(cc1110_tools.CTR_BLOCK_MAX - 2)])  # + 3 > CTR_BLOCK_MAX
+    fs.script = _read_script_for(log)
+    with pytest.raises(SystemExit) as e:
+        cc1110_tools.counter_seed(gateway.url, TEST_DEVICE_ID, serial_port="COM_TEST")
+    assert e.value.code == 1
+
+    # Exactly CTR_BLOCK_MAX is still allowed
+    log_ok = _make_ctr_log(page0=[_ctr_entry(cc1110_tools.CTR_BLOCK_MAX - 3)])
+    fs.script = _read_script_for(log_ok)
+    assert cc1110_tools.counter_seed(gateway.url, TEST_DEVICE_ID, serial_port="COM_TEST") == cc1110_tools.CTR_BLOCK_MAX

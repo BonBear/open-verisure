@@ -130,7 +130,7 @@ def main():
     # config.h from the master key in secrets.h (exits without one; only its check value is shown)
     cc1110_tools.write_config(DEVICE_ID, CONFIG_H)
     # a flashed build starts its packet counter above the gateway's last accepted one
-    seed = cc1110_tools.counter_seed(GATEWAY_HTTP, DEVICE_ID, args.no_seed)
+    seed = cc1110_tools.counter_seed(GATEWAY_HTTP, DEVICE_ID, args.no_seed, serial_port=args.serial)
     compile_firmware(seed)
     if args.serial:
         cc1110_tools.flash_serial(args.serial, BIN_PATH, allow_locked=args.erase)

@@ -3,16 +3,20 @@
 cc1110_tools.py - Shared helpers of the CC1110 build-and-flash scripts
 (VerisureDoorSensor/build_and_flash.py and MD_CAM/build_and_flash_md_cam.py).
 
-* config_device_id()  the DEVICE_ID of a generated config.h
-* write_config()      config.h for a device ID from the master key in 868Receiver/src/secrets.h
-* counter_seed()      first packet counter block of a freshly flashed device (asks the gateway)
-* flash_serial()      flash a binary over the ESP_CC_Flasher's USB serial port
+* config_device_id()           the DEVICE_ID of a generated config.h
+* write_config()               config.h for a device ID from the master key in 868Receiver/src/secrets.h
+* parse_ctr_log()              highest valid counter block from a CC1110 flash log dump
+* read_flash_serial()          read flash bytes over the ESP_CC_Flasher's USB serial port
+* read_device_counter_block()  read the CC1110's counter log over serial and return its highest block
+* counter_seed()               first packet counter block of a freshly flashed device (gateway + device log)
+* flash_serial()               flash a binary over the ESP_CC_Flasher's USB serial port
 * replay_counter(), wait_for_device()  check that the gateway accepts the flashed device
 """
 import os
 import re
 import sys
 import time
+import zlib
 from typing import Optional
 
 import requests
@@ -20,6 +24,10 @@ import requests
 import derive_key
 
 key_check_value = derive_key.key_check_value
+
+CTR_LOG_ADDR = 0x7800
+CTR_LOG_SIZE = 2048      # pages 30-31, 512 x 4-byte entries
+CTR_BLOCK_MAX = 0xFEFFFF
 
 
 def config_device_id(config_h: str) -> Optional[str]:
@@ -52,14 +60,139 @@ def write_config(device_id: str, config_h: str, master_hex: Optional[str] = None
     return dev
 
 
-def counter_seed(gateway: str, device_id: str, no_seed: bool = False) -> int:
+def parse_ctr_log(data: bytes) -> Optional[int]:
+    """Return the highest valid counter block in a 2 KB CC1110 counter log dump, or None.
+
+    Matches cc1110_common/ctr_log.c ctr_decode()/ctr_check(): each 4-byte entry is
+    [b0, check, b1, b2] where b2 != 0xFF and check equals the number of 0 bits in the
+    24-bit block (Berger code).
+    """
+    if len(data) != CTR_LOG_SIZE:
+        raise ValueError(f"counter log must be {CTR_LOG_SIZE} bytes, got {len(data)}")
+    highest: Optional[int] = None
+    for off in range(0, CTR_LOG_SIZE, 4):
+        b0, check, b1, b2 = data[off:off + 4]
+        if b2 == 0xFF:
+            continue
+        block = b0 | (b1 << 8) | (b2 << 16)
+        zeros = 24 - bin(block).count("1")
+        if check == zeros and (highest is None or block > highest):
+            highest = block
+    return highest
+
+
+def read_flash_serial(port: str, addr: int, length: int) -> Optional[bytes]:
+    """Read `length` bytes from CC1110 flash at `addr` over ESP_CC_Flasher USB serial.
+
+    Uses DTR=False/RTS=False before open() so the ESP32 is not reset. Returns None (with a
+    short [i] message, never exiting) on any serial error, timeout, unsupported command,
+    locked chip, or framing/CRC mismatch.
+    """
+    import serial
+
+    s = None
+    try:
+        s = serial.Serial()
+        s.port, s.baudrate, s.timeout = port, 115200, 0.5
+        s.dtr = False
+        s.rts = False
+        s.open()
+
+        def answer(timeout: float) -> str:
+            t0 = time.time()
+            while time.time() - t0 < timeout:
+                line = s.readline().decode("utf-8", "replace").strip()
+                if line.startswith("#"):
+                    return line
+            return "#TIMEOUT"
+
+        s.reset_input_buffer()
+        s.write(b"PING\n")
+        pong = answer(3)
+        if pong != "#PONG":
+            print(f"[i] Flasher on {port} did not answer PING ({pong}); using gateway seed only")
+            return None
+
+        s.write(f"READ {addr:04x} {length}\n".encode())
+        hdr = answer(10)
+        if not hdr.startswith("#DATA "):
+            print(f"[i] Could not read device flash over {port} ({hdr}); using gateway seed only")
+            return None
+
+        parts = hdr.split()
+        if len(parts) != 3:
+            print(f"[i] Malformed #DATA header from {port} ({hdr}); using gateway seed only")
+            return None
+        try:
+            got_len = int(parts[1])
+            expected_crc = int(parts[2], 16)
+        except ValueError:
+            print(f"[i] Malformed #DATA header from {port} ({hdr}); using gateway seed only")
+            return None
+        if got_len != length:
+            print(f"[i] Unexpected flash read length {got_len} != {length}; using gateway seed only")
+            return None
+
+        hex_chunks = []
+        done_ok = False
+        t0 = time.time()
+        while time.time() - t0 < 45:
+            line = s.readline().decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            if line == "#DONE OK":
+                done_ok = True
+                break
+            if line.startswith("#"):
+                print(f"[i] Flash read aborted on {port} ({line}); using gateway seed only")
+                return None
+            hex_chunks.append(line)
+
+        if not done_ok:
+            print(f"[i] Timed out waiting for #DONE OK from {port}; using gateway seed only")
+            return None
+
+        try:
+            raw = bytes.fromhex("".join(hex_chunks))
+        except ValueError:
+            print(f"[i] Invalid hex payload from {port}; using gateway seed only")
+            return None
+
+        if len(raw) != length:
+            print(f"[i] Truncated flash payload ({len(raw)} != {length}); using gateway seed only")
+            return None
+
+        if (zlib.crc32(raw) & 0xFFFFFFFF) != expected_crc:
+            print(f"[i] Flash read CRC mismatch from {port}; using gateway seed only")
+            return None
+
+        return raw
+    except Exception as e:
+        print(f"[i] Could not read device flash over {port} ({e}); using gateway seed only")
+        return None
+    finally:
+        if s is not None:
+            s.close()
+
+
+def read_device_counter_block(port: str) -> Optional[int]:
+    """Read the CC1110 counter log (0x7800-0x7FFF) over serial and return its highest block."""
+    raw = read_flash_serial(port, CTR_LOG_ADDR, CTR_LOG_SIZE)
+    if raw is None:
+        return None
+    return parse_ctr_log(raw)
+
+
+def counter_seed(gateway: str, device_id: str, no_seed: bool = False,
+                 serial_port: Optional[str] = None) -> int:
     """First counter block for a freshly flashed device (main.c CTR_SEED).
 
     Flashing erases the device's counter log, which would restart its packet counter at block 1,
     below what the gateway last accepted, so the gateway would drop it until 'replay reset <ID>'.
-    Instead the gateway's last accepted counter (GET /api/replay?id=...) is read and the device
-    starts two blocks above it (the old firmware keeps sending until it is flashed and may enter
-    the next block meanwhile). Returns 1 if the gateway does not know the device.
+    Instead the gateway's last accepted counter (GET /api/replay?id=...) is read and, when
+    flashing over serial, the device's own flash log (0x7800-0x7FFF) is also read before erase so
+    boots or lost packets that never reached the gateway are not reused. Returns 1 if neither
+    has a counter yet.
 
     Without the gateway the script stops: a counter that restarts at block 1 reuses values (the
     gateway drops them, and for the camera its recorded poll answers would fit again). --no-seed
@@ -77,10 +210,28 @@ def counter_seed(gateway: str, device_id: str, no_seed: bool = False) -> int:
         print(f"    'replay reset {device_id}' on the gateway).")
         sys.exit(1)
     if not data["known"]:
+        gw_seed = 1
         print(f"[+] Gateway has no counter for {device_id} yet: counter starts at block 1")
-        return 1
-    seed = (int(data["counter"]) >> 8) + 2
-    print(f"[+] Gateway's last counter for {device_id}: {data['counter']}; device starts at block {seed}")
+    else:
+        gw_seed = (int(data["counter"]) >> 8) + 2
+        print(f"[+] Gateway's last counter for {device_id}: {data['counter']}; device starts at block {gw_seed}")
+
+    seed = gw_seed
+    if serial_port:
+        dev_block = read_device_counter_block(serial_port)
+        if dev_block is not None:
+            # ctr_limit allows dev_block + 1 unlogged, and READ resets the CC1110 so the
+            # old firmware may boot at dev_block + 2 and send a boot packet before FLASH erases it.
+            dev_seed = dev_block + 3
+            seed = max(gw_seed, dev_seed)
+            if dev_seed > gw_seed:
+                print(f"[+] Device flash log at block {dev_block} (above gateway): device starts at block {seed}")
+            else:
+                print(f"[+] Device flash log at block {dev_block} (gateway seed {gw_seed} is higher)")
+
+    if seed > CTR_BLOCK_MAX:
+        print(f"[-] Counter seed {seed} exceeds CTR_BLOCK_MAX ({CTR_BLOCK_MAX:#x}); cannot compile firmware")
+        sys.exit(1)
     return seed
 
 
