@@ -509,6 +509,8 @@ void setup_gpio(void) {
  * Radio Transceiver Configuration (868.950 MHz)
  * ============================================================================ */
 
+#include "../cc1110_common/radio_cca.c"
+
 /**
  * @brief Initialize the built-in CC1100 radio core.
  * @details Configures RF frequency, modulation, data rate, sync word, and power.
@@ -557,7 +559,11 @@ void radio_init(void) {
 
     // State machine transitions: Autocalibrate IDLE -> TX, return to IDLE after packet
     MCSM2 = 0x07;
+#if RF_CCA_ENABLE
+    MCSM1 = 0x30; // CCA_MODE=11 (RSSI < threshold unless receiving), IDLE after RX/TX
+#else
     MCSM1 = 0x00; // Return to IDLE after TX
+#endif
     MCSM0 = 0x18; // Autocalibrate whenever transitioning from IDLE to TX
 
     FOCCFG = 0x16;
@@ -565,7 +571,11 @@ void radio_init(void) {
 
     // Automatic Gain Control (AGC)
     AGCCTRL2 = 0x43;
+#if RF_CCA_ENABLE
+    AGCCTRL1 = 0x40 | (RF_CCA_ABS_THR & 0x0F);
+#else
     AGCCTRL1 = 0x40;
+#endif
     AGCCTRL0 = 0x91;
 
     // Front-End configuration
@@ -678,29 +688,10 @@ bool radio_send_dma(void) {
     DMA0CFGH = (uint8_t)(((uint16_t)&dma_desc) >> 8);
     DMA0CFGL = (uint8_t)(((uint16_t)&dma_desc) & 0xFF);
 
-    // 3. Clear flags
-    RFTXRXIF = 0;
-    RFIF = 0;
-    DMAIRQ &= ~0x01; // Clear DMA Channel 0 complete flag
+    // 3. Clear flags, perform CCA (when enabled), arm DMA0, and strobe STX
+    radio_cca_start_tx(tx_buf);
 
-    // 4. Arm DMA Channel 0 followed by 9 NOPs as required by TI errata
-    DMAARM = 0x01;
-    __asm
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-    __endasm;
-
-    // 5. Strobe STX to begin transmission
-    RFST = 0x03;
-
-    // 6. Wait until packet and CRC are fully transmitted (RFIF bit 4 = IRQ_DONE)
+    // 4. Wait until packet and CRC are fully transmitted (RFIF bit 4 = IRQ_DONE)
     timeout = 50000;
     while (!(RFIF & 0x10) && --timeout) {
         if ((MARCSTATE & 0x1F) == 0x16) {
@@ -712,7 +703,7 @@ bool radio_send_dma(void) {
 
     bool dma_done = (DMAIRQ & 0x01) != 0 || (RFIF & 0x10) != 0;
 
-    // 7. Clear interrupt flags and return to IDLE
+    // 5. Clear interrupt flags and return to IDLE
     RFST = 0x04;
     RFTXRXIF = 0;
     RFIF = 0;
@@ -917,7 +908,7 @@ void main(void) {
             }
 
             // 2. Plaintext Payload (16 Bytes) before AES-128 encryption
-            uint8_t plain[16];
+            static __xdata uint8_t plain[16];
             // a new block of 256 is logged in flash before it is used; a block that cannot be
             // logged (and is not the one after the newest entry) is not sent (see ctr_use)
             bool ctr_ok = ctr_use(ctr >> 8);

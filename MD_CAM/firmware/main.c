@@ -276,6 +276,8 @@ static bool s_tamper;       // reported in flags bit 2
  * Radio (868.950 MHz @ 27.000 MHz crystal Y1)
  * ============================================================================ */
 
+#include "../../cc1110_common/radio_cca.c"
+
 void radio_init(void) {
     RFST = 0x04; // SIDLE
     delay_ms(1);
@@ -303,14 +305,22 @@ void radio_init(void) {
     DEVIATN = 0x35;
 
     MCSM2 = 0x07;
+#if RF_CCA_ENABLE
+    MCSM1 = 0x30;
+#else
     MCSM1 = 0x00;
+#endif
     MCSM0 = 0x18;
 
     FOCCFG = 0x16;
     BSCFG  = 0x6C;
 
     AGCCTRL2 = 0x43;
+#if RF_CCA_ENABLE
+    AGCCTRL1 = 0x40 | (RF_CCA_ABS_THR & 0x0F);
+#else
     AGCCTRL1 = 0x40;
+#endif
     AGCCTRL0 = 0x91;
 
     FREND1 = 0x56;
@@ -383,24 +393,7 @@ bool radio_send_dma(void) {
     DMA0CFGH = (uint8_t)(((uint16_t)&dma_desc) >> 8);
     DMA0CFGL = (uint8_t)(((uint16_t)&dma_desc) & 0xFF);
 
-    RFTXRXIF = 0;
-    RFIF = 0;
-    DMAIRQ &= ~0x01;
-
-    DMAARM = 0x01;
-    __asm
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-        nop
-    __endasm;
-
-    RFST = 0x03; // STX
+    radio_cca_start_tx(tx_buf);
 
     // With the Blackfin on, measure VBAT while the PA sends: the radio's TX current on top of
     // the Blackfin's is the deepest sag a picture causes. The CPU only waits here anyway.
