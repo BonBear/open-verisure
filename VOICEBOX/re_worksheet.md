@@ -1,7 +1,8 @@
 # GW-AUD-VB voicebox: bench worksheet
 
 Fill in on the bench. Leave a cell empty when it has not been measured; write `n/a` when it does
-not apply. Background and part list: [README.md](README.md).
+not apply. Background and part list: [README.md](README.md). Procedures, pinouts and the list of
+actions that can erase the unit: [documentation/bench_recipes.md](../documentation/bench_recipes.md).
 
 Unit: 2AK2N9BR  Date: ________  Tools: ______________________
 
@@ -29,7 +30,7 @@ the audio amplifier may need more when it plays).
 
 | Part | Marking | Expected | Measured |
 | :--- | :--- | :--- | :--- |
-| Crystal next to the Si4460 | | 30 MHz or 26 MHz | |
+| Crystal next to the Si4460 | | 26 MHz (AN785 for 868 MHz) or 30 MHz | |
 | MSP430 XT1 (`DA60C`-type can near the MCU) | | 32.768 kHz | |
 | MSP430 XT2 (if fitted) | | | |
 | DCX81 crystal | | 10.368 MHz or 13.824 MHz (DECT) | |
@@ -59,7 +60,8 @@ supply off.
 | | | | |
 
 MSP430F5435A pins to look for (LQFP-80): TEST/SBWTCK, RST/NMI/SBWTDIO, TDO, TDI, TMS, TCK
-(PJ.0–PJ.3), BSL TX/RX (P1.1/P2.2 on F543x), DVCC, DVSS.
+(PJ.0–PJ.3), BSL TXD/RXD (P1.6/P1.5), DVCC, DVSS. Exact pin numbers are unverified; see
+[documentation/bench_recipes.md](../documentation/bench_recipes.md).
 
 ### MSP430 JTAG / SBW test
 
@@ -69,7 +71,7 @@ MSP430F5435A pins to look for (LQFP-80): TEST/SBWTCK, RST/NMI/SBWTDIO, TDO, TDI,
 | Device ID read | |
 | JTAG fuse blown? | |
 | Flash dump (file, size, SHA-256) | |
-| BSL entry possible? Password (vector table) known? | |
+| **Do not try the BSL**: a wrong password mass-erases the flash | ☐ read and understood |
 
 ## 4. DCX81 and its flash
 
