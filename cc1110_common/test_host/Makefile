@@ -60,11 +60,11 @@ run: check-arch $(BUILD)/ctr_log_tests
 $(BUILD)/ctr_log_tests: $(OBJECTS)
 	$(CXX) $(SANITIZE) -o $@ $^
 
-$(BUILD)/door_ctr.inc: $(DOOR_SRC) extract_ctr.py
+$(BUILD)/door_ctr.inc: $(DOOR_SRC) $(ROOT)/cc1110_common/delay.c extract_ctr.py
 	@mkdir -p $(BUILD)
 	$(PYTHON) extract_ctr.py $< $@
 
-$(BUILD)/cam_ctr.inc: $(CAM_SRC) extract_ctr.py
+$(BUILD)/cam_ctr.inc: $(CAM_SRC) $(ROOT)/cc1110_common/delay.c extract_ctr.py
 	@mkdir -p $(BUILD)
 	$(PYTHON) extract_ctr.py $< $@
 
