@@ -11,11 +11,12 @@ the bench.
 | Maker | Made in Japan (PCB K2226) | Panasonic, Japan (PCB K1969-1) | Japanese silkscreen (PCB M1765-1) |
 | MCU | Silicon Labs EFR32FG14P231 (Cortex-M4) | TI MSP430F5435A | TI MSP430F149 |
 | Sub-GHz radio | integrated in the EFR32 | Silicon Labs Si4460 (assumed) | TI CC1101 |
-| Other radio | EFR32 2.4 GHz (use unknown) | DSP Group DCX81 (DECT voice SoC) | none |
+| Other radio | none expected (P231 = sub-GHz only, to confirm) | DSP Group DCX81 (DECT voice SoC) | none |
 | External flash | Winbond W25Q16JL (16 Mbit) | Winbond W25Q16DW (16 Mbit, 1.8 V) | none |
 | Audio | 8 Ω speaker, driver unknown (IC81?) | 2x 8 Ω speakers, MEMS microphone | OKI speech LSI + horn driver |
 | Other sensors | optical smoke chamber | PIR | thermistor, tamper switch |
-| Debug | labelled pads: CLK, DIO, SW, RES, TXD, RXD, TPR, FIRE (SWD + UART) | unlabelled pogo cluster (JTAG/SBW to find) | TP pads (JTAG/BSL to find) |
+| Debug | labelled pads: CLK, DIO, SW, RES, TXD, RXD, TPR, FIRE (SWD + UART) | unlabelled pogo cluster (JTAG/SBW to find) | TP pads (JTAG to find) |
+| Bench recipes | [bench_recipes.md](bench_recipes.md) §1, §2 | §2, §3, §4 | §3, §4 |
 | Battery | built in, not replaceable | 3x lithium, 3 V | to check |
 
 ## What the photos already tell
@@ -25,8 +26,12 @@ the bench.
   probably share the 868.950 MHz link, but that has to be confirmed by listening.
 - The smoke detector is the easiest place to start: its SWD and UART pads are labelled, and it has a
   standard Cortex-M debug port.
-- The MSP430 boards (siren, voicebox) need the JTAG pads found by continuity first. Check the JTAG
-  fuse before anything else.
+- The MSP430 boards (siren, voicebox) need the JTAG pads found by continuity first. Reading their
+  flash needs a TI FET (MSP-FET, or the eZ-FET on an MSP430 LaunchPad), which the bench does not
+  have. Their BSL is not an option: a wrong password mass-erases the flash. Until a FET is there,
+  stick to SPI sniffing, the external flash and the radio.
+- Procedures, pinouts and the list of actions that can erase a unit are in
+  [bench_recipes.md](bench_recipes.md).
 
 ## Suggested bench order
 

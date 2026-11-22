@@ -30,8 +30,9 @@ still to be taken go in [re_worksheet.md](re_worksheet.md); the cross-device ove
 ## Debug / programming candidates
 
 TP61–TP64 (a 4-pad group next to IC1), TP70–TP72, TP31/TP32, TP81/TP82, TP84–TP88 (back, next to
-CN1), TP91/TP92 (back). The MSP430F149 has 4-wire JTAG and a ROM BSL (P1.1 TX / P2.2 RX); see the
-worksheet.
+CN1), TP91/TP92 (back). The MSP430F149 has 4-wire JTAG (needs a TI FET) and a ROM BSL (P1.1 TX /
+P2.2 RX). The BSL is not a read path: a wrong password mass-erases the flash. See the worksheet and
+[documentation/bench_recipes.md](../documentation/bench_recipes.md).
 
 ## Photo requests
 

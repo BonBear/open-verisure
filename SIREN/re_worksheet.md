@@ -1,7 +1,10 @@
 # Siren: bench worksheet
 
 Fill in on the bench. Leave a cell empty when it has not been measured; write `n/a` when it does
-not apply. Background and part list: [README.md](README.md).
+not apply. Background and part list: [README.md](README.md). Procedures, pinouts (MSP430F149 JTAG
+pins 54–58, CC1101) and the list of actions that can erase the unit:
+[documentation/bench_recipes.md](../documentation/bench_recipes.md). Decode an SPI capture with
+`python tools/cc1101_spi_decode.py capture.csv --xtal-mhz 27`.
 
 Unit / device ID: ________  Date: ________  Tools: ______________________
 
@@ -78,11 +81,11 @@ TP81/TP82 and TP84–TP88 on the back (next to CN1), TP91/TP92 on the back.
 
 | Step | Result |
 | :--- | :--- |
-| Tool (MSP-FET / mspdebug + FET / BSL script) | |
+| Tool (MSP-FET or LaunchPad eZ-FET; the FT232H cannot do MSP430 JTAG) | |
 | Device ID read | |
 | JTAG fuse blown? | |
-| Flash dump via JTAG or BSL (file, size, SHA-256) | |
-| BSL password (= vector table) available? | |
+| Flash dump via JTAG (file, size, SHA-256) | |
+| **Do not try the BSL**: a wrong password mass-erases the flash | ☐ read and understood |
 
 ## 5. CC1101 (IC3) link to the MSP430
 

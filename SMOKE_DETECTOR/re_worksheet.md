@@ -1,7 +1,8 @@
 # GW-SD3 smoke detector: bench worksheet
 
 Fill in on the bench. Leave a cell empty when it has not been measured; write `n/a` when it does
-not apply. Background and part list: [README.md](README.md).
+not apply. Background and part list: [README.md](README.md). Procedures, pinouts and the list of
+actions that can erase the unit: [documentation/bench_recipes.md](../documentation/bench_recipes.md).
 
 Unit used: ☐ 3EA8VKXK ☐ 3EB7KFZQ  Date: ________  Tools: ______________________
 
@@ -136,7 +137,7 @@ Add rows as needed.
 | Packet length, first bytes (is the device ID in plaintext like the door sensor?) | |
 | Supervision/heartbeat interval | |
 | Does it receive (siren/alarm command from the hub)? | |
-| 2.4 GHz activity? | |
+| 2.4 GHz activity? (P231 should be sub-GHz only) | |
 
 ## 9. Open questions
 

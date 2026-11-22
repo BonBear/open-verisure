@@ -26,7 +26,7 @@ read in a photo; everything else is marked as an assumption to verify.
 | :--- | :--- | :--- | :--- |
 | MCU | `TI 61A47XTG4 M430F5435A REV H` (LQFP-80) | **TI MSP430F5435A** (MSP430F5xx, 192 KB flash, 16 KB RAM) | Confirmed |
 | Sub-GHz radio | `44601B BCL01Z 1534` (QFN-20, 4x4) | **Silicon Labs Si4460** rev B1 sub-GHz transceiver (assumed from the `4460 1B` marking) | Very likely; confirm on the bench |
-| Crystal next to the Si4460 | not readable | Si446x usually uses 30 MHz (or 26 MHz) | To measure |
+| Crystal next to the Si4460 | not readable | Silicon Labs AN785 recommends 26 MHz for 868 MHz designs (family default 30 MHz) | To measure |
 | `WLAG` (SOT-23-5) | `WLAG` | LDO or RF switch next to the radio | Unknown |
 | DSP | `DSP Group DCX81ACPCFAE4FNC-PB ©2010 DSPG P3XT74.0G.A` (LQFP ~100) | **DSP Group DCX81**, DECT/ULE voice SoC (audio codec, speakerphone DSP, DECT radio) | Confirmed marking; role here (voice codec only, or DECT link to the hub) to find out |
 | Flash next to the DCX81 | `winbond 25Q16DWSIG 1602` (SOIC-8) | Winbond **W25Q16DW**, 16 Mbit **1.8 V** SPI NOR flash: probably the DCX81 firmware and voice prompts | Confirmed marking |
@@ -59,13 +59,15 @@ No labelled header was found. Candidates:
 - **Pogo pad cluster** on the front (pads 41, 42, 51–59, 61, 66, 67 and others; about 20 large pads in
   a hexagonal grid next to the FPC connector). This is most likely the factory test/programming
   jig. The MSP430F5435A can be programmed through 4-wire JTAG (TDO/TDI/TMS/TCK + TEST/RST) or
-  Spy-Bi-Wire (SBWTCK = TEST, SBWTDIO = RST), or through the BSL over UART. The DCX81 has its own
-  JTAG/UART.
+  Spy-Bi-Wire (SBWTCK = TEST, SBWTDIO = RST); both need a TI FET (MSP-FET or a LaunchPad's eZ-FET),
+  which the bench does not have yet. The UART BSL (P1.6/P1.5) is not a read path: a wrong password
+  mass-erases the flash. The DCX81 has its own JTAG/UART.
 - Numbered test pads around the MCU: 70, 71, 72, 76, 77, 79, 101, 102, 104, 105.
 - Others: 1, 2, 28, 45, 49, 62, 63, 65, 73–75, 78, 82, 88, 96, 97, 100, 103, 106–108, 110, 121.
 
-The MSP430F5xx has a JTAG fuse/password (the BSL password is the interrupt vector table). Check the
-JTAG state before writing anything.
+The MSP430F5xx has a JTAG security fuse, and its BSL password is the interrupt vector table, which
+is unknown without the firmware. Check the JTAG state with a FET before anything else, and never try
+the BSL on this unit. Details: [documentation/bench_recipes.md](../documentation/bench_recipes.md).
 
 ## Photo requests
 

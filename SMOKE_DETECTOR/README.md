@@ -28,7 +28,7 @@ button until the LED flashes red fast.
 
 | Ref | Marking | Identification | Status |
 | :--- | :--- | :--- | :--- |
-| (MCU/radio, no ref visible) | `EFR32 FG14P231GG 2313B0269N`, Silicon Labs logo | **Silicon Labs EFR32FG14P231** Flex Gecko SoC (Cortex-M4, sub-GHz + 2.4 GHz radio), QFN48 | Confirmed marking; exact flash size from the full OPN still to read |
+| (MCU/radio, no ref visible) | `EFR32 FG14P231GG 2313B0269N`, Silicon Labs logo | **Silicon Labs EFR32FG14P231** Flex Gecko SoC (Cortex-M4), QFN48. Feature code 231 is sub-GHz only according to the Silicon Labs device pages (233 is dual-band); not yet confirmed | Confirmed marking; flash size (F128 or F256) to read from the DI page over SWD |
 | Crystal next to the EFR32 | `3840T` (metal can, 4-pad) | 38.400 MHz HFXO (the EFR32 reference value) | Assumption: verify on the bench |
 | Crystal (brown, 2-pad) | `A320L` | Probably the 32.768 kHz LFXO | Assumption |
 | IC6 | `winbond 25Q16JLNIG 2323` (SOIC-8) | Winbond **W25Q16JL**, 16 Mbit SPI NOR flash | Confirmed marking; use to be found (OTA image, event log or voice samples) |
@@ -72,8 +72,8 @@ There is no GND or VCC pad in this group. `VCC` and `VCA` test pads sit next to 
 connector; GND has to be found by continuity. The base has a matching 8-hole pattern, so the
 factory jig reaches the pads through the base.
 
-EFR32 SWD works with a J-Link, a CMSIS-DAP probe (for example a Raspberry Pi Pico running
-debugprobe) or OpenOCD (`target/efm32.cfg`). Debug access may be locked. On Series 1 parts a
+EFR32 SWD works with the Raspberry Pi Debug Probe (CMSIS-DAP) and OpenOCD (`target/efm32.cfg`);
+the read-only procedure is in [documentation/bench_recipes.md](../documentation/bench_recipes.md). Debug access may be locked. On Series 1 parts a
 device erase (`DEVICE_ERASE` through the AAP) unlocks it, but it wipes the flash, so **read
 the lock state first and never erase the only unit** until the firmware has been dumped another way
 (for example from the external W25Q16 flash).
