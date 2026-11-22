@@ -7,7 +7,9 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
-The first release (draft for `v1.0.0`). Everything below is new.
+## [1.0.0] - 2026-11-22
+
+The first release. Everything below is new.
 
 ### Gateway (`868Receiver/`, ESP32-S2 + CC1101)
 
@@ -52,7 +54,9 @@ The first release (draft for `v1.0.0`). Everything below is new.
 - The 0.5 s tick runs on the internal RC oscillator and starts the crystal only before a packet:
   its share of the idle current fell from ~21 uA to ~4.7 uA (3.0 V, measured over 9 h; heartbeat
   drift ~+0.1 %).
-- Persistent packet counter in flash; the build script seeds a reflash from the gateway's counter.
+- Persistent packet counter in flash; the build script seeds a reflash from the gateway's counter
+  and, when flashing over USB serial, also from the device's own flash log (`0x7800-0x7FFF`, read
+  with the flasher's `READ` command): the seed is `max(gateway seed, logged block + 3)`.
 
 ### Door sensor and camera (counter log)
 
@@ -91,13 +95,13 @@ The first release (draft for `v1.0.0`). Everything below is new.
   a key guard against real keys in the repository, `cppcheck`, `gitleaks`, the KDF test vector,
   host unit and fuzz tests of the gateway's crypto, replay filter, portal, downlink, picture
   receiver, `picture_token`, and `duty_cycle`, emulated-flash tests of the CC1110 counter log,
-  pytest tests of the Python scripts, and CodeQL. `main` is protected: changes land through pull
+  pytest tests of the Python scripts, Python lint (`ruff`), a release package check, and CodeQL. `main` is protected: changes land through pull
   requests with these checks green. Dependabot for actions and Python packages.
 
 ### Known issues
 
 - Once, after a 90 s power cut, the camera stayed awake without sending until it was reset
-  (1 of 6 power cuts on 2026-11-19); pull request #22 starts the watchdog before the start-up so such a hang
-  resets the chip.
+  (1 of 6 power cuts on 2026-11-19); since pull request #22 the watchdog starts before the start-up,
+  so such a hang resets the chip.
 - More in `TODO.md`, including the master key that was public in the history (change it before
   use).
