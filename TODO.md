@@ -4,16 +4,9 @@ Two lists: what Claude can do on its own, and what needs someone at the camera o
 Remove an item when it is done; its result goes in the commit message, the docs and, for
 lessons worth keeping, `.agents/memory.md`.
 
-**Status, 2026-11-18:** a 7 h armed overnight run in the dark and a 7.8 h armed day run were clean (no silent poll gaps, no resets, every picture complete; armed idle 0.054 mA; e2e 12/12 in daylight).
-
-**Status, 2026-11-16 night:** the camera works on the bench (pictures in 5–8 s, 640x480 in ~12 s,
-deltas, IR flash in the dark, resend also during alarm sequences, PIR wake-up, PM2 sleep at
-~0.05 mA idle, e2e 12/12). Everything is on `main`. What is left for the camera is mostly tests
-on site (list B). Bench routines (flashing, JTAG, HOLD) are in `MD_CAM/README.md`.
-
 ## A. Claude can do unattended
 
-Nothing open. (2026-11-22: the one-off camera silence and USB serial stall were dropped, not seen in many firmware iterations since; `v1.0.0` released.)
+Nothing open.
 
 ## B. Needs you
 
