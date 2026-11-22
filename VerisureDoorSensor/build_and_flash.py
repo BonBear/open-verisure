@@ -73,15 +73,16 @@ GATEWAY_HTTP = os.environ.get("GATEWAY_HTTP", "http://verisure-gateway.local")  
 CONFIG_H = os.path.join(VERISURE_DIR, "config.h")
 
 
-def counter_seed(gateway: str, no_seed: bool = False) -> int:
+def counter_seed(gateway: str, no_seed: bool = False, serial_port: Optional[str] = None) -> int:
     """First counter block for a freshly flashed sensor (main.c CTR_SEED), from the gateway's last
-    accepted counter for the DEVICE_ID in config.h (see cc1110_tools.counter_seed)."""
+    accepted counter for the DEVICE_ID in config.h and, when flashing over serial, the device's
+    own flash log (see cc1110_tools.counter_seed)."""
     dev = cc1110_tools.config_device_id(CONFIG_H)
     if not dev and not no_seed:
         # the firmware would then build with config.h.example's ID and restart its counter
         print(f"[-] No DEVICE_ID in {CONFIG_H}: no counter seed. Use --id <label ID>, or --no-seed.")
         sys.exit(1)
-    return cc1110_tools.counter_seed(gateway, dev or "<ID>", no_seed)
+    return cc1110_tools.counter_seed(gateway, dev or "<ID>", no_seed, serial_port=serial_port)
 
 
 def compile_firmware(ctr_seed: int = 1) -> bool:
@@ -422,7 +423,7 @@ def main():
         cc1110_tools.write_config(args.id, CONFIG_H)
 
     # 1. Compile firmware (a flashed build starts its packet counter above the gateway's)
-    seed = 1 if args.compile_only else counter_seed(args.gateway, args.no_seed)
+    seed = 1 if args.compile_only else counter_seed(args.gateway, args.no_seed, serial_port=args.serial)
     if not compile_firmware(seed):
         sys.exit(1)
 
