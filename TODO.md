@@ -13,9 +13,7 @@ on site (list B). Bench routines (flashing, JTAG, HOLD) are in `MD_CAM/README.md
 
 ## A. Claude can do unattended
 
-- [ ] **Camera silent once after a picture command.** On 2026-11-16, right after flashing both the gateway and the camera, the camera sent nothing for 70 s after a D1 command (no picture, no polls). Not seen again in the following runs (including a 7 h armed run on 2026-11-17/18 with 922 polls, none more than 45 s apart), and the Otii showed no supply cut-off then. If it comes back: record the current (Blackfin on or not, CC1110 awake or not) and the gateway log.
-- [ ] **Gateway USB serial output stalled once (low).** On 2026-11-18 a script kept COM9 open without reading for ~1.5 h while it retried opening it; after it was killed the gateway sent no more text on USB (radio and MQTT kept working) until `reboot` on the console. Not reproduced: holding the port unread for 3 and 25 min and then killing the process left the console working (2026-11-18, firmware 5319b54). Note: the Arduino core's `USBCDC::write` loops without a timeout while the host has the port open but does not read. If it comes back: note what held the port; scripts must close the port when they stop reading.
-- [ ] **First release.** `release/make_release.py` builds the setup package (tracked files only, no secrets; `--check` unpacks it and builds all three firmwares), and `.github/workflows/release.yml` runs it for a pushed tag `v*` and attaches the zip to a GitHub release. `CHANGELOG.md` has a draft of the release notes under [Unreleased]. Left: decide when the state is release-worthy, rename [Unreleased] to `[1.0.0] - <date>`, and push the first tag (`v1.0.0`); a prebuilt gateway binary is not included on purpose (its key and settings belong to each user).
+Nothing open. (2026-11-22: the one-off camera silence and USB serial stall were dropped, not seen in many firmware iterations since; `v1.0.0` released.)
 
 ## B. Needs you
 
