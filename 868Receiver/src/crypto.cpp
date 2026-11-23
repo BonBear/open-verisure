@@ -30,6 +30,7 @@ struct DeviceSession {
     bool storePending;      /**< lastCtr is newer than NVS (written by cryptoReplayFlush) */
     uint32_t picTag;        /**< Tag (start packet counter) of the newest accepted picture chunk */
     bool hasPicTag;         /**< picTag is valid (a picture chunk was accepted since the session began) */
+    bool picTagRetired;     /**< True once picTag finished (including any resend) to reject 0x82/0x83 replay */
     unsigned long lastSeen; /**< Timestamp (millis) when last authenticated packet arrived */
 };
 
@@ -180,6 +181,7 @@ static DeviceSession* getOrCreateSession(const char* deviceId, bool onlyKnown = 
         s->storePending = false;
         s->picTag = 0;
         s->hasPicTag = false;
+        s->picTagRetired = false;
         s->lastSeen = 0;
         // A device that has sent the persistent counter keeps its floor across gateway restarts
         uint32_t floor;
@@ -240,9 +242,10 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16],
     // accepted counter and must lie within PIC_TAG_BEHIND before it (the polls and resend rounds
     // that follow a picture) or PIC_TAG_AHEAD after it (start packet lost), so a recorded picture
     // is useless once the camera has sent ~128 more packets. Within that window a new chunk (0x82)
-    // must belong to the newest picture seen or a newer one, and a resent chunk (0x83) to exactly
-    // the newest picture (the one being completed), so an older recorded picture or its resent
-    // chunks cannot come back. Camera data never moves the counter's replay window itself.
+    // must belong to the newest picture seen (while still open/in resend) or a newer one, and a
+    // resent chunk (0x83) to exactly that active picture, so an older or already completed picture
+    // and its resent chunks cannot come back. Camera data never moves the counter's replay window
+    // itself.
     DeviceSession* sess = getOrCreateSession(devId, true);
     if (!sess || !sess->ctrMode || !sess->hasLastSeq || sess->needBoot) return false;
     uint16_t num = ((uint16_t)plain[0] << 8) | plain[1];
@@ -251,8 +254,9 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16],
     bool resent = plain[2] == 0x83;
     if (plain[46] != (uint8_t)(tag >> 24) || plain[47] != (uint8_t)(tag >> 16) ||
         d > PIC_TAG_AHEAD || d < -PIC_TAG_BEHIND ||
-        (resent ? !sess->hasPicTag || tag != sess->picTag
-                : sess->hasPicTag && (int32_t)(tag - sess->picTag) < 0)) {
+        (resent ? !sess->hasPicTag || sess->picTagRetired || tag != sess->picTag
+                : sess->hasPicTag && ((int32_t)(tag - sess->picTag) < 0 ||
+                                      (sess->picTagRetired && tag == sess->picTag)))) {
         g_gatewayDiag.picStale++;
         static unsigned long s_lastLog = 0;
         if (millis() - s_lastLog > 5000) {
@@ -263,15 +267,30 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16],
         }
         return true;            // a valid but stale chunk: handled (dropped), not a 24-byte packet
     }
-    sess->picTag = tag;
-    sess->hasPicTag = true;
+    if (!sess->hasPicTag || tag != sess->picTag) {
+        sess->picTag = tag;
+        sess->hasPicTag = true;
+        sess->picTagRetired = false;
+    }
     sess->lastSeen = millis();
     uint16_t idx = ((uint16_t)plain[3] << 8) | plain[4];
     if (resent)       // a chunk resent on request: patched into the last picture
         imageReceiverProcessResend(devId, idx, len, (plain[5] & 0x40) != 0, &plain[6], channel);
     else
-        imageReceiverProcessChunk(devId, idx, len, (plain[5] & 0x80) != 0, (plain[5] & 0x40) != 0, &plain[6], channel);
+        imageReceiverProcessChunk(devId, idx, len, (plain[5] & 0x80) != 0, (plain[5] & 0x40) != 0, &plain[6], channel, tag);
     return true;
+}
+
+void cryptoRetirePicTag(const char* devId, uint32_t tag) {
+    if (!devId) return;
+    for (size_t i = 0; i < s_deviceCount; i++) {
+        if (strcmp(s_devices[i].deviceId, devId) == 0) {
+            if (s_devices[i].hasPicTag && s_devices[i].picTag == tag) {
+                s_devices[i].picTagRetired = true;
+            }
+            return;
+        }
+    }
 }
 
 /** An authenticated packet dropped by the replay filter: count it, remember the ID. */
@@ -472,6 +491,7 @@ bool cryptoReplayReset(const char* deviceId, uint32_t maxBlock) {
         s->resetMaxCtr = maxCtr;
         s->storePending = false;
         s->hasPicTag = false;   // the newest picture tag belongs to the old counter
+        s->picTagRetired = false;
     }
     return found;
 }
@@ -484,5 +504,15 @@ void cryptoHostTestRestart() {
     s_deviceCount = 0;
     if (s_replayPrefsOpen) s_replayPrefs.end();
     s_replayPrefsOpen = false;
+}
+
+bool cryptoHostTestPicTagRetired(const char* devId) {
+    if (!devId) return false;
+    for (size_t i = 0; i < s_deviceCount; i++) {
+        if (strcmp(s_devices[i].deviceId, devId) == 0) {
+            return s_devices[i].hasPicTag && s_devices[i].picTagRetired;
+        }
+    }
+    return false;
 }
 #endif

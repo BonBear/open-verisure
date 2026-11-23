@@ -22,9 +22,11 @@ void imageReceiverInit(void);
  * @param isLast True if this is the final chunk (EOI).
  * @param data Pointer to chunkLen bytes of JPEG data.
  * @param channel Radio channel (0 = main 868.95 MHz, 1 = PCH 869.525 MHz).
+ * @param picTag 32-bit start-packet tag for this picture (used to retire completed tags).
  */
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
-                               bool isFirst, bool isLast, const uint8_t* data, uint8_t channel = 0);
+                               bool isFirst, bool isLast, const uint8_t* data, uint8_t channel = 0,
+                               uint32_t picTag = 0);
 
 /** Cameras with their own picture state (reassembly, delta base, resend, pending publish); keep
  *  equal to DOWNLINK_MAX_CAMERAS in downlink.h (static_assert in image_receiver.cpp). A camera gets a slot with its first chunk; when

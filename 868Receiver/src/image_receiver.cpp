@@ -4,6 +4,7 @@
  */
 
 #include "image_receiver.h"
+#include "crypto.h"
 #include "mqtt_manager.h"
 #include <string.h>
 #include <esp_heap_caps.h>
@@ -85,6 +86,8 @@ struct CamPic {
     int32_t lastIdx;
     unsigned long lastChunkTime;
     bool imgDirty;                   // imgBuf holds a picture under resend: wipe it before reuse
+    uint32_t picTag;                 // start-packet tag of the open / resending picture
+    bool hasPicTag;
 
     // stored pictures
     size_t jpgLen;
@@ -161,7 +164,9 @@ static uint8_t* allocBig(size_t n) {
     if (s_hostFailAlloc > 0) s_hostFailAlloc--;
 #endif
     uint8_t* p = (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#ifdef HOST_TEST
     if (!p) p = (uint8_t*)malloc(n);
+#endif
     return p;
 }
 
@@ -313,7 +318,8 @@ static bool slotBuffers(CamPic* c) {
         c->allocFailed = false;
     }
     if (c->imgBuf && c->jpg && s_tmp) return true;
-    if (!s_tmp) s_tmp = allocBig(MAX_IMAGE_SIZE);
+    bool newTmp = !s_tmp;
+    if (newTmp) s_tmp = allocBig(MAX_IMAGE_SIZE);
     bool newImg = !c->imgBuf, newJpg = !c->jpg;
     if (newImg) c->imgBuf = allocBig(MAX_IMAGE_SIZE);
     if (newJpg) c->jpg = allocBig(MAX_IMAGE_SIZE);
@@ -321,6 +327,7 @@ static bool slotBuffers(CamPic* c) {
         if (newImg) jpegReset(c);
         return true;
     }
+    if (newTmp && s_tmp) { free(s_tmp); s_tmp = nullptr; }
     if (newImg && c->imgBuf) free(c->imgBuf);       // only what this call allocated
     if (newJpg && c->jpg) free(c->jpg);
     if (newImg) c->imgBuf = nullptr;
@@ -358,7 +365,13 @@ static void rsCancel(CamPic* c) {
     bool wasActive = c->rsActive;
     if (wasActive) downlinkCancelResend(c->deviceId);
     c->rsActive = false;
-    if (wasActive) pictureTokenOnPictureDone(c->deviceId, false, (uint32_t)millis());
+    if (wasActive) {
+        pictureTokenOnPictureDone(c->deviceId, false, (uint32_t)millis());
+        if (c->hasPicTag) {
+            cryptoRetirePicTag(c->deviceId, c->picTag);
+            c->hasPicTag = false;
+        }
+    }
 }
 
 // Ask for the missing chunks among the 32 from the first missing one (a bitmap, so chunks the
@@ -449,6 +462,10 @@ static void jpegFinishBody(CamPic* c, size_t len, bool endSeen);
 
 static void jpegFinish(CamPic* c, size_t len, bool endSeen) {
     jpegFinishBody(c, len, endSeen);
+    if (!c->rsActive && c->hasPicTag) {
+        cryptoRetirePicTag(c->deviceId, c->picTag);
+        c->hasPicTag = false;
+    }
     pictureTokenOnPictureDone(c->deviceId, c->rsActive, (uint32_t)millis());
 }
 
@@ -613,7 +630,8 @@ void imageReceiverInit(void) {
 }
 
 void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t chunkLen,
-                               bool isFirst, bool isLast, const uint8_t* data, uint8_t channel) {
+                               bool isFirst, bool isLast, const uint8_t* data, uint8_t channel,
+                               uint32_t picTag) {
     if (!deviceId || !data || chunkLen == 0 || chunkLen > JPEG_CHUNK || chunkIdx >= JPEG_MAX_CHUNKS ||
         (size_t)chunkIdx * JPEG_CHUNK + chunkLen > MAX_IMAGE_SIZE) return;
     unsigned long now = millis();
@@ -634,6 +652,8 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
         jpegFinish(c, c->imgEnd, false);    // previous picture lost its last chunk
         s_noResend = false;
     }
+    c->picTag = picTag;
+    c->hasPicTag = true;
     const bool newPic = (c->lastIdx < 0);
     noteChunkChannel(c, channel);
     dutyCycleRecordCamChunk(deviceId, channel, false, newPic, (uint32_t)now);

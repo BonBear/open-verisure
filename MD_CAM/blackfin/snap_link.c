@@ -647,7 +647,7 @@ static unsigned long cycles(void)
  * end of the next VSYNC; with ymod = -(2 * BAND_SAMP - 2) every band overwrites the last
  * (only the last band is kept). flash: fire the flash test word or flash_pic (whole-frame
  * grabs only).
- * Returns DMA0_STAT (bit 0 DMA_DONE, bit 1 DMA_ERR). */
+ * Returns DMA0_STAT (bit 0 DMA_DONE, bit 1 DMA_ERR), or 0 on VSYNC timeout. */
 static unsigned int ppi_dma(unsigned long dst, unsigned int bands, short ymod, int flash)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
@@ -687,8 +687,15 @@ static unsigned int ppi_dma(unsigned long dst, unsigned int bands, short ymod, i
     SSYNC();
     for (t = 0; t < 4000000UL && !(R16(PORTGIO) & 0x0080); t++)
         ;
-    for (t = 0; t < 4000000UL && (R16(PORTGIO) & 0x0080); t++)
-        ;
+    if (t < 4000000UL) {
+        for (t = 0; t < 4000000UL && (R16(PORTGIO) & 0x0080); t++)
+            ;
+    }
+    if (t == 4000000UL) {
+        R16(DMA0_CONFIG) = 0;
+        SSYNC();
+        return 0;
+    }
     R16(PPI_CONTROL) = 0x383D;      /* no frame syncs, continuous from the end of VSYNC */
     SSYNC();
     if (mask) {
@@ -700,11 +707,12 @@ static unsigned int ppi_dma(unsigned long dst, unsigned int bands, short ymod, i
             R16(PORTFIO_CLEAR) = mask;
             mask = 0;
         }
-        if (R16(DMA0_STAT) & 0x0001)
+        if (R16(DMA0_STAT) & 0x0003)
             break;
     }
     R16(PORTFIO_CLEAR) = 0x1400;    /* flash off in any case */
     R16(PPI_CONTROL) = 0;
+    R16(DMA0_CONFIG) = 0;
     SSYNC();
     s = R16(DMA0_STAT);
     return s;
@@ -728,9 +736,10 @@ static int frame_hold;              /* capture() reuses the frame in SDRAM even 
  * hires 0: 320 wide, row R = sensor line 2R, pixel x = sensor pixel 2x;
  * hires 1: 640 wide, row R = sensor line R, pixel x = sensor pixel x.
  * With SDRAM a new frame is grabbed for row0 == 0 (a new picture) or after frame_new = 1;
- * the other strips of the picture come from the same frame. */
-static void capture(volatile unsigned char *yout, volatile unsigned char *uout, volatile unsigned char *vout,
-                    unsigned int row0, unsigned int n, unsigned int hires)
+ * the other strips of the picture come from the same frame.
+ * Returns 0 on success, -1 on PPI/DMA failure. */
+static int capture(volatile unsigned char *yout, volatile unsigned char *uout, volatile unsigned char *vout,
+                   unsigned int row0, unsigned int n, unsigned int hires)
 {
     unsigned long rstride = hires ? LINE_SAMP : 2UL * LINE_SAMP;
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
@@ -755,7 +764,7 @@ static void capture(volatile unsigned char *yout, volatile unsigned char *uout, 
         if (frame_valid) {
             extract((volatile unsigned short *)FRAME_SDRAM, 0, (unsigned long)FRAME_BANDS * BAND_SAMP,
                     yout, uout, vout, row0, n, hires);
-            return;
+            return 0;
         }
     }
 
@@ -763,11 +772,26 @@ static void capture(volatile unsigned char *yout, volatile unsigned char *uout, 
     kmax = (unsigned int)((((unsigned long)(row0 + n - 1)) * rstride + ACTIVE_SAMP + LINE_SAMP) / BAND_SAMP);
     for (k = kmin; k <= kmax; k++) {
         unsigned long g0 = (unsigned long)k * BAND_SAMP;
-        if (!(ppi_dma(0xFF900000UL, k + 1, (short)(-(BAND_SAMP * 2 - 2)), 0) & 0x0001))
-            return;
+        if ((ppi_dma(0xFF900000UL, k + 1, (short)(-(BAND_SAMP * 2 - 2)), 0) & 0x0003) != 0x0001)
+            return -1;
         st[5] = k;                  /* 0xFF800014: last band */
         extract((volatile unsigned short *)0xFF900000, g0, g0 + BAND_SAMP, yout, uout, vout, row0, n, hires);
     }
+    return 0;
+}
+
+static int capture_cur_frame(void)
+{
+    unsigned int row;
+    for (row = 0; row < IMG_H; row += STRIP_H)
+        if (capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W,
+                    (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
+                    (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2),
+                    row, STRIP_H, 0) != 0) {
+            awb_su = awb_sv = awb_n = 0;
+            return -1;
+        }
+    return 0;
 }
 
 static unsigned long sdram_bad = 0xFFFFFFFFUL;   /* set in main(); 0 = SDRAM usable */
@@ -821,11 +845,12 @@ static long sdiv_round(long a, unsigned long b)
  * view does not count), move the software white balance offset by it and extract the frame
  * again (still in SDRAM). Only real changes are then left for the delta check.
  * 0xFF80001C: MCUs used << 16 | U offset change << 8 | V offset change (signed bytes). */
-static void chroma_track(void)
+static int chroma_track(void)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
-    unsigned int m, row, total = MCU_X * MCU_Y, nb = 0;
+    unsigned int m, total = MCU_X * MCU_Y, nb = 0;
     long su = 0, sv = 0, du, dv;
+    int err;
 
     for (m = 0; m < total; m++) {
         unsigned int mx = m % MCU_X, my = m / MCU_X;
@@ -852,15 +877,14 @@ static void chroma_track(void)
     }
     st[7] = ((unsigned long)nb << 16) | ((unsigned long)(du & 0xFF) << 8) | (unsigned long)(dv & 0xFF);
     if (!du && !dv)
-        return;
+        return 0;
     awb_du += (int)du;
     awb_dv += (int)dv;
     frame_hold = 1;
-    for (row = 0; row < IMG_H; row += STRIP_H)
-        capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
-                (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+    err = capture_cur_frame();
     frame_hold = 0;
     awb_su = awb_sv = awb_n = 0;    /* the second extraction is not a new white balance sample */
+    return err;
 }
 
 /* Largest sum of |difference| over the six 8x8 blocks (16x16 Y + 8x8 Cb/Cr) of MCU m
@@ -945,12 +969,13 @@ static void mcu_encode_and_keep(unsigned int m)
  * Grab the middle strip (luma only, ~0.2 s each) until its mean is within 1 of the mean
  * AEC_SPAN grabs earlier, at most AEC_MAX grabs (the CC1110 waits ~33 s for a picture).
  * 0xFF800068: grabs used << 16 | first mean << 8 | last mean. max = 1: one grab only, to
- * measure the scene with the AEC already settled. Returns the last mean. aec_ok: a full
- * settle has run since power-up (the sensor's AEC keeps tracking after that). */
+ * measure the scene with the AEC already settled. Returns the last mean, or -1 on capture
+ * failure. aec_ok: a full settle has run since power-up (the sensor's AEC keeps tracking after
+ * that). */
 #define AEC_SPAN     10
 #define AEC_MAX      75
 static int aec_ok;
-static unsigned long aec_settle(unsigned int max)
+static long aec_settle(unsigned int max)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
     const volatile unsigned char *y = (const volatile unsigned char *)CUR_Y;
@@ -960,7 +985,8 @@ static unsigned long aec_settle(unsigned int max)
 
     for (n = 0; n < max; n++) {
         frame_new = 1;              /* a new sensor frame for every grab */
-        capture((unsigned char *)CUR_Y, 0, 0, (IMG_H - STRIP_H) / 2, STRIP_H, 0);
+        if (capture((unsigned char *)CUR_Y, 0, 0, (IMG_H - STRIP_H) / 2, STRIP_H, 0) != 0)
+            return -1;
         sum = 0;
         for (i = 0; i < STRIP_H * OUT_W; i += 4)
             sum += y[i];
@@ -979,7 +1005,7 @@ static unsigned long aec_settle(unsigned int max)
     st[26] = ((unsigned long)n << 16) | ((first & 0xFF) << 8) | (mean & 0xFF);
     if (max > 1)
         aec_ok = 1;
-    return mean;
+    return (long)mean;
 }
 
 static unsigned int have_ref, full_id, since_full;
@@ -989,11 +1015,11 @@ static unsigned int have_ref, full_id, since_full;
  *   'D' '1' id  mcus_lo mcus_hi  count_lo count_hi  then per changed MCU:
  *   idx_lo idx_hi  len_lo len_hi  len bytes of entropy-coded data (one restart interval)
  * The receiver replaces those restart intervals in its copy of full picture 'id'.
- * Writes into send (after the 2 length bytes); returns the blob length (0 = overflow). */
+ * Writes into send (after the 2 length bytes); returns the blob length (0 = failure/overflow). */
 static unsigned long grab_color_delta(unsigned char *send, unsigned long max, int allow_delta)
 {
     volatile unsigned long *st = (volatile unsigned long *)0xFF800000;
-    unsigned int row, m, changed = 0, added = 0, total = MCU_X * MCU_Y, full;
+    unsigned int m, changed = 0, added = 0, total = MCU_X * MCU_Y, full;
     unsigned long thr = st[20] ? st[20] : DELTA_T, len;
     unsigned char *blob = send + 2;
     static unsigned char chg[MCU_X * MCU_Y];
@@ -1003,22 +1029,20 @@ static unsigned long grab_color_delta(unsigned char *send, unsigned long max, in
          * measured yet: grab once only to measure, so the first picture is balanced too
          * (the CC1110 powers the Blackfin per motion event) */
         if (!awb_valid) {
-            if (!aec_ok)
-                aec_settle(AEC_MAX);
-            for (row = 0; row < IMG_H; row += STRIP_H)
-                capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
-                        (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+            if (!aec_ok && aec_settle(AEC_MAX) < 0)
+                return 0;
+            if (capture_cur_frame() != 0)
+                return 0;
             awb_update();
         }
         awb_apply();
     }
-    for (row = 0; row < IMG_H; row += STRIP_H)
-        capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
-                (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+    if (capture_cur_frame() != 0)
+        return 0;
     awb_update();
     full = !allow_delta || !have_ref || since_full >= FULL_EVERY;
-    if (!full && frame_sdram && frame_valid)
-        chroma_track();
+    if (!full && frame_sdram && frame_valid && chroma_track() != 0)
+        return 0;
     if (!full) {
         /* 0xFF800080..0xFF8000FC: histogram of the MCUs' largest block mean |difference|
          * (bucket = mean, 31 = 31 and more), to calibrate DELTA_T against sensor noise */
@@ -1125,10 +1149,8 @@ static unsigned int grab_jpeg(unsigned int mode)
         st[14] = (unsigned long)twi_write16((unsigned int)((w >> 8) & 0xFFFF), (unsigned int)(w & 0xFF));
         st[13] = 0;
     }
-    if (mode != 0 && sdram_bad != 0) {
-        send[0] = send[1] = 0;
-        return 2;
-    }
+    if (mode != 0 && sdram_bad != 0)
+        goto fail;
     if (mode == 5 || mode == 6) {
         /* alarm picture: with light as 3 (delta) / 2 (640x480), in the dark as 4 (flash).
          * Right after power-up the AEC has to settle first (the first picture of a motion
@@ -1137,9 +1159,11 @@ static unsigned int grab_jpeg(unsigned int mode)
          * still short). Fully dark room: Y 4-5, room light: ~100.
          * 0xFF80007C: dark << 16 | scene mean. */
         int fresh = !aec_ok;
-        unsigned long m = aec_settle(fresh ? AEC_MAX : 1);
+        long m = aec_settle(fresh ? AEC_MAX : 1);
+        if (m < 0)
+            goto fail;
         int dark = m < DARK_Y;
-        st[31] = ((unsigned long)dark << 16) | m;
+        st[31] = ((unsigned long)dark << 16) | (unsigned long)m;
         mode = dark ? 4 : mode == 5 ? 3 : 2;
         settled = fresh;
     }
@@ -1149,8 +1173,8 @@ static unsigned int grab_jpeg(unsigned int mode)
          * smaller over RF. Let the AEC settle first (in the dark: the longest exposure, so
          * the pulse lights every row), then only the picture's own frame is lit. Not a
          * delta reference. */
-        if (!settled)
-            aec_settle(AEC_MAX);
+        if (!settled && aec_settle(AEC_MAX) < 0)
+            goto fail;
         flash_pic = FLASH_PIC_T;
         mode = 0;
     }
@@ -1167,21 +1191,22 @@ static unsigned int grab_jpeg(unsigned int mode)
     if (hires && !awb_valid && !have_ref) {
         /* 640x480 as the first picture after power-up: measure the colour first (no
          * delta reference exists yet, so changing the offset is safe) */
-        if (!aec_ok)
-            aec_settle(AEC_MAX);
-        for (row = 0; row < IMG_H; row += STRIP_H)
-            capture((unsigned char *)CUR_Y + (unsigned long)row * OUT_W, (unsigned char *)CUR_U + (unsigned long)(row / 2) * (OUT_W / 2),
-                    (unsigned char *)CUR_V + (unsigned long)(row / 2) * (OUT_W / 2), row, STRIP_H, 0);
+        if (!aec_ok && aec_settle(AEC_MAX) < 0)
+            goto fail;
+        if (capture_cur_frame() != 0)
+            goto fail;
         awb_update();
         awb_apply();
     }
     jpeg_begin(send + 2, max - 2, ow, oh, jpeg_q, mode != 0, 0, -1);
     for (row = 0; row < oh; row += STRIP_H) {
         if (mode != 0) {
-            capture(strip, su, sv, row, STRIP_H, hires);
+            if (capture(strip, su, sv, row, STRIP_H, hires) != 0)
+                goto fail;
             jpeg_rows_color(strip, ow, su, sv, ow / 2);
         } else {
-            capture(strip, 0, 0, row, STRIP_H, 0);
+            if (capture(strip, 0, 0, row, STRIP_H, 0) != 0)
+                goto fail;
             jpeg_rows(strip, ow);
             jpeg_rows(strip + 8 * ow, ow);
         }
@@ -1194,6 +1219,13 @@ static unsigned int grab_jpeg(unsigned int mode)
     send[0] = (unsigned char)(len & 0xFF);
     send[1] = (unsigned char)(len >> 8);
     return (unsigned int)len + 2;
+
+fail:
+    flash_pic = 0;
+    awb_su = awb_sv = awb_n = 0;
+    st[10] = 0;
+    send[0] = send[1] = 0;
+    return 2;
 }
 
 int main(void)
@@ -1290,12 +1322,8 @@ int main(void)
             st[1]++;
             tx = 0x5A;
         } else if ((rx & 0xF0) == 0xC0) {
-            if (out_max >= OUT_SIZE) {
-                capture(out, 0, 0, (rx & 3) * OUT_H, OUT_H, 0);
-                size = OUT_SIZE;
-            } else {
-                size = 0;           /* raw quarters need the SDRAM send buffer */
-            }
+            size = (out_max >= OUT_SIZE && capture(out, 0, 0, (rx & 3) * OUT_H, OUT_H, 0) == 0)
+                   ? OUT_SIZE : 0;
             ready = 1;
             ptr = 0;
             st[1]++;
