@@ -29,18 +29,18 @@ output from the H-bridge D1/D2).
 
 | Point | Expected | Measured | Notes |
 | :--- | :--- | :--- | :--- |
-| Battery input (`CN5`/`CN6`/`CN7` -> `TP1A`/`TP1B`/`TP1C` `+`, `TP68` `GND`) | `3.0 V` (3x parallel) | | Confirmed: `DVCC`/`AVCC` (IC1 pins 1/64) connect to `TP1A`/`TP1B`/`TP1C`; `CN2` is the piezo horn, not battery |
-| MSP430F149 DVCC | 1.8–3.6 V | | |
-| CC1101 VDD | 1.8–3.6 V | | |
-| Boost output (IC9 + 100 µH `100` inductor, 2x 47 µF) | | | horn supply? |
+| Battery input (`CN5`/`CN6`/`CN7` -> `TP1A`/`TP1B`/`TP1C` `+`, `TP68` `GND`) | `3.0 V` (3x parallel) | `3.0 V` (Otii Arc) | Confirmed: `DVCC`/`AVCC` (IC1 pins 1/64) connect to `TP1A`/`TP1B`/`TP1C`; `CN2` is the piezo horn, not battery |
+| MSP430F149 DVCC | 1.8–3.6 V | `3.0 V` | Measured at `IC1` pin 1 |
+| CC1101 VDD | 1.8–3.6 V | `3.0 V` | Measured at `IC3` pin 4 |
+| Boost output (IC9 + 10 µH `100` inductor, 2x 4.7 µF / 50 V) | | | High-voltage piezo horn supply |
 | TP1 / TP6 | | | |
 | TP4 / TP7 | | | |
-| Idle current | | | Wake-on-radio? |
-| Current while listening (RX) | ~15 mA continuous, or short WOR pulses | | |
+| Idle current | | `6.66 µA` floor (`p50`); `~16 µA` steady-state mean after boot | Otii 91 s @ 4 kHz: 5 boot pulses (`320 ms`, `27.2–27.9 mA` peak), then `20.5 ms` @ `1.93 mA` wake every `4000.0 ms` |
+| Current while listening (RX) | ~15 mA continuous, or short WOR pulses | `27.2–27.9 mA` peak during 5x `320 ms` boot pulses | |
 | Current while sounding | | | |
 
 Scope the supply current at idle: periodic RX pulses mean wake-on-radio. Write the period here:
-______ ms.
+**`4000.0` ms** (locked to 32.768 kHz `EADH` crystal; min `3999.0` ms, max `4001.0` ms).
 
 ## 3. Clocks
 
@@ -66,7 +66,7 @@ TP81/TP82 and TP84–TP88 on the back (next to CN1), TP91/TP92 on the back.
 | TP62 | | **55** | **JTAG `TDI/TCLK`** |
 | TP63 | | **56** | **JTAG `TMS`** |
 | TP64 | | **57** | **JTAG `TCK`** |
-| TP5 | | **58** | **JTAG `RST/NMI`** |
+| TP5 | `3.0 V` | **58** | **JTAG `RST/NMI`** (pull-up confirmed HIGH) |
 | TP68 | | **62, 63** (and **53** `XT2IN`) | **`GND` (`AVSS`/`DVSS`)** |
 | TP1A / TP1B / TP1C | | **1, 64** | **`VCC` (`DVCC`/`AVCC`, via F11–F13)** |
 | TP28 | | **13** (`P1.1`) | **BSL TXD** (`P1.1`) |
