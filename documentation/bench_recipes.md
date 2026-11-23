@@ -22,9 +22,14 @@ against the datasheet before relying on them, and confirm every net by continuit
 
 Safe now: SWD **read-only** on the smoke detector, SPI flash dumps (with the 1.8 V precaution for the
 voicebox), Saleae sniffing of MCU-to-radio SPI, and listening to the radio with the gateway or the
-receiver. **MSP430 flash cannot be read safely with the current bench**: it needs a TI FET (MSP-FET,
-or the eZ-FET on a cheap MSP430 LaunchPad) and an intact JTAG fuse. The FT232H cannot do it: no
-maintained tool speaks the MSP430 JTAG/SBW protocol through it.
+receiver. **MSP430 flash cannot be read safely with an off-the-shelf tool on the current bench**:
+the siren's `MSP430F149` supports **4-wire JTAG only** (no Spy-Bi-Wire), so a LaunchPad eZ-FET
+(SBW-only) will **not** work on it — reading it requires a 4-wire JTAG probe (TI `MSP-FET`, legacy
+`MSP-FET430UIF`, Olimex `MSP430-JTAG-TINY-V2`, or a custom ESP32/SLAU320 4-wire JTAG replicator)
+and an intact JTAG fuse. The voicebox's `MSP430F5435A` supports both 4-wire JTAG and 2-wire SBW
+(so a LaunchPad eZ-FET works there). The FT232H has no maintained MSP430 JTAG tool, though its
+UART mode (`TXD`/`RXD`/`DTR`/`RTS`) can flash custom firmware via ROM BSL once the original flash
+is no longer needed.
 
 ## 1. Smoke detector: EFR32FG14 over SWD (Pi Debug Probe + OpenOCD)
 
@@ -175,9 +180,15 @@ they are **unverified**. TEST, RST/NMI and PJ.0–PJ.3 sit next to each other in
 
 1. Map the candidate pads to the pins above with the DMM (worksheets section "debug access").
 2. Do **not** run BSL or blind JTAG commands.
-3. Reading the MSP430 flash needs a TI FET: an MSP-FET, or the eZ-FET on an MSP430 LaunchPad (SBW
-   and JTAG). With a FET, first read the device ID and the fuse state only.
-4. The USB-serial adapter has no RTS line, so it could not drive the two-line BSL entry anyway.
+3. Reading the MSP430 flash needs a compatible JTAG probe and an intact fuse:
+   - **Siren (`MSP430F149`, 4-wire JTAG only, no SBW):** TI `MSP-FET`, `MSP-FET430UIF`, Olimex
+     `MSP430-JTAG-TINY-V2`, or a custom ESP32 running TI SLAU320 4-wire JTAG. A LaunchPad eZ-FET
+     (SBW-only) does **not** support the F149.
+   - **Voicebox (`MSP430F5435A`, JTAG + SBW):** any of the above, or a LaunchPad eZ-FET over SBW.
+   With a JTAG probe, first read the device ID and the fuse state only.
+4. The standalone USB-serial adapter has no RTS line, so it cannot drive BSL entry; the CJMCU
+   FT232H in UART mode has both DTR and RTS and can be used for BSL flashing of custom firmware
+   later (never for reading: wrong password mass-erases).
 
 ## 4. Radio SPI sniffing (Saleae Logic 4)
 

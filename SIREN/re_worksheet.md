@@ -6,27 +6,28 @@ pins 54–58, CC1101) and the list of actions that can erase the unit:
 [documentation/bench_recipes.md](../documentation/bench_recipes.md). Decode an SPI capture with
 `python tools/cc1101_spi_decode.py capture.csv --xtal-mhz 27`.
 
-Unit / device ID: ________  Date: ________  Tools: ______________________
+Unit / device ID: `2S5F 554X`  Date: `2026-11-22`  Tools: DMM, USB microscope
 
 Safety: the horn is very loud. Disconnect it or cover it before triggering anything. Power the board
 from the bench supply through CN2 (red/black) with a current limit.
 
-## 1. Unit data (from the label, not photographed yet)
+## 1. Unit data (from the rating label)
 
 | Field | Value |
 | :--- | :--- |
-| Model | |
-| Serial (device ID) | |
-| Part No | |
-| HW / SW | |
-| Date | |
-| Battery type and voltage | |
+| Model | `GW-SI` |
+| Serial (device ID) | `2S5F 554X` (`2S5F554X`) |
+| Part No | `131155` |
+| HW / SW | `HW 8.0` / `SW 4.00` |
+| Date | `2014-11-17` (`141117`) |
+| Maker | Panasonic Corporation, Japan (for Securitas Direct AB) |
+| Battery type and voltage | 3x `CR-2/3AZ` (`SH384552520`) in parallel, `3 V DC` (0 Ω across all `+` and all `-` contacts) |
 
 ## 2. Power
 
 | Point | Expected | Measured | Notes |
 | :--- | :--- | :--- | :--- |
-| CN2 battery voltage (red `アカ` / black `クロ`) | | | |
+| CN2 battery voltage (red `アカ` / black `クロ`) | `3.0 V` (3x parallel) | | |
 | MSP430F149 DVCC | 1.8–3.6 V | | |
 | CC1101 VDD | 1.8–3.6 V | | |
 | Boost output (IC9 + 100 µH `100` inductor, 2x 47 µF) | | | horn supply? |
@@ -43,8 +44,8 @@ ______ ms.
 
 | Part | Marking | Expected | Measured |
 | :--- | :--- | :--- | :--- |
-| XT1 (CC1101) | | 27.000 MHz like the door sensor, or 26.000 MHz | |
-| XT2 (next to the OKI chip) | | | |
+| XT1 (CC1101) | `26.000` | 26.000 MHz (use `--xtal-mhz 26` for SPI decode) | Confirmed marking |
+| XT2 (next to the OKI chip) | `400W` | ~4.00 MHz ceramic resonator (OKI ML22 clock) | Confirmed marking |
 | MSP430 LFXT1 (`EADH` can?) | `EADH` | 32.768 kHz | |
 | XT3 (IC4 area, unpopulated) | not fitted | | |
 
@@ -81,7 +82,7 @@ TP81/TP82 and TP84–TP88 on the back (next to CN1), TP91/TP92 on the back.
 
 | Step | Result |
 | :--- | :--- |
-| Tool (MSP-FET or LaunchPad eZ-FET; the FT232H cannot do MSP430 JTAG) | |
+| Tool (4-wire JTAG only — TI MSP-FET, Olimex MSP430-JTAG-TINY-V2, or ESP32 SLAU320; LaunchPad eZ-FET is SBW-only and cannot talk to F149) | |
 | Device ID read | |
 | JTAG fuse blown? | |
 | Flash dump via JTAG (file, size, SHA-256) | |
@@ -140,7 +141,7 @@ SYNC1/0, PKTCTRL, WORCTRL, MCSM). Register dump: ______________________
 
 ## 9. Open questions
 
-- [ ] 26 or 27 MHz crystal for the CC1101?
+- [x] 26 or 27 MHz crystal for the CC1101? → **`26.000` MHz** (same as the gateway; use `--xtal-mhz 26`).
 - [ ] Wake-on-radio or continuous RX?
 - [ ] Is the F149 JTAG fuse blown?
 - [ ] Which pads are JTAG / BSL?

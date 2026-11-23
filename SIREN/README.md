@@ -11,21 +11,21 @@ still to be taken go in [re_worksheet.md](re_worksheet.md); the cross-device ove
 | :--- | :--- | :--- | :--- |
 | IC1 | `TI 44C1PCWG4 M430F149 REV S` (LQFP-64) | **TI MSP430F149** (60 KB flash, 2 KB RAM) | Confirmed |
 | IC3 | QFN-20 | **TI CC1101** sub-GHz transceiver | Confirmed (close-up) |
-| XT1 | not readable | CC1101 crystal: 27.000 MHz like the door sensor, or 26 MHz | To measure |
+| XT1 | `26.000` | **26.000 MHz** CC1101 crystal (same as gateway; use `--xtal-mhz 26`) | Confirmed |
 | IC2 | `L22901-707 OKI JAPAN 3285F01J` (SSOP-30) | **OKI ML22 family speech-synthesis LSI** (assumed); plays the stored siren tones / voice | Marking confirmed, function assumed |
-| XT2 | not readable | Clock for IC2 | To measure |
+| XT2 | `400W` | Clock for IC2 (~4.00 MHz ceramic resonator) | Marking confirmed |
 | IC5 | `2115 E58 JRC` (MSOP-8) | NJM2115 dual op-amp (assumed) | Assumption |
 | IC9 | MSOP/TSSOP-8 next to a 100 µH inductor and 2x 47 µF | Boost converter for the horn supply (assumed) | Assumption |
 | Q15–Q19 | `4F`, `4A` SOT-89 | Horn driver transistors (H-bridge?) | Assumption |
 | CN4 + FIL1 | U.FL + SAW filter | RF test point in the antenna path | Confirmed parts |
 | Antenna | straight wire from the back, top left | 868 MHz whip | Confirmed |
 | CN5 / CN6 / CN7 | 3x 3-pin JST, each with a fuse (F11–F13) | Horn / external connections | Unknown |
-| CN2 (back) | 2-pin, `アカ` (red) / `クロ` (black) | Battery | Confirmed silkscreen |
+| CN2 (back) | 2-pin, `アカ` (red) / `クロ` (black) | Battery: 3x `CR-2/3AZ` (`SH384552520`) in parallel, **3 V DC** | Confirmed |
 | CN1 (back) | castellated pads + TP84–TP87 | Unknown (factory connector?) | Unknown |
 | SW1 (back) | push switch | Tamper switch (assumed) | Assumption |
 | TH1 (back) | leaded thermistor | Temperature sensing | Confirmed part |
 | IC4, IC7, XT3 | not fitted | Option footprints | Confirmed empty |
-| PCB | `M1765-1` | Board number; the katakana silkscreen suggests a Japanese maker (Panasonic, like the voicebox) | Confirmed |
+| PCB | `M1765-1` | Board number; rating label confirms **Panasonic Corporation, Japan** (`GW-SI`, Part No `131155`, HW `8.0` / SW `4.00`, `2014-11-17`) | Confirmed |
 
 ## Debug / programming candidates
 
@@ -40,9 +40,8 @@ New photos that would identify the parts the current ones cannot. How to take th
 [documentation/device_survey.md](../documentation/device_survey.md#photo-requests). Tick an item when
 the photo is in the folder.
 
-- [ ] The **rating label** (model, device ID, part number, HW/SW, battery).
-- [ ] **XT1** next to the CC1101 and **XT2** next to the OKI chip: straight on, the frequency marking
-      must be readable (26 or 27 MHz matters for the radio settings).
+- [x] The **rating label** (`GW-SI`, `2S5F 554X`, Part No `131155`, HW `8.0` / SW `4.00`, `2014-11-17`, 3x `CR-2/3AZ` 3 V DC, Panasonic).
+- [x] **XT1** next to the CC1101 (`26.000` MHz) and **XT2** next to the OKI chip (`400W`).
 - [ ] **IC9** (next to the 100 µH inductor) and the **`EADH`** part next to the MCU, readable.
 - [ ] The transistors **Q15–Q19** and **Q3, Q6–Q9**: markings readable.
 - [ ] **CN1** on the back (castellated pads, TP84–TP87) and **SW1** close up.

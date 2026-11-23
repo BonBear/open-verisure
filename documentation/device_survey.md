@@ -26,9 +26,11 @@ the bench.
   probably share the 868.950 MHz link, but that has to be confirmed by listening.
 - The smoke detector is the easiest place to start: its SWD and UART pads are labelled, and it has a
   standard Cortex-M debug port.
-- The MSP430 boards (siren, voicebox) need the JTAG pads found by continuity first. Reading their
-  flash needs a TI FET (MSP-FET, or the eZ-FET on an MSP430 LaunchPad), which the bench does not
-  have. Their BSL is not an option: a wrong password mass-erases the flash. Until a FET is there,
+- The MSP430 boards (siren, voicebox) need the JTAG pads found by continuity first. The siren's
+  `MSP430F149` supports **4-wire JTAG only** (no SBW, so a LaunchPad eZ-FET will not work on it —
+  it needs a 4-wire JTAG probe such as TI `MSP-FET` / Olimex `MSP430-JTAG-TINY-V2`, or a custom
+  ESP32 SLAU320 replicator). The voicebox's `MSP430F5435A` also supports SBW (LaunchPad eZ-FET).
+  Their BSL is not a read path: a wrong password mass-erases the flash. Until JTAG access is ready,
   stick to SPI sniffing, the external flash and the radio.
 - Procedures, pinouts and the list of actions that can erase a unit are in
   [bench_recipes.md](bench_recipes.md).
