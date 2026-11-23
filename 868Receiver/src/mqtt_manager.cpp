@@ -11,6 +11,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <GuardedSocket.h>   // gwsWriteBounded (lib/GuardedWebServer)
+#include <atomic>
 
 #define MQTT_WRITE_STALL_MS 2000   // a broker that accepts no byte for this long is dropped
 
@@ -78,7 +79,7 @@ enum { DNS_IDLE = 0, DNS_RUNNING, DNS_OK, DNS_FAILED };
 static TaskHandle_t s_dnsTask = nullptr;
 static char s_dnsHost[65];                         // host of the running or last lookup (config size)
 static IPAddress s_dnsResult;                      // written by the task before s_dnsState becomes DNS_OK
-static volatile uint8_t s_dnsState = DNS_IDLE;
+static std::atomic<uint8_t> s_dnsState{DNS_IDLE};
 static char s_cachedHost[65];
 static IPAddress s_cachedIp;
 static bool s_cachedValid = false;
@@ -89,13 +90,13 @@ static void dnsTaskBody(void*) {
         IPAddress ip;
         const bool ok = (WiFi.hostByName(s_dnsHost, ip) == 1);
         s_dnsResult = ip;
-        s_dnsState = ok ? DNS_OK : DNS_FAILED;
+        s_dnsState.store(ok ? DNS_OK : DNS_FAILED, std::memory_order_release);
     }
 }
 
 /** Starts a lookup unless one is running; never blocks. */
 static void dnsStart(const char* host) {
-    if (s_dnsState != DNS_IDLE) return;
+    if (s_dnsState.load(std::memory_order_acquire) != DNS_IDLE) return;
     strncpy(s_dnsHost, host, sizeof(s_dnsHost) - 1);   // set first: a failed task creation below names it too
     s_dnsHost[sizeof(s_dnsHost) - 1] = '\0';
     if (!s_dnsTask) {
@@ -106,11 +107,11 @@ static void dnsStart(const char* host) {
                 s_logged = true;
                 Serial.println("[MQTT] ERROR: could not create the DNS lookup task (no heap?); use an IP address for the broker");
             }
-            s_dnsState = DNS_FAILED;   // counts as a failed lookup: the back-off applies
+            s_dnsState.store(DNS_FAILED, std::memory_order_relaxed);   // counts as a failed lookup: the back-off applies
             return;
         }
     }
-    s_dnsState = DNS_RUNNING;
+    s_dnsState.store(DNS_RUNNING, std::memory_order_relaxed);
     Serial.printf("[MQTT] Looking up broker host %s...\n", host);
     xTaskNotifyGive(s_dnsTask);
 }
@@ -118,7 +119,7 @@ static void dnsStart(const char* host) {
 /** Takes over a finished lookup (cheap, call on every pass). A failed lookup without a cached
  *  address counts as a failed connection attempt for the back-off. */
 static void dnsCollect(const char* host) {
-    const uint8_t state = s_dnsState;
+    const uint8_t state = s_dnsState.load(std::memory_order_acquire);
     if (state != DNS_OK && state != DNS_FAILED) return;
     const bool same = (strcmp(s_dnsHost, host) == 0);   // the setting may have changed meanwhile
     const bool ok = (state == DNS_OK);
@@ -137,7 +138,7 @@ static void dnsCollect(const char* host) {
             Serial.printf("[MQTT] Cannot resolve broker host %s, next try in %lu s\n", host, s_reconnectIntervalMs / 1000);
         }
     }
-    s_dnsState = DNS_IDLE;
+    s_dnsState.store(DNS_IDLE, std::memory_order_release);
 }
 
 /** @return true with the broker's address in *ip; false while a lookup is needed (started here). */

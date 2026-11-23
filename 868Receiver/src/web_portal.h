@@ -46,3 +46,9 @@ bool webPortalIsApMode();
  * @return SoftAP IP or Station local IP.
  */
 String webPortalGetIp();
+
+/**
+ * @brief Cleanly exit setup SoftAP and Captive Portal DNS once STA is connected.
+ *        Must be called from loopTask.
+ */
+void webPortalOnStaConnected();

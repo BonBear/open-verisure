@@ -18,10 +18,14 @@
 #include "radio_task.h"
 #include "esp_wifi.h"
 #include <mbedtls/base64.h>
+#include <atomic>
 
 static GuardedWebServer s_server(80);
 static DNSServer s_dnsServer;
 static bool s_isApMode = false;
+static std::atomic<bool> s_gotIpEvent{false};
+static std::atomic<bool> s_staDisconnectedEvent{false};
+static std::atomic<uint8_t> s_staDisconnectReason{0};
 static unsigned long s_rebootAt = 0;
 static int s_cachedRssi = -100;
 static uint8_t s_cachedMarc = 0;
@@ -809,7 +813,9 @@ static void handleApiStatus() {
     const GatewayConfig& cfg = ConfigManager::get();
     unsigned long now = millis();
 
-    String json = "{";
+    String json;
+    json.reserve(4096);
+    json += "{";
     json += "\"wifi\":{";
     json += "\"mode\":\"" + String(s_isApMode ? "AP" : "STA") + "\",";
     json += "\"connected\":" + String((WiFi.status() == WL_CONNECTED) ? "true" : "false") + ",";
@@ -1300,14 +1306,11 @@ void webPortalInit() {
     const GatewayConfig& cfg = ConfigManager::get();
 
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-        if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
-            Serial.println("[WiFi-Event] Connected to AP (Link established)");
-        } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-            Serial.printf("[WiFi-Event] IP assigned via DHCP: %s | RSSI: %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-            s_isApMode = false;
-            MDNS.begin("verisure-gateway");
+        if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+            s_gotIpEvent.store(true, std::memory_order_release);
         } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-            Serial.printf("[WiFi-Event] Disconnected from Wi-Fi. Reason: %d\n", info.wifi_sta_disconnected.reason);
+            s_staDisconnectReason.store(info.wifi_sta_disconnected.reason, std::memory_order_relaxed);
+            s_staDisconnectedEvent.store(true, std::memory_order_release);
         }
     });
 
@@ -1387,11 +1390,17 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
     static unsigned long lastAttempt = millis();
     const unsigned long reconnectInterval = 20000;   // the driver's auto-reconnect usually wins
 
+    if (s_staDisconnectedEvent.exchange(false, std::memory_order_acquire)) {
+        Serial.printf("[WiFi-Event] Disconnected from Wi-Fi. Reason: %u\n",
+                      (unsigned)s_staDisconnectReason.load(std::memory_order_relaxed));
+    }
+    const bool gotIp = s_gotIpEvent.exchange(false, std::memory_order_acquire);
+
     otaLoop(status == WL_CONNECTED);
     if (status == WL_CONNECTED) {
-        if (!wasConnected) {
+        if (!wasConnected || gotIp) {
             wasConnected = true;
-            s_isApMode = false;
+            webPortalOnStaConnected();
             Serial.printf("[Wi-Fi] Connected to \"%s\"! IP: %s | RSSI: %d dBm\n",
                           WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
             MDNS.begin("verisure-gateway");
@@ -1416,6 +1425,16 @@ void webPortalLoop(int currentRssi, uint8_t marcstate, uint32_t totalPackets) {
 
 bool webPortalIsApMode() {
     return s_isApMode;
+}
+
+void webPortalOnStaConnected() {
+    if (s_isApMode) {
+        s_dnsServer.stop();
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+        s_isApMode = false;
+        Serial.println("[Wi-Fi] Station connected; setup access point stopped.");
+    }
 }
 
 String webPortalGetIp() {

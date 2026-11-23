@@ -22,11 +22,13 @@
 #include <WiFi.h>
 #include "esp_wifi.h"
 
-static char s_cmdBuf[128];
+static char s_cmdBuf[256];
 static int s_cmdLen = 0;
+static bool s_cmdOverflow = false;
 
 void serialCliInit() {
     s_cmdLen = 0;
+    s_cmdOverflow = false;
 }
 
 static void printHelp() {
@@ -422,10 +424,21 @@ static void processCommand(char* cmd) {
             strncpy(ssid, args, sizeof(ssid) - 1);
         }
 
+        if (ssid[0] == '\0') {
+            Serial.println("[CLI] Usage: connect <ssid> [password]");
+            return;
+        }
+
         Serial.printf("[CLI] Connecting to SSID \"%s\"...\n", ssid);
-        WiFi.disconnect(true, true);
-        delay(200);
-        WiFi.mode(WIFI_STA);
+        const bool ap = webPortalIsApMode() || ((WiFi.getMode() & WIFI_AP) != 0);
+        if (ap) {
+            WiFi.mode(WIFI_AP_STA);   // keep the setup access point alive during the attempt
+            delay(100);
+        } else {
+            WiFi.disconnect(true, true);
+            delay(200);
+            WiFi.mode(WIFI_STA);
+        }
         WiFi.begin(ssid, pass);
 
         unsigned long t0 = millis();
@@ -441,8 +454,13 @@ static void processCommand(char* cmd) {
                           WiFi.localIP().toString().c_str(), WiFi.RSSI());
             ConfigManager::setWifi(ssid, pass);
             ConfigManager::save();
+            webPortalOnStaConnected();
         } else {
             Serial.println("[CLI] Connection failed.");
+            if (ap) {
+                WiFi.disconnect(false);
+                WiFi.mode(WIFI_AP);
+            }
         }
     } else if (strncmp(cmd, "setkey ", 7) == 0) {
         char* keyStr = cmd + 7;
@@ -590,12 +608,21 @@ void serialCliLoop() {
         char c = (char)Serial.read();
         if (c == '\r') continue;
         if (c == '\n') {
-            s_cmdBuf[s_cmdLen] = '\0';
-            processCommand(s_cmdBuf);
+            if (s_cmdOverflow) {
+                Serial.println("[CLI] Error: command too long");
+            } else {
+                s_cmdBuf[s_cmdLen] = '\0';
+                processCommand(s_cmdBuf);
+            }
             feedLoopWDT();   // a command can run for seconds (scan, connect, setkey...): a fresh window for what follows
             s_cmdLen = 0;
+            s_cmdOverflow = false;
+        } else if (s_cmdOverflow) {
+            // drop remaining bytes until end of line
         } else if (s_cmdLen < (int)sizeof(s_cmdBuf) - 1) {
             s_cmdBuf[s_cmdLen++] = c;
+        } else {
+            s_cmdOverflow = true;
         }
     }
 }

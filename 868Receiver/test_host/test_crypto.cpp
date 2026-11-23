@@ -25,7 +25,7 @@ static bool s_lastFirst = false, s_lastLast = false;
 static uint8_t s_lastLen = 0, s_lastData0 = 0;
 
 void imageReceiverProcessChunk(const char*, uint16_t idx, uint8_t len, bool first, bool last, const uint8_t* data,
-                               uint8_t) {
+                               uint8_t, uint32_t) {
     s_chunks++;
     s_lastIdx = idx;
     s_lastLen = len;
@@ -698,4 +698,43 @@ TEST(diag_counts_picture_chunks) {
     CHECK_EQ(g_gatewayDiag.authFail, 2);
     CHECK_EQ(g_gatewayDiag.picStale, 3);
     CHECK_STR(g_gatewayDiag.lastRejectedId, CAM);
+}
+
+TEST(big_packet_retire_pic_tag) {
+    resetImageCounters();
+    CHECK(sendCtr(CAM, 0x1000));
+
+    // Active picture accepts both 0x82 chunks and 0x83 resends
+    CHECK(sendChunk(CAM, 0x1001, 0x82, 0, 0x80 | 40));
+    CHECK_EQ(s_chunks, 1);
+    CHECK(sendChunk(CAM, 0x1001, 0x82, 1, 40));
+    CHECK_EQ(s_chunks, 2);
+    CHECK(sendChunk(CAM, 0x1001, 0x83, 0, 40));
+    CHECK_EQ(s_resends, 1);
+
+    // Retiring the tag rejects replayed 0x82 and 0x83 chunks with that tag
+    cryptoRetirePicTag(CAM, 0x1001);
+    CHECK(sendChunk(CAM, 0x1001, 0x82, 2, 0x40 | 10));
+    CHECK_EQ(s_chunks, 2);
+    CHECK(sendChunk(CAM, 0x1001, 0x83, 0, 40));
+    CHECK_EQ(s_resends, 1);
+    CHECK_EQ(g_gatewayDiag.picStale, 2);
+
+    // Next picture (tag + 1) is accepted and clears picTagRetired
+    CHECK(sendChunk(CAM, 0x1002, 0x82, 0, 0x80 | 40));
+    CHECK_EQ(s_chunks, 3);
+    CHECK(sendChunk(CAM, 0x1002, 0x83, 0, 40));
+    CHECK_EQ(s_resends, 2);
+
+    // Retiring an older tag does not affect the newer active tag
+    cryptoRetirePicTag(CAM, 0x1001);
+    CHECK(sendChunk(CAM, 0x1002, 0x82, 1, 0x40 | 10));
+    CHECK_EQ(s_chunks, 4);
+
+    // Retiring the newer tag blocks further 0x82/0x83 for it
+    cryptoRetirePicTag(CAM, 0x1002);
+    CHECK(sendChunk(CAM, 0x1002, 0x82, 2, 10));
+    CHECK_EQ(s_chunks, 4);
+    CHECK(sendChunk(CAM, 0x1002, 0x83, 1, 10));
+    CHECK_EQ(s_resends, 2);
 }
