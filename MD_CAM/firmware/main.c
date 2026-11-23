@@ -302,22 +302,28 @@ bool radio_send_dma(void) {
             s_bat_load_min = mv;
     }
 
+    bool underflow = false;
     timeout = 50000;
     while (!(RFIF & 0x10) && --timeout) {
         if ((MARCSTATE & 0x1F) == 0x16) {
-            RFST = 0x04;
-            RFIF = 0;
-            return false;
+            underflow = true;
+            break;
         }
     }
 
     bool done = (DMAIRQ & 0x01) != 0 || (RFIF & 0x10) != 0;
+    bool ok = (!underflow && timeout > 0 && done);
+
+    if (!ok) {
+        DMAARM = 0x81; // abort channel 0 so a failed TX never deadlocks flash_write4()
+        __asm nop __endasm;
+    }
 
     RFST = 0x04;
     RFTXRXIF = 0;
     RFIF = 0;
 
-    return (timeout > 0 && done);
+    return ok;
 }
 
 /* ============================================================================
@@ -334,6 +340,13 @@ static void enter_pm2(void) {
     uint8_t pir_level;
     uint8_t d;
 
+    // Switch to HS RCOSC and give at least one 32 kHz period before disabling interrupts
+    CLKCON |= 0x40;
+    while (!(CLKCON & 0x40));
+    for (d = 200; d != 0; d--) {    // counting down: SDCC loop reversal warns (158) on an up-count >= 128
+        __asm nop __endasm;
+    }
+
     EA = 0;
 
     // Arm P1_7 for the edge AWAY from the current level (P1ICON = PICTL bit 1)
@@ -348,15 +361,11 @@ static void enter_pm2(void) {
     P1IF = 0;
     IEN2 |= 0x10;       // P1IE
 
-    // Race check: level changed while arming, or a tick is already pending
-    if (P1_7 != pir_level || g_tick || g_pir_edge) {
+    // Race check: level changed while arming, or a tick, edge, or HW IRQ is already pending
+    if (P1_7 != pir_level || g_tick || g_pir_edge ||
+        (IRCON & 0x80) || (IRCON2 & 0x08)) {
         EA = 1;
         return;
-    }
-
-    // Give at least one 32 kHz period between wake-up and re-entering PM2
-    for (d = 200; d != 0; d--) {    // counting down: SDCC loop reversal warns (158) on an up-count >= 128
-        __asm nop __endasm;
     }
 
     SLEEP = (SLEEP & ~0x03) | 0x02; // MODE = PM2
@@ -364,13 +373,10 @@ static void enter_pm2(void) {
         nop
         nop
         nop
+        setb _EA
+        orl _PCON, #0x01
+        nop
     __endasm;
-
-    EA = 1;
-    if (SLEEP & 0x03) {   // An ISR clears MODE if it fired in the meantime
-        PCON |= 0x01;     // Enter PM2
-        __asm nop __endasm;
-    }
 }
 
 /* ============================================================================
@@ -1201,7 +1207,7 @@ static void cam_alarm_loop(void) {
     uint16_t hold = 0, keep = 0, gap = 0, ack_left = 0;
     uint32_t idle = 0;
     uint8_t ev_pic = 0, cmd;
-    bool active = false, bf_on = false, was_armed = s_armed;
+    bool active = false, bf_on = false, bf_failed = false, was_armed = s_armed;
     // A picture stays "open" until a poll answer without a resend request (the gateway has it
     // complete, or has given up), at most BF_ACK_MAX_S: until then the camera polls every
     // BF_ACK_POLL_TICKS, takes no new alarm picture and keeps the Blackfin (the picture's only
@@ -1343,6 +1349,7 @@ static void cam_alarm_loop(void) {
                 bf_on = true;
                 s_bat_load_min = read_battery_mv();
             }
+            bf_failed = false;
             keep = BF_HOLD_S * BF_TICKS_PER_S;
         } else if (cmd) {
             tamper_pic = false;     // any picture now covers a pending tamper picture
@@ -1355,6 +1362,7 @@ static void cam_alarm_loop(void) {
                 transmit(false, false, 0xB6, s_boot_tries);
 #endif
                 bf_on = true;
+                bf_failed = false;
                 s_bat_load_min = read_battery_mv();   // the Blackfin has booted: ~0.1 A
             }
             // keep it powered only after a good picture: a hung Blackfin gets power-cycled
@@ -1362,8 +1370,10 @@ static void cam_alarm_loop(void) {
                 keep = BF_KEEP_ON_S * BF_TICKS_PER_S;
                 pic_open = true;
                 ack_left = BF_ACK_MAX_S * BF_TICKS_PER_S;
+                bf_failed = false;
             } else {
                 keep = 0;
+                bf_failed = true;
             }
             idle = 0;
             // poll right after every picture: it carries the resend request or the
@@ -1411,9 +1421,11 @@ static void cam_alarm_loop(void) {
             transmit(false, false, 0xB9, 0);
         }
         // not before a pending recheck poll: a command queued meanwhile should find the reference
-        if (bf_on && !s_dl_cmd && !keep && !pic_open && !s_ack_recheck && (!active || !s_armed)) {
+        if (bf_on && !s_dl_cmd && !keep && !pic_open &&
+            (bf_failed || (!s_ack_recheck && (!active || !s_armed)))) {
             bf_power_off();
             bf_on = false;
+            bf_failed = false;
             s_bat_load_mv = s_bat_load_min;   // from now on in the battery % and the low flag
         }
     }

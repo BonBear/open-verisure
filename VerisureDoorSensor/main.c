@@ -232,14 +232,27 @@ void p1_isr(void) __interrupt(P1INT_VECTOR) {
  * falling; a shock pulse has both edges, so it wakes either way.
  */
 static void enter_pm2(uint8_t shock_level, uint8_t last_reed, uint8_t last_tamper, bool reed_irq_en) {
-    uint8_t reed = P1_7, tamper = P0_1, d;
+    uint8_t reed, tamper, d;
 
     // a change since the last report (e.g. while the packet was being sent): report it now
     // instead of at the next tick (unless reed is in backoff, so rattling sleeps in PM2)
-    if ((reed_irq_en && reed != last_reed) || tamper != last_tamper)
+    if ((reed_irq_en && P1_7 != last_reed) || P0_1 != last_tamper)
         return;
 
+    // switch to HS RCOSC and wait at least one 32 kHz period before disabling interrupts
+    CLKCON |= 0x40;
+    while (!(CLKCON & 0x40));
+    for (d = 200; d != 0; d--) {    // counting down: SDCC loop reversal warns (158) on an up-count >= 128
+        __asm nop __endasm;
+    }
+
     EA = 0;
+    reed = P1_7;
+    tamper = P0_1;
+    if ((reed_irq_en && reed != last_reed) || tamper != last_tamper) {
+        EA = 1;
+        return;
+    }
     PICTL |= 0x03;                       // P1ICON, P0ICON: falling edge
     if (reed) {
         P1IEN = reed_irq_en ? 0x84 : 0x04; // reed open: wake when it closes (unless in backoff); shock
@@ -260,26 +273,22 @@ static void enter_pm2(uint8_t shock_level, uint8_t last_reed, uint8_t last_tampe
     IEN2 |= 0x10;            // P1IE
     P0IE = 1;
 
-    // race check: a level changed while arming, or a tick or edge is already pending
-    if ((reed_irq_en && P1_7 != reed) || P0_1 != tamper || P1_2 != shock_level || g_tick || g_p0ifg || g_p1ifg) {
+    // race check: a level changed while arming, or a tick, edge, or HW IRQ is already pending
+    if ((reed_irq_en && P1_7 != reed) || P0_1 != tamper || P1_2 != shock_level ||
+        g_tick || g_p0ifg || g_p1ifg ||
+        (IRCON & 0x80) || (IRCON & 0x20) || (IRCON2 & 0x08)) {
         EA = 1;
         return;
-    }
-    // at least one 32 kHz period between a wake-up and the next PM2 entry
-    for (d = 200; d != 0; d--) {    // counting down: SDCC loop reversal warns (158) on an up-count >= 128
-        __asm nop __endasm;
     }
     SLEEP = (SLEEP & ~0x03) | 0x02; // MODE = PM2
     __asm
         nop
         nop
         nop
+        setb _EA
+        orl _PCON, #0x01
+        nop
     __endasm;
-    EA = 1;
-    if (SLEEP & 0x03) {   // an ISR clears MODE if it fired in the meantime
-        PCON |= 0x01;     // enter PM2
-        __asm nop __endasm;
-    }
 }
 
 /* ============================================================================
@@ -548,23 +557,29 @@ bool radio_send_dma(void) {
     radio_cca_start_tx(tx_buf);
 
     // 4. Wait until packet and CRC are fully transmitted (RFIF bit 4 = IRQ_DONE)
+    bool underflow = false;
     timeout = 50000;
     while (!(RFIF & 0x10) && --timeout) {
         if ((MARCSTATE & 0x1F) == 0x16) {
-            RFST = 0x04; // SIDLE
-            RFIF = 0;
-            return false; // Underflow occurred
+            underflow = true; // TXFIFO_UNDERFLOW
+            break;
         }
     }
 
     bool dma_done = (DMAIRQ & 0x01) != 0 || (RFIF & 0x10) != 0;
+    bool ok = (!underflow && timeout > 0 && dma_done);
+
+    if (!ok) {
+        DMAARM = 0x81; // abort channel 0 so a failed TX never deadlocks flash_write4()
+        __asm nop __endasm;
+    }
 
     // 5. Clear interrupt flags and return to IDLE
     RFST = 0x04;
     RFTXRXIF = 0;
     RFIF = 0;
 
-    return (timeout > 0 && dma_done);
+    return ok;
 }
 
 /**
