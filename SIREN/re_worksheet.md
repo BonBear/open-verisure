@@ -8,8 +8,10 @@ pins 54–58, CC1101) and the list of actions that can erase the unit:
 
 Unit / device ID: `2S5F 554X`  Date: `2026-11-22`  Tools: DMM, USB microscope
 
-Safety: the horn is very loud. Disconnect it or cover it before triggering anything. Power the board
-from the bench supply through CN2 (red/black) with a current limit.
+Safety: the horn is very loud. Disconnect CN2 (piezo horn) or cover it before triggering anything.
+Power the board from the bench supply through one of the battery inputs (CN5/CN6/CN7 or TP1A `+` /
+TP68 `GND`) at 3.0 V with a current limit. **Do NOT apply 3.0 V to CN2** (CN2 is the piezo horn
+output from the H-bridge D1/D2).
 
 ## 1. Unit data (from the rating label)
 
@@ -27,7 +29,7 @@ from the bench supply through CN2 (red/black) with a current limit.
 
 | Point | Expected | Measured | Notes |
 | :--- | :--- | :--- | :--- |
-| CN2 battery voltage (red `アカ` / black `クロ`) | `3.0 V` (3x parallel) | | |
+| Battery input (`CN5`/`CN6`/`CN7` -> `TP1A`/`TP1B`/`TP1C` `+`, `TP68` `GND`) | `3.0 V` (3x parallel) | | Confirmed: `DVCC`/`AVCC` (IC1 pins 1/64) connect to `TP1A`/`TP1B`/`TP1C`; `CN2` is the piezo horn, not battery |
 | MSP430F149 DVCC | 1.8–3.6 V | | |
 | CC1101 VDD | 1.8–3.6 V | | |
 | Boost output (IC9 + 100 µH `100` inductor, 2x 47 µF) | | | horn supply? |
@@ -60,25 +62,22 @@ TP81/TP82 and TP84–TP88 on the back (next to CN1), TP91/TP92 on the back.
 
 | Pad | Idle level (V) | Goes to (IC1 pin) | Function |
 | :--- | :--- | :--- | :--- |
-| TP61 | | | |
-| TP62 | | | |
-| TP63 | | | |
-| TP64 | | | |
-| TP70 | | | |
-| TP71 | | | |
-| TP72 | | | |
-| TP31 | | | |
-| TP32 | | | |
-| TP81 | | | |
-| TP82 | | | |
-| TP84 | | | |
-| TP85 | | | |
-| TP86 | | | |
-| TP87 | | | |
-| TP88 | | | |
-| TP91 | | | |
-| TP92 | | | |
-| TP94 | | | |
+| TP61 | | **54** | **JTAG `TDO/TDI`** |
+| TP62 | | **55** | **JTAG `TDI/TCLK`** |
+| TP63 | | **56** | **JTAG `TMS`** |
+| TP64 | | **57** | **JTAG `TCK`** |
+| TP5 | | **58** | **JTAG `RST/NMI`** |
+| TP68 | | **62, 63** (and **53** `XT2IN`) | **`GND` (`AVSS`/`DVSS`)** |
+| TP1A / TP1B / TP1C | | **1, 64** | **`VCC` (`DVCC`/`AVCC`, via F11–F13)** |
+| TP28 | | **13** (`P1.1`) | **BSL TXD** (`P1.1`) |
+| TP27 | | **12** (`P1.0`) | `P1.0` |
+| TP37 | | **2** (`P6.3`) | `P6.3` / A3 |
+| TP38 | | **3** (`P6.4`) | `P6.4` / A4 |
+| TP39 | | **4** (`P6.5`) | `P6.5` / A5 |
+| TP19 | | **6** (`P6.7`) | `TH1` thermistor (`P6.7` / A7) |
+| TP1 | | **10** (`VeREF+`) | `VeREF+` |
+| TP70–TP72, TP31–TP32 | | | |
+| TP81–TP82, TP84–TP88, TP91–TP92, TP94 | | | |
 
 | Step | Result |
 | :--- | :--- |
@@ -92,12 +91,12 @@ TP81/TP82 and TP84–TP88 on the back (next to CN1), TP91/TP92 on the back.
 
 | CC1101 pin | MSP430 pin | Notes |
 | :--- | :--- | :--- |
-| SCLK | | |
-| SI | | |
-| SO / GDO1 | | |
-| CSn | | |
-| GDO0 | | |
-| GDO2 | | |
+| SCLK (pin 1) | **47** (`P5.3 / UCLK1`) | Hardware SPI on USART1 |
+| SI (pin 20) | **45** (`P5.1 / SIMO1`) | Hardware SPI on USART1 |
+| SO / GDO1 (pin 2) | **46** (`P5.2 / SOMI1`) | Hardware SPI on USART1 |
+| CSn (pin 7) | **44** (`P5.0 / STE1`) | Hardware SPI CS on Port 5 |
+| GDO0 (pin 6) | **26** (`P2.6`) | Port 2 interrupt-capable |
+| GDO2 (pin 3) | **27** (`P2.7`) | Port 2 interrupt-capable |
 
 Sniff the SPI at power-up with the logic analyser to capture the register setup (FREQ2..0, MDMCFG,
 SYNC1/0, PKTCTRL, WORCTRL, MCSM). Register dump: ______________________
@@ -106,27 +105,27 @@ SYNC1/0, PKTCTRL, WORCTRL, MCSM). Register dump: ______________________
 
 | Item | Result |
 | :--- | :--- |
-| Full marking (`L22901-707 OKI JAPAN 3285F01J`) | OKI ML22 family speech-synthesis LSI (assumed); `-707` is probably the ROM/voice code |
+| Full marking (`L22901-707 OKI JAPAN 3285F01J`) | OKI ML22 family custom mask-ROM speech-synthesis LSI (`-707` ROM code); `IC2` pin 23 -> `TP18` |
 | Interface to the MSP430 (serial command pins) | |
-| Output to the horn (direct or through IC5 / the Q15–Q19 stage) | |
+| Output to the horn (direct or through IC5 / the Q15–Q19 stage) | H-bridge (`Q15–Q19`, 2x `4F` + 2x `4A` SOT-89) -> `D1`/`D2` -> `CN2` (`アカ`/`クロ`) |
 | IC5 `2115 E58 JRC` | NJM2115 dual op-amp (assumed): buffer/amplifier |
-| Q15/Q16/Q17 ... `4F`, `4A`, `LG` marked transistors: H-bridge? | |
-| Horn type and impedance | |
+| Q15/Q16/Q17 ... `4F`, `4A`, `LG` marked transistors: H-bridge? | Confirmed complementary H-bridge (2x `4F` + 2x `4A` + `LG` pre-drivers + 4x `5.1 Ω`) |
+| Horn type and impedance | **Piezo horn** (`OL` open-circuit resistance across disconnected `CN2` leads) |
 
 ## 7. Connectors, switches and sensors
 
 | Item | Pins | Measured / traced | Function |
 | :--- | :--- | :--- | :--- |
-| CN5 (3-pin, fuse F11) | | | |
-| CN6 (3-pin, fuse F12) | | | |
-| CN7 (3-pin, fuse F13) | | | |
+| CN5 (3-pin, fuse F11) | 3 | `TP1A` -> IC1 pin 1/64 (`DVCC`/`AVCC`) | **Battery cell 1** (3.0 V parallel) |
+| CN6 (3-pin, fuse F12) | 3 | `TP1B` -> IC1 pin 1/64 (`DVCC`/`AVCC`) | **Battery cell 2** (3.0 V parallel) |
+| CN7 (3-pin, fuse F13) | 3 | `TP1C` -> IC1 pin 1/64 (`DVCC`/`AVCC`) | **Battery cell 3** (3.0 V parallel) |
 | CN1 (back, castellated, TP84–TP87) | | | |
-| CN2 (back, 2-pin red/black) | | | battery |
-| CN4 U.FL + FIL1 (SAW) | | | RF test point? |
-| SW1 (back) | | | tamper switch? |
-| TH1 thermistor (back) | | | temperature / battery compensation |
-| LED1 | | | |
-| "BANE4-" contact (spring) | | | battery spring? |
+| CN2 (back, 2-pin red/black) | 2 | `アカ` (red) -> `D2` out; `クロ` (black) -> `D1` out | **Piezo horn** (H-bridge output, NOT battery!) |
+| CN4 U.FL + FIL1 (SAW) | | | RF test point |
+| SW1 (back) | 2 | **IC1 pin 18 (`P1.6`)** + `GND` | **Tamper switch** (active-low to GND) |
+| TH1 thermistor (back) | 2 | **IC1 pin 6 (`P6.7 / A7`, `TP19`)** + `BAT+` | **Temperature sensing** (ADC channel A7) |
+| LED1 | 2 | **IC1 pin 43 (`P4.7`)** -> `Q1` (pin 2 `GND`) | **Status LED** (active-high via `Q1`) |
+| "BANE4-" contact (spring) | | | battery / chassis spring? |
 | IC7, IC4 (unpopulated) | | | option footprints |
 
 ## 8. Radio
@@ -144,5 +143,5 @@ SYNC1/0, PKTCTRL, WORCTRL, MCSM). Register dump: ______________________
 - [x] 26 or 27 MHz crystal for the CC1101? → **`26.000` MHz** (same as the gateway; use `--xtal-mhz 26`).
 - [ ] Wake-on-radio or continuous RX?
 - [ ] Is the F149 JTAG fuse blown?
-- [ ] Which pads are JTAG / BSL?
+- [x] Which pads are JTAG / BSL? → **JTAG:** `TP61` (`TDO`), `TP62` (`TDI`), `TP63` (`TMS`), `TP64` (`TCK`), `TP5` (`RST`), `TP68` (`GND`). **BSL TXD (`P1.1`):** `TP28`.
 - [ ] What does the downlink command look like?
