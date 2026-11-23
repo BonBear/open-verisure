@@ -81,11 +81,11 @@ TP81/TP82 and TP84–TP88 on the back (next to CN1), TP91/TP92 on the back.
 
 | Step | Result |
 | :--- | :--- |
-| Tool (4-wire JTAG only — TI MSP-FET, Olimex MSP430-JTAG-TINY-V2, or ESP32 SLAU320; LaunchPad eZ-FET is SBW-only and cannot talk to F149) | |
-| Device ID read | |
-| JTAG fuse blown? | |
-| Flash dump via JTAG (file, size, SHA-256) | |
-| **Do not try the BSL**: a wrong password mass-erases the flash | ☐ read and understood |
+| Tool (4-wire JTAG only — TI MSP-FET, Olimex MSP430-JTAG-TINY-V2, or ESP32 SLAU320; LaunchPad eZ-FET is SBW-only and cannot talk to F149) | **ESP32-C3 Super Mini** (`tools/esp32_msp430_reader`, TI SLAU320, 330 Ω series resistors) |
+| Device ID read | Blocked by blown JTAG fuse |
+| JTAG fuse blown? | **Yes** (`ERR FUSE_BLOWN` — `DR_Shift16(0xAAAA)` returned `0x5555`, 2026-11-24) |
+| Flash dump via JTAG (file, size, SHA-256) | `n/a` (JTAG security fuse blown at factory) |
+| **Do not try the BSL**: a wrong password mass-erases the flash | ☑ read and understood (BSL can be used later to mass-erase and flash custom firmware) |
 
 ## 5. CC1101 (IC3) link to the MSP430
 
@@ -141,7 +141,7 @@ SYNC1/0, PKTCTRL, WORCTRL, MCSM). Register dump: ______________________
 ## 9. Open questions
 
 - [x] 26 or 27 MHz crystal for the CC1101? → **`26.000` MHz** (same as the gateway; use `--xtal-mhz 26`).
-- [ ] Wake-on-radio or continuous RX?
-- [ ] Is the F149 JTAG fuse blown?
+- [ ] Wake-on-radio or continuous RX? (Otii shows `4000.0 ms` wake period, `6.66 µA` floor, 5× `320 ms` @ `27.5 mA` boot pulses then `20.5 ms` @ `1.93 mA` idle ticks)
+- [x] Is the F149 JTAG fuse blown? → **Yes** (confirmed 2026-11-24 via ESP32-C3 SLAU320 reader: `ERR FUSE_BLOWN` / `0x5555`).
 - [x] Which pads are JTAG / BSL? → **JTAG:** `TP61` (`TDO`), `TP62` (`TDI`), `TP63` (`TMS`), `TP64` (`TCK`), `TP5` (`RST`), `TP68` (`GND`). **BSL TXD (`P1.1`):** `TP28`.
 - [ ] What does the downlink command look like?
