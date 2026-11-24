@@ -9,12 +9,25 @@ programming, password-unlocking, and verifying Intel HEX or TI-TXT images
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
 import time
 from pathlib import Path
 from typing import Protocol
 
 import serial
+
+# 80-byte position-independent MSP430 RAM flash-writer stub (loaded at 0x0300) for BSL v1.10:
+#   SP = 0x09FE, WDTCTL = 0x5A80 (stop WDT), FCTL2 = 0xA542 (MCLK/3),
+#   FCTL3 = 0xA500 (unlock flash), FCTL1 = 0xA540 (WRT).
+#   Copies *(uint16_t *)0x03F2 words from 0x0400 to *(uint16_t *)0x03F0,
+#   polling (FCTL3 & BUSY) after each word write; locks flash (FCTL1 = 0xA500,
+#   FCTL3 = 0xA510), writes 0xCAFE to 0x03F4, and loops forever (jmp $).
+BSL_V110_RAM_STUB = bytes.fromhex(
+    "3140FE09B240805A2001B24042A52A01B24000A52C01B24040A52801"
+    "1C42F0031D42F2033E4000040D930824BC4E000092B32C01FD232C53"
+    "1D83F63FB24000A52801B24010A52C01B240FECAF403FF3F"
+)
 
 
 class BslError(RuntimeError):
@@ -387,28 +400,55 @@ class BslBridge:
         raw = self.xfer(build_frame(0x14, addr, length), length + 6, timeout_ms=1000)
         return verify_rx_frame(raw, length)
 
+    def load_pc(self, addr: int) -> None:
+        if not (0 <= addr <= 0xFFFF):
+            raise ValueError(f"Invalid 16-bit address: 0x{addr:X}")
+        time.sleep(0.005)
+        self.sync()
+        raw = self.xfer(build_frame(0x1A, addr, 0x0000), 1, timeout_ms=500)
+        if raw != b"\x90":
+            raise BslError(f"Load PC NAK at 0x{addr:04X}: {raw.hex().upper()}")
 
-def run_probe(bridge: BslBridge) -> tuple[int, int, bytes]:
+    def read_bsl_rom_id(self) -> tuple[int, int, bytes]:
+        payload = self.tx_data_block(0x0FF0, 16)
+        chip_id = (payload[0] << 8) | payload[1]
+        bsl_ver = (payload[10] << 8) | payload[11]
+        return chip_id, bsl_ver, payload
+
+
+def run_probe(bridge: BslBridge) -> tuple[int | None, int | None, bytes]:
     """Read chip ID and BSL version without erasing or sending a password."""
     bridge.ping()
     bridge.enter()
     try:
-        return bridge.tx_bsl_version()
+        try:
+            return bridge.tx_bsl_version()
+        except BslError as exc:
+            msg = str(exc)
+            if "ERR SHORT A0" in msg or "ERR SHORT 70" in msg:
+                return None, None, b""
+            raise
     finally:
         bridge.release()
+
+
+def _touches_vectors(chunk: tuple[int, bytes]) -> bool:
+    addr, data = chunk
+    return (addr + len(data)) > 0xFFE0 and addr <= 0xFFFF
 
 
 def run_flash(
     bridge: BslBridge,
     chunks: list[tuple[int, bytes]],
     verify: bool = True,
-) -> None:
-    """Mass-erase, unlock with blank password, write chunks, and optionally verify."""
+) -> tuple[int, int, bytes]:
+    """Mass-erase, unlock, read BSL version, program (RAM stub for v1.10), and verify."""
     bridge.ping()
     bridge.enter()
     try:
         bridge.mass_erase()
         bridge.rx_password()
+        chip_id, bsl_ver, payload = bridge.read_bsl_rom_id()
 
         has_info_b = any(addr < 0x1080 and (addr + len(data)) > 0x1000 for addr, data in chunks)
         has_info_a = any(addr < 0x1100 and (addr + len(data)) > 0x1080 for addr, data in chunks)
@@ -417,22 +457,53 @@ def run_flash(
         if has_info_a:
             bridge.erase_segment(0x1080)
 
-        for addr, data in chunks:
-            bridge.rx_data_block(addr, data)
+        ordered_chunks = [c for c in chunks if not _touches_vectors(c)] + [
+            c for c in chunks if _touches_vectors(c)
+        ]
+
+        written_bytes: dict[int, int] = {}
+        for addr, data in ordered_chunks:
+            for i, b in enumerate(data):
+                written_bytes[addr + i] = b
+        final_pw = bytes(written_bytes.get(a, 0xFF) for a in range(0xFFE0, 0x10000))
+
+        if bsl_ver < 0x0160:
+            if ordered_chunks:
+                bridge.rx_data_block(0x0300, BSL_V110_RAM_STUB)
+            cur_pw_map = {a: 0xFF for a in range(0xFFE0, 0x10000)}
+            for addr, data in ordered_chunks:
+                hdr = struct.pack("<HHH", addr, len(data) // 2, 0x0000)
+                bridge.rx_data_block(0x03F0, hdr)
+                bridge.rx_data_block(0x0400, data)
+                bridge.load_pc(0x0300)
+                time.sleep(max(0.025, len(data) * 0.00015))
+                for i, b in enumerate(data):
+                    if 0xFFE0 <= addr + i <= 0xFFFF:
+                        cur_pw_map[addr + i] = b
+                next_pw = bytes(cur_pw_map[a] for a in range(0xFFE0, 0x10000))
+                bridge.enter()
+                bridge.rx_password(next_pw)
+                status_bytes = bridge.tx_data_block(0x03F4, 2)
+                (status,) = struct.unpack("<H", status_bytes)
+                if status != 0xCAFE:
+                    raise BslError(
+                        f"BSL v1.10 RAM stub failed at 0x{addr:04X}: status=0x{status:04X}"
+                    )
+        else:
+            for addr, data in ordered_chunks:
+                bridge.rx_data_block(addr, data)
 
         if verify:
-            written: dict[int, int] = {}
-            for addr, data in chunks:
+            for addr, data in ordered_chunks:
                 readback = bridge.tx_data_block(addr, len(data))
                 if readback != data:
                     raise BslError(f"Verification mismatch at 0x{addr:04X}")
-                for i, b in enumerate(data):
-                    written[addr + i] = b
 
-            expected_vectors = bytes(written.get(a, 0xFF) for a in range(0xFFE0, 0x10000))
             actual_vectors = bridge.tx_data_block(0xFFE0, 32)
-            if actual_vectors != expected_vectors:
+            if actual_vectors != final_pw:
                 raise BslError("Verification mismatch in interrupt vector table 0xFFE0..0xFFFF")
+
+        return chip_id, bsl_ver, payload
     finally:
         bridge.release()
 
@@ -516,13 +587,23 @@ def main(argv: list[str] | None = None) -> int:
         bridge = BslBridge(ser)
         if args.command == "probe":
             chip_id, bsl_ver, payload = run_probe(bridge)
+            if chip_id is None or bsl_ver is None:
+                print(
+                    "BSL SYNC OK (0x90) — device locked or BSL v1.10 "
+                    "(TX BSL Version requires unlock / 0x14 read)"
+                )
+            else:
+                print(
+                    f"Chip ID: 0x{chip_id:04X} | BSL Version: 0x{bsl_ver:04X} "
+                    f"(v{bsl_ver >> 8}.{bsl_ver & 0xFF:02X})"
+                )
+                print(f"Raw BSL info (16 B): {payload.hex().upper()}")
+        elif args.command == "flash":
+            chip_id, bsl_ver, _ = run_flash(bridge, chunks, verify=not args.no_verify)
             print(
                 f"Chip ID: 0x{chip_id:04X} | BSL Version: 0x{bsl_ver:04X} "
                 f"(v{bsl_ver >> 8}.{bsl_ver & 0xFF:02X})"
             )
-            print(f"Raw BSL info (16 B): {payload.hex().upper()}")
-        elif args.command == "flash":
-            run_flash(bridge, chunks, verify=not args.no_verify)
             print("Flash complete" + (" and verified." if not args.no_verify else "."))
 
     return 0

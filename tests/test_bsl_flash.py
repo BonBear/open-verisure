@@ -219,13 +219,30 @@ def test_prepare_flash_chunks_reset_vector_required():
 class FakeBridgeSerial:
     """In-memory mock of the ESP32-C3 BSL bridge serial interface."""
 
-    def __init__(self, fail_cmd: int | None = None, info_fill: int = 0xFF) -> None:
+    def __init__(
+        self,
+        fail_cmd: int | None = None,
+        info_fill: int = 0xFF,
+        locked: bool = True,
+        bsl_ver: int = 0x0160,
+        stub_status: int = 0xCAFE,
+        probe_err: str = "ERR SHORT A0",
+    ) -> None:
         self.commands: list[str] = []
         self.xfer_frames: list[bytes] = []
         self.flash: dict[int, int] = {a: 0xFF for a in range(0x1100, 0x10000)}
         for a in range(0x1000, 0x1100):
             self.flash[a] = info_fill
+        self.ram: dict[int, int] = {a: 0x00 for a in range(0x0200, 0x0A00)}
+        self.rom_id = bytes(
+            [0xF1, 0x49] + [0x00] * 8 + [(bsl_ver >> 8) & 0xFF, bsl_ver & 0xFF] + [0x00] * 4
+        )
         self.fail_cmd = fail_cmd
+        self.locked = locked
+        self.bsl_ver = bsl_ver
+        self.stub_status = stub_status
+        self.probe_err = probe_err
+        self.load_pc_dsts: list[int] = []
         self.synced = False
         self._responses: list[bytes] = []
 
@@ -261,8 +278,9 @@ class FakeBridgeSerial:
             if self.fail_cmd == cmd:
                 return b"ERR SHORT A0\r\n"
             if cmd == 0x1E:
-                payload = bytes([0xF1, 0x49] + [0x00] * 8 + [0x01, 0x60] + [0x00] * 4)
-                return f"OK {_make_rx_frame(payload).hex().upper()}\r\n".encode("ascii")
+                if self.locked or self.bsl_ver < 0x0160:
+                    return f"{self.probe_err}\r\n".encode("ascii")
+                return f"OK {_make_rx_frame(self.rom_id).hex().upper()}\r\n".encode("ascii")
             if cmd == 0x18:
                 # Mass Erase clears Main Flash (0x1100..0xFFFF) only, leaving Info Flash untouched
                 for a in range(0x1100, 0x10000):
@@ -282,24 +300,84 @@ class FakeBridgeSerial:
                         self.flash[a] = 0xFF
                 return b"OK 90\r\n"
             if cmd == 0x10:
+                pw = frame[8:-2]
+                expected_pw = bytes(self.flash[a] for a in range(0xFFE0, 0x10000))
+                if pw != expected_pw:
+                    return b"ERR SHORT A0\r\n"
+                self.locked = False
                 return b"OK 90\r\n"
             if cmd == 0x12:
                 addr = frame[4] | (frame[5] << 8)
                 data = frame[8:-2]
-                for i, b in enumerate(data):
-                    self.flash[addr + i] &= b
+                if 0x0200 <= addr < 0x0A00:
+                    for i, b in enumerate(data):
+                        self.ram[addr + i] = b
+                elif self.bsl_ver < 0x0160 and addr >= 0x8000:
+                    # Simulate TI BSL v1.10 signed-address bug ignoring >= 0x8000 writes
+                    pass
+                else:
+                    for i, b in enumerate(data):
+                        self.flash[addr + i] &= b
                 return b"OK 90\r\n"
             if cmd == 0x14:
+                if self.locked:
+                    return b"ERR SHORT A0\r\n"
                 addr = frame[4] | (frame[5] << 8)
                 length = frame[6] | (frame[7] << 8)
-                data = bytes(self.flash[addr + i] for i in range(length))
+                if addr == 0x0FF0 and length == 16:
+                    data = self.rom_id
+                elif 0x0200 <= addr < 0x0A00:
+                    data = bytes(self.ram[addr + i] for i in range(length))
+                else:
+                    data = bytes(self.flash[addr + i] for i in range(length))
                 return f"OK {_make_rx_frame(data).hex().upper()}\r\n".encode("ascii")
+            if cmd == 0x1A:
+                addr = frame[4] | (frame[5] << 8)
+                assert addr == 0x0300
+                stub_len = len(bsl_flash.BSL_V110_RAM_STUB)
+                loaded_stub = bytes(self.ram[0x0300 + i] for i in range(stub_len))
+                assert loaded_stub == bsl_flash.BSL_V110_RAM_STUB
+                dst = self.ram[0x03F0] | (self.ram[0x03F1] << 8)
+                words = self.ram[0x03F2] | (self.ram[0x03F3] << 8)
+                self.load_pc_dsts.append(dst)
+                for i in range(words * 2):
+                    self.flash[dst + i] &= self.ram[0x0400 + i]
+                self.ram[0x03F4] = self.stub_status & 0xFF
+                self.ram[0x03F5] = (self.stub_status >> 8) & 0xFF
+                self.locked = True
+                return b"OK 90\r\n"
         raise AssertionError(f"Unexpected bridge command: {line!r}")
 
 
-def test_probe_read_only_and_release(monkeypatch):
+@pytest.mark.parametrize(
+    ("probe_err", "locked"),
+    [
+        ("ERR SHORT A0", True),
+        ("ERR SHORT 70", False),
+    ],
+)
+def test_probe_locked_or_v110_returns_none_and_releases(monkeypatch, probe_err, locked):
     monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
-    fake = FakeBridgeSerial()
+    fake = FakeBridgeSerial(locked=locked, bsl_ver=0x0110, probe_err=probe_err)
+    bridge = bsl_flash.BslBridge(fake)
+
+    chip_id, bsl_ver, payload = bsl_flash.run_probe(bridge)
+    assert chip_id is None
+    assert bsl_ver is None
+    assert payload == b""
+
+    expected_xfer = f"XFER {bsl_flash.build_frame(0x1E, 0, 0).hex().upper()} 22 500"
+    assert fake.commands == ["PING", "ENTER", "SYNC", expected_xfer, "RELEASE"]
+
+    cmds_sent = [frame[1] for frame in fake.xfer_frames]
+    assert cmds_sent == [0x1E]
+    assert 0x18 not in cmds_sent
+    assert 0x10 not in cmds_sent
+
+
+def test_probe_unlocked_reads_version_and_releases(monkeypatch):
+    monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
+    fake = FakeBridgeSerial(locked=False, bsl_ver=0x0160)
     bridge = bsl_flash.BslBridge(fake)
 
     chip_id, bsl_ver, payload = bsl_flash.run_probe(bridge)
@@ -318,14 +396,16 @@ def test_probe_read_only_and_release(monkeypatch):
 
 def test_flash_sequence_sync_and_verify(monkeypatch):
     monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
-    fake = FakeBridgeSerial()
+    fake = FakeBridgeSerial(locked=True, bsl_ver=0x0160)
     bridge = bsl_flash.BslBridge(fake)
     chunks = [
         (0x1100, b"\x12\x34\x56\x78"),
         (0xFFFE, b"\x00\x11"),
     ]
 
-    bsl_flash.run_flash(bridge, chunks, verify=True)
+    chip_id, bsl_ver, _ = bsl_flash.run_flash(bridge, chunks, verify=True)
+    assert chip_id == 0xF149
+    assert bsl_ver == 0x0160
 
     # Every XFER must be immediately preceded by SYNC and no two SYNCs may be consecutive
     for idx, cmd_line in enumerate(fake.commands):
@@ -335,7 +415,7 @@ def test_flash_sequence_sync_and_verify(monkeypatch):
             assert idx + 1 < len(fake.commands) and fake.commands[idx + 1].startswith("XFER ")
 
     cmds_sent = [frame[1] for frame in fake.xfer_frames]
-    assert cmds_sent == [0x18, 0x10, 0x12, 0x12, 0x14, 0x14, 0x14]
+    assert cmds_sent == [0x18, 0x10, 0x14, 0x12, 0x12, 0x14, 0x14, 0x14]
     # Last TX Data Block checks interrupt vector table 0xFFE0..0xFFFF (32 bytes)
     last_tx_frame = fake.xfer_frames[-1]
     assert (last_tx_frame[4] | (last_tx_frame[5] << 8)) == 0xFFE0
@@ -343,9 +423,47 @@ def test_flash_sequence_sync_and_verify(monkeypatch):
     assert fake.commands[-1] == "RELEASE"
 
 
+def test_flash_v110_ram_stub_and_vector_last_order(monkeypatch):
+    monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
+    fake = FakeBridgeSerial(locked=True, bsl_ver=0x0110)
+    bridge = bsl_flash.BslBridge(fake)
+    # Deliberately place the reset vector chunk first to verify vector-last reordering
+    chunks = [
+        (0xFFFE, b"\x00\x11"),
+        (0x1100, b"\x12\x34"),
+        (0x8000, b"\xaa\xbb"),
+    ]
+
+    chip_id, bsl_ver, _ = bsl_flash.run_flash(bridge, chunks, verify=True)
+    assert chip_id == 0xF149
+    assert bsl_ver == 0x0110
+
+    assert fake.load_pc_dsts == [0x1100, 0x8000, 0xFFFE]
+    assert fake.flash[0x1100] == 0x12
+    assert fake.flash[0x1101] == 0x34
+    assert fake.flash[0x8000] == 0xAA
+    assert fake.flash[0x8001] == 0xBB
+    assert fake.flash[0xFFFE] == 0x00
+    assert fake.flash[0xFFFF] == 0x11
+    assert (fake.ram[0x03F4] | (fake.ram[0x03F5] << 8)) == 0xCAFE
+    assert fake.commands[-1] == "RELEASE"
+
+
+def test_flash_v110_raises_if_stub_status_not_cafe(monkeypatch):
+    monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
+    fake = FakeBridgeSerial(locked=True, bsl_ver=0x0110, stub_status=0xDEAD)
+    bridge = bsl_flash.BslBridge(fake)
+    chunks = [(0x1100, b"\x12\x34"), (0xFFFE, b"\x00\x11")]
+
+    with pytest.raises(bsl_flash.BslError, match="status=0xDEAD"):
+        bsl_flash.run_flash(bridge, chunks, verify=True)
+
+    assert fake.commands[-1] == "RELEASE"
+
+
 def test_flash_allow_info_erases_touched_segments(monkeypatch):
     monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
-    fake = FakeBridgeSerial(info_fill=0x00)
+    fake = FakeBridgeSerial(info_fill=0x00, locked=True, bsl_ver=0x0160)
     bridge = bsl_flash.BslBridge(fake)
     mem = {
         0x1000: 0xAA,
@@ -360,9 +478,9 @@ def test_flash_allow_info_erases_touched_segments(monkeypatch):
     bsl_flash.run_flash(bridge, chunks, verify=True)
 
     cmds_sent = [frame[1] for frame in fake.xfer_frames]
-    # Mass Erase -> RX Password -> Erase Segment (Info B 0x1000) -> 3x RX Data Block -> 4x TX Data Block
-    assert cmds_sent == [0x18, 0x10, 0x16, 0x12, 0x12, 0x12, 0x14, 0x14, 0x14, 0x14]
-    erase_seg_frame = fake.xfer_frames[2]
+    # Mass Erase -> RX Password -> ROM ID (0x14) -> Erase Segment (0x1000) -> 3x RX -> 4x TX
+    assert cmds_sent == [0x18, 0x10, 0x14, 0x16, 0x12, 0x12, 0x12, 0x14, 0x14, 0x14, 0x14]
+    erase_seg_frame = fake.xfer_frames[3]
     assert (erase_seg_frame[4] | (erase_seg_frame[5] << 8)) == 0x1000
     assert fake.flash[0x1000] == 0xAA
     assert fake.flash[0x1001] == 0x55
@@ -398,4 +516,36 @@ def test_cli_flash_requires_confirm_erase_without_serial(tmp_path, monkeypatch, 
     err = capsys.readouterr().err
     assert "--confirm-erase" in err
     assert "Mass Erase" in err
+
+
+def test_cli_probe_locked_prints_status(monkeypatch, capsys):
+    monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
+    fake = FakeBridgeSerial(locked=True)
+
+    class _FakePort:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def reset_input_buffer(self):
+            pass
+
+        def write(self, data: bytes) -> int:
+            return fake.write(data)
+
+        def readline(self) -> bytes:
+            return fake.readline()
+
+    fake_port = _FakePort()
+    monkeypatch.setattr(bsl_flash, "_select_port", lambda _p: "COM99")
+    monkeypatch.setattr(bsl_flash.serial, "Serial", lambda *_a, **_kw: fake_port)
+
+    rc = bsl_flash.main(["probe", "--port", "COM99"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "BSL SYNC OK (0x90)" in out
+    assert "device locked" in out
+    assert fake.commands[-1] == "RELEASE"
 
