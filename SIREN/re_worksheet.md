@@ -70,7 +70,10 @@ TP81/TP82 and TP84–TP88 on the back (next to CN1), TP91/TP92 on the back.
 | TP68 | | **62, 63** (and **53** `XT2IN`) | **`GND` (`AVSS`/`DVSS`)** |
 | TP1A / TP1B / TP1C | | **1, 64** | **`VCC` (`DVCC`/`AVCC`, via F11–F13)** |
 | TP28 | | **13** (`P1.1`) | **BSL TXD** (`P1.1`) |
+| *(no TP pad)* | | **22** (`P2.2`) | **BSL RXD** (`P2.2`) — direct wire to IC1 pin 22 required |
 | TP27 | | **12** (`P1.0`) | `P1.0` |
+| TP17 | | **20** (`P2.0`) | `P2.0` |
+| *(trace)* | | **19** (`P1.7`) | **`IC9` boost enable** |
 | TP37 | | **2** (`P6.3`) | `P6.3` / A3 |
 | TP38 | | **3** (`P6.4`) | `P6.4` / A4 |
 | TP39 | | **4** (`P6.5`) | `P6.5` / A5 |
@@ -98,18 +101,24 @@ TP81/TP82 and TP84–TP88 on the back (next to CN1), TP91/TP92 on the back.
 | GDO0 (pin 6) | **26** (`P2.6`) | Port 2 interrupt-capable |
 | GDO2 (pin 3) | **27** (`P2.7`) | Port 2 interrupt-capable |
 
-Sniff the SPI at power-up with the logic analyser to capture the register setup (FREQ2..0, MDMCFG,
-SYNC1/0, PKTCTRL, WORCTRL, MCSM). Register dump: ______________________
+Sniffed on 2026-11-24 (Saleae Logic 4 @ 12 MS/s, Ch0=`SCLK`, Ch1=`MOSI`, Ch3=`CSn`, SPI Mode 3 `CPOL=1/CPHA=0`, 465 transactions / 1045 MOSI bytes, decoded with `--xtal-mhz 26`):
+- **Boot sequence:** `SRES` -> 47-byte burst init (`0x00..0x2E`) -> `SPWD`, then 5x CCA (`SRX` + `RSSI` poll) + 20-byte TX bursts (`STX`) + RX window + `SPWD`.
+- **Frequencies (26 MHz XTAL):** Init `868.059 MHz` (`FREQ=0x2162F4`), boot bursts alternate `868.157 MHz` (`0x2163EC`) and `868.448 MHz` (`0x2166E0`).
+- **RF profile:** GFSK, `38.38 kbps` (`MDMCFG4=0xCA`, `MDMCFG3=0x83`), `19.04 kHz` deviation (`DEVIATN=0x34`), `101.6 kHz` RX BW, sync `0xD391` (`MDMCFG2=0x17` TX/RX), 12-byte preamble (`MDMCFG1=0x52`), whitening + CRC on (`PKTCTRL0=0x44` TX / `0x45` RX).
+- **PATABLE (8-step ramp, `FREND0=0x17`):** `20 03 0D 34 57 8E 85 C4` (~+10 dBm max, matched to PCB balun/antenna).
+- **GDO pins:** `GDO2` (`P2.7`) = `0x06` / `0x46` (sync/packet IRQ), `GDO0` (`P2.6`) = `0x00` / `0x0F` / `0x42`.
+- **Boot TX packet (20 B):** `13 10 00 06 06 D1 8C FF FF FF FF 89 04 0E 76 84 08 0B 08 04` (incrementing seq byte at index 2).
 
 ## 6. OKI L22901 (IC2) and the horn driver
 
 | Item | Result |
 | :--- | :--- |
-| Full marking (`L22901-707 OKI JAPAN 3285F01J`) | OKI ML22 family custom mask-ROM speech-synthesis LSI (`-707` ROM code); `IC2` pin 23 -> `TP18` |
-| Interface to the MSP430 (serial command pins) | |
+| Full marking (`L22901-707 OKI JAPAN 3285F01J`) | OKI ML22 family custom mask-ROM speech-synthesis LSI (`-707` ROM code); `IC2` pin 12 -> `TP13`, pin 20 -> `TP12`, pin 23 -> `TP18`, pin 26 -> `R90` -> `Q3` -> `TP2` |
+| Boost regulator (`IC9`) | Enable = **`IC1` pin 19 (`P1.7`)**; `IC9` pins 3, 5, 6 = `TP2` = `IC5` pin 8 (`V+`) |
+| Interface to the MSP430 (serial command pins) | To be probed after ROM BSL bring-up |
 | Output to the horn (direct or through IC5 / the Q15–Q19 stage) | H-bridge (`Q15–Q19`, 2x `4F` + 2x `4A` SOT-89) -> `D1`/`D2` -> `CN2` (`アカ`/`クロ`) |
-| IC5 `2115 E58 JRC` | NJM2115 dual op-amp (assumed): buffer/amplifier |
-| Q15/Q16/Q17 ... `4F`, `4A`, `LG` marked transistors: H-bridge? | Confirmed complementary H-bridge (2x `4F` + 2x `4A` + `LG` pre-drivers + 4x `5.1 Ω`) |
+| IC5 `2115 E58 JRC` | NJM2115 dual op-amp: `V+` (pin 8) tied to `TP2` (switched/fed with `IC9` pins 3,5,6 & `Q3`) |
+| Q15/Q16/Q17 ... `4F`, `4A`, `LG` marked transistors: H-bridge? | Confirmed complementary H-bridge (2x `4F` + 2x `4A` + `LG`/`L6` level-shifters + 4x `5.1 Ω`) |
 | Horn type and impedance | **Piezo horn** (`OL` open-circuit resistance across disconnected `CN2` leads) |
 
 ## 7. Connectors, switches and sensors
@@ -132,16 +141,16 @@ SYNC1/0, PKTCTRL, WORCTRL, MCSM). Register dump: ______________________
 
 | Item | Result |
 | :--- | :--- |
-| Frequency, modulation, data rate | |
-| Does the siren transmit a heartbeat? Interval | |
-| Command from the hub to trigger it (capture with the gateway) | |
-| ACK from the siren after a command? | |
-| Device ID in plaintext in the header? | |
+| Frequency, modulation, data rate | `868.059 / 868.157 / 868.448 MHz`, GFSK, `38.38 kbps`, `19.04 kHz` dev, `101.6 kHz` BW, sync `0xD391`, PATABLE `20 03 0D 34 57 8E 85 C4` |
+| Does the siren transmit a heartbeat? Interval | 5x boot TX bursts (`20 B`), then `4000.0 ms` wake ticks (`20.5 ms` @ `1.93 mA`) |
+| Command from the hub to trigger it (capture with the gateway) | `n/a` (will run custom OpenVerisure firmware) |
+| ACK from the siren after a command? | `n/a` (will run custom OpenVerisure firmware) |
+| Device ID in plaintext in the header? | Factory boot packet: `13 10 00 06 06 D1 8C FF FF FF FF ...` |
 
 ## 9. Open questions
 
-- [x] 26 or 27 MHz crystal for the CC1101? → **`26.000` MHz** (same as the gateway; use `--xtal-mhz 26`).
-- [ ] Wake-on-radio or continuous RX? (Otii shows `4000.0 ms` wake period, `6.66 µA` floor, 5× `320 ms` @ `27.5 mA` boot pulses then `20.5 ms` @ `1.93 mA` idle ticks)
+- [x] 26 or 27 MHz crystal for the CC1101? → **`26.000` MHz** (confirmed both on marking and SPI decode `--xtal-mhz 26`).
+- [x] Wake-on-radio or continuous RX? → Timed `4000.0 ms` wake ticks (`6.66 µA` floor, `20.5 ms` @ `1.93 mA` idle ticks; 5x `320 ms` @ `27.5 mA` CCA+TX boot bursts).
 - [x] Is the F149 JTAG fuse blown? → **Yes** (confirmed 2026-11-24 via ESP32-C3 SLAU320 reader: `ERR FUSE_BLOWN` / `0x5555`).
-- [x] Which pads are JTAG / BSL? → **JTAG:** `TP61` (`TDO`), `TP62` (`TDI`), `TP63` (`TMS`), `TP64` (`TCK`), `TP5` (`RST`), `TP68` (`GND`). **BSL TXD (`P1.1`):** `TP28`.
-- [ ] What does the downlink command look like?
+- [x] Which pads are JTAG / BSL? → **JTAG:** `TP61` (`TDO`), `TP62` (`TDI`), `TP63` (`TMS`), `TP64` (`TCK`), `TP5` (`RST`), `TP68` (`GND`). **BSL:** `TP28` (`P1.1` TXD), `IC1` pin 22 (`P2.2` RXD — no TP pad, direct wire), `TP5` (`RST`), `TP64` (`TCK`), `TP68` (`GND`).
+- [ ] Which `IC1` pins drive `IC2` / H-bridge audio? (To be probed once custom ROM BSL test firmware runs.)

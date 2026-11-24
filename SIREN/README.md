@@ -14,8 +14,8 @@ still to be taken go in [re_worksheet.md](re_worksheet.md); the cross-device ove
 | XT1 | `26.000` | **26.000 MHz** CC1101 crystal (same as gateway; use `--xtal-mhz 26`) | Confirmed |
 | IC2 | `L22901-707 OKI JAPAN 3285F01J` (SSOP-30) | **OKI ML22 family speech-synthesis LSI** (assumed); plays the stored siren tones / voice | Marking confirmed, function assumed |
 | XT2 | `400W` | Clock for IC2 (~4.00 MHz ceramic resonator) | Marking confirmed |
-| IC5 | `2115 E58 JRC` (MSOP-8) | NJM2115 dual op-amp (assumed) | Assumption |
-| IC9 | Analog Devices MSOP-8 next to `100` (`10 µH`) inductor and 2x `4.7 µF / 50 V` | High-voltage boost converter for the piezo horn | Confirmed (ADI logo + 50 V caps) |
+| IC5 | `2115 E58 JRC` (MSOP-8) | NJM2115 dual op-amp (`V+` pin 8 tied to `TP2` = `IC9` pins 3/5/6 & `Q3`) | Confirmed power link |
+| IC9 | Analog Devices MSOP-8 next to `100` (`10 µH`) inductor and 2x `4.7 µF / 50 V` | High-voltage boost converter for the piezo horn; enable = **`IC1` pin 19 (`P1.7`)** | Confirmed (DMM) |
 | Q15–Q19 | 2x `4F` + 2x `4A` SOT-89 + `LG` pre-drivers | Complementary H-bridge piezo horn driver -> `D1`/`D2` -> `CN2` | Confirmed |
 | CN4 + FIL1 | U.FL + SAW filter | RF test point in the antenna path | Confirmed parts |
 | Antenna | straight wire from the back, top left | 868 MHz whip | Confirmed |
@@ -30,7 +30,7 @@ still to be taken go in [re_worksheet.md](re_worksheet.md); the cross-device ove
 
 ## Debug / programming pads (confirmed by DMM)
 
-4-wire JTAG on `MSP430F149` (`IC1` pins 54–58): **`TP61`** (`TDO`), **`TP62`** (`TDI`), **`TP63`** (`TMS`), **`TP64`** (`TCK`), **`TP5`** (`RST/NMI`), **`TP68`** (`GND`), **`TP1A`/`TP1B`/`TP1C`** (`VCC`). BSL TXD (`P1.1`, pin 13) is on **`TP28`**. The MSP430F149 supports 4-wire JTAG only (no SBW; see `tools/esp32_msp430_reader/` or a TI MSP-FET). The ROM BSL is not a read path: a wrong password mass-erases the flash. See [re_worksheet.md](re_worksheet.md) and [documentation/bench_recipes.md](../documentation/bench_recipes.md).
+4-wire JTAG on `MSP430F149` (`IC1` pins 54–58): **`TP61`** (`TDO`), **`TP62`** (`TDI`), **`TP63`** (`TMS`), **`TP64`** (`TCK`), **`TP5`** (`RST/NMI`), **`TP68`** (`GND`), **`TP1A`/`TP1B`/`TP1C`** (`VCC`). **Factory JTAG security fuse is blown** (`ERR FUSE_BLOWN` / `0x5555`). ROM BSL uses **`TP28`** (`P1.1` TXD), **`IC1` pin 22** (`P2.2` RXD — no TP pad, direct wire required), **`TP5`** (`RST/NMI`), **`TP64`** (`TCK`), and **`TP68`** (`GND`). The ROM BSL is not a read path (a wrong password mass-erases the flash), so it is used to flash custom OpenVerisure firmware. CC1101 boot SPI was captured on 2026-11-24 (`26 MHz` crystal, GFSK `38.38 kbps`, sync `0xD391`, PATABLE `20 03 0D 34 57 8E 85 C4`). See [re_worksheet.md](re_worksheet.md) and [documentation/bench_recipes.md](../documentation/bench_recipes.md).
 
 ## Photo requests
 
