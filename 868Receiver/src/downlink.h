@@ -52,7 +52,15 @@ void downlinkSetArmed(bool armed);
  *  Returns false for an unknown command or a full table. */
 bool downlinkRequestPicture(const char* deviceId, uint8_t cmd);
 
-#define DOWNLINK_CMD_RESEND   0xF0
+#define DOWNLINK_CMD_RESEND    0xF0
+#define DOWNLINK_CMD_SIREN_OFF 0xA0
+#define DOWNLINK_CMD_SIREN_ON  0xA1
+#define DOWNLINK_SIREN_MAX_SEC 180
+
+/** Queue a siren ON/OFF command (0xA1/0xA0) for a siren device; sent with its next poll answer.
+ *  When on is true, durationSec is clamped to 1..DOWNLINK_SIREN_MAX_SEC (0 defaults to 60 s).
+ *  Returns false for an invalid ID or a full table. */
+bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec = 60);
 
 #define DL_FLAG_PCH           0x01
 #define DL_FLAG_GRANT         0x02

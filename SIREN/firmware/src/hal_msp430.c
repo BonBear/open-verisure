@@ -14,12 +14,12 @@ uint8_t g_xtal_fault = 0U;
 static uint8_t s_reset_cause = 0U;
 
 static void gpio_init_safe(void) {
-    /* Port 1: P1.7 (IC9 boost) = OUT 0, P1.4 (Q3 audio) = OUT 0, P1.6 (SW1) = IN,
-     * all other P1 pins = OUT 0. MSP430F149 has no PxREN; never drive P1.6 HIGH. */
+    /* Port 1: P1.7 (IC9 boost) = OUT 0, P1.4 (Q3 audio, active-LOW) = OUT 1 (OFF),
+     * P1.6 (SW1) = IN, all other P1 pins = OUT 0. MSP430F149 has no PxREN; never drive P1.6 HIGH. */
     P1IE = 0x00U;
     P1IFG = 0x00U;
     P1SEL = 0x00U;
-    P1OUT = 0x00U;
+    P1OUT = BIT4;
     P1DIR = (uint8_t)~BIT6;
 
     /* Port 2: P2.6 (GDO0) & P2.7 (GDO2) = inputs only; P2.0..P2.5 = OUT 0. */
@@ -45,9 +45,10 @@ static void gpio_init_safe(void) {
     P5DIR = (uint8_t)~BIT2;
     P5SEL = BIT1 | BIT2 | BIT3;
 
-    /* Port 6: analog mode on all pins (0 uA digital buffer draw); A7 (P6.7) = TH1. */
-    P6SEL = 0xFFU;
-    P6DIR = 0x00U;
+    /* Port 6: P6.7 (A7) analog for TH1; P6.0..P6.5 (OKI IC2) clean digital LOW standby. */
+    P6SEL = BIT7;
+    P6OUT = 0x00U;
+    P6DIR = 0x3FU;
 }
 
 static void spi_init(void) {

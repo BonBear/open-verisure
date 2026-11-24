@@ -211,4 +211,50 @@ TEST(downlink_build_plain_pch_flags_and_resend) {
     CHECK_EQ(plain[13], 0xA5);
     CHECK_EQ(plain[14], 'V');
     CHECK_EQ(plain[15], 'S');
+
+    // Siren ON (0xA1): [8] = clamped duration (0..180 s), [9..13] = 0
+    downlinkBuildPlain(0x01020304UL, false, DOWNLINK_CMD_SIREN_ON, 60, 0, plain);
+    CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ(plain[8], 60);
+    for (int i = 9; i <= 13; i++) CHECK_EQ(plain[i], 0);
+    CHECK_EQ(plain[14], 'V');
+    CHECK_EQ(plain[15], 'S');
+
+    downlinkBuildPlain(0x01020304UL, true, DOWNLINK_CMD_SIREN_ON, 250, 0, plain, DL_FLAG_PCH, 2);
+    CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ(plain[8], DOWNLINK_SIREN_MAX_SEC);
+    for (int i = 9; i <= 13; i++) CHECK_EQ(plain[i], 0);
+}
+
+TEST(downlink_siren_on_off_duration_clamping_and_ack_clearing) {
+    downlinkInit();
+    uint16_t first = 0;
+    uint32_t map = 0;
+
+    // Invalid IDs rejected
+    CHECK(!downlinkRequestSiren(nullptr, true, 60));
+    CHECK(!downlinkRequestSiren("", true, 60));
+
+    // Duration 0 defaults to 60 s; lost answer retries; ACK clears it
+    REQUIRE(downlinkRequestSiren("2S5F554X", true, 0));
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ(first, 60);
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ(first, 60);
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", DOWNLINK_STATE_ACK, &first, &map), 0);
+
+    // Duration > 180 clamps to DOWNLINK_SIREN_MAX_SEC (180)
+    REQUIRE(downlinkRequestSiren("2S5F554X", true, 250));
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ(first, DOWNLINK_SIREN_MAX_SEC);
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", DOWNLINK_STATE_ACK, &first, &map), 0);
+
+    // Leftover ACK holds OFF for one poll, then sends OFF, then ACK clears OFF
+    REQUIRE(downlinkRequestSiren("2S5F554X", true, 60));
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_ON);
+    REQUIRE(downlinkRequestSiren("2S5F554X", false));
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", DOWNLINK_STATE_ACK, &first, &map), 0);
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_OFF);
+    CHECK_EQ(first, 0);
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", DOWNLINK_STATE_ACK, &first, &map), 0);
 }

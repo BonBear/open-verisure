@@ -46,6 +46,13 @@ typedef char siren_dev_id_len_check[(sizeof(DEVICE_ID_STR) >= 9U) ? 1 : -1];
 #define POLL_ARMED_S 30U
 #endif
 
+#define POLL_SOUNDING_S       5U
+
+#define SIREN_CMD_OFF         0xA0U
+#define SIREN_CMD_ON          0xA1U
+#define SIREN_DEFAULT_SOUND_S 60U
+#define SIREN_MAX_SOUND_S     180U
+
 #define BOOT_MIN_MV      2700U
 #define BOOT_RECHECK_S   60U
 #define RX_WINDOW_MS     120U
@@ -61,6 +68,9 @@ typedef char siren_dev_id_len_check[(sizeof(DEVICE_ID_STR) >= 9U) ? 1 : -1];
 static uint8_t s_rst_cause = 0U;
 static uint8_t s_armed = 0U;
 static uint8_t s_tamper = 0U;
+static uint8_t s_sounding = 0U;
+static uint16_t s_sound_rem_s = 0U;
+static uint8_t s_cmd_ack = 0U;
 static uint8_t s_first_pkt_sent = 0U;
 static volatile uint8_t s_latched_cmd = 0U;
 
@@ -119,6 +129,9 @@ static void build_uplink_frame(uint32_t ctr, uint16_t batt_mv, uint8_t is_por,
         frame[i] = (uint8_t)DEVICE_ID_STR[i];
     }
 
+    if (s_sounding != 0U) {
+        flags |= 0x01U;
+    }
     if (s_tamper != 0U) {
         flags |= 0x04U;
     }
@@ -152,9 +165,28 @@ static void build_uplink_frame(uint32_t ctr, uint16_t batt_mv, uint8_t is_por,
     wipe_bytes(plain, (uint8_t)sizeof(plain));
 }
 
-/* Phase 2 hook: safe no-op in Phase 1 (latches command only; horn stays OFF). */
-static void siren_handle_downlink_cmd(uint8_t cmd) {
+/* Phase 2 hook: keeps audio hardware silent/safe (P1.7 LOW, P1.4 HIGH) in Phase 1. */
+static void siren_audio_set(uint8_t on) {
+    (void)on;
+    P1OUT &= (uint8_t)~BIT7;
+    P1OUT |= BIT4;
+}
+
+static void siren_handle_downlink_cmd(uint8_t cmd, uint8_t arg) {
     s_latched_cmd = cmd;
+    if (cmd == SIREN_CMD_ON) {
+        uint16_t dur = (arg == 0U) ? SIREN_DEFAULT_SOUND_S : (uint16_t)arg;
+        if (dur > SIREN_MAX_SOUND_S) {
+            dur = SIREN_MAX_SOUND_S;
+        }
+        s_sounding = 1U;
+        s_sound_rem_s = dur;
+        siren_audio_set(1U);
+    } else if (cmd == SIREN_CMD_OFF) {
+        s_sounding = 0U;
+        s_sound_rem_s = 0U;
+        siren_audio_set(0U);
+    }
 }
 
 static uint8_t validate_downlink(const uint8_t rx[24], uint32_t poll_ctr) {
@@ -185,15 +217,31 @@ static uint8_t validate_downlink(const uint8_t rx[24], uint32_t poll_ctr) {
         return 0U;
     }
 
+    s_cmd_ack = 0U;
     if (dl_plain[6] <= 1U) {
         s_armed = (dl_plain[6] != 0U) ? 1U : 0U;
     }
     if (dl_plain[7] != 0U) {
-        siren_handle_downlink_cmd(dl_plain[7]);
+        siren_handle_downlink_cmd(dl_plain[7], dl_plain[8]);
+        s_cmd_ack = 1U;
     }
 
     wipe_bytes(dl_plain, (uint8_t)sizeof(dl_plain));
     return 1U;
+}
+
+static uint8_t siren_poll_state(void) {
+    uint8_t st = 0U;
+    if (s_armed != 0U) {
+        st |= 0x01U;
+    }
+    if (s_sounding != 0U) {
+        st |= 0x02U;
+    }
+    if (s_cmd_ack != 0U) {
+        st |= 0x04U;
+    }
+    return st;
 }
 
 static void blink_tx_led(void) {
@@ -236,6 +284,13 @@ static int send_packet(uint8_t pkt_type, uint8_t pkt_arg, uint8_t listen_dl) {
     return tx_ok;
 }
 
+static void poll_with_ack_flush(void) {
+    (void)send_packet(PKT_TYPE_POLL, siren_poll_state(), 1U);
+    if (s_cmd_ack != 0U) {
+        (void)send_packet(PKT_TYPE_POLL, siren_poll_state(), 1U);
+    }
+}
+
 int main(void) {
     uint8_t i;
     uint16_t poll_ticks = 0U;
@@ -269,7 +324,7 @@ int main(void) {
 
     s_tamper = hal_read_sw1();
     (void)send_packet(PKT_TYPE_ANNOUNCE, 0U, 0U);
-    (void)send_packet(PKT_TYPE_POLL, s_armed ? 0x01U : 0x00U, 1U);
+    poll_with_ack_flush();
 
     for (;;) {
         uint16_t elapsed;
@@ -309,6 +364,21 @@ int main(void) {
                     tamper_calm = (uint16_t)(tamper_calm + elapsed);
                 }
             }
+
+            if (s_sounding != 0U) {
+                if (s_sound_rem_s > elapsed) {
+                    s_sound_rem_s = (uint16_t)(s_sound_rem_s - elapsed);
+                    hal_led_set(1U);
+                    hal_delay_ms(30U);
+                    hal_led_set(0U);
+                } else {
+                    s_sound_rem_s = 0U;
+                    s_sounding = 0U;
+                    siren_audio_set(0U);
+                    poll_ticks = 0U;
+                    poll_with_ack_flush();
+                }
+            }
         }
 
         if (tamper_gap == 0U && (irq_flag != 0U || hal_read_sw1() != s_tamper)) {
@@ -326,10 +396,16 @@ int main(void) {
             }
         }
 
-        poll_interval = (s_armed != 0U) ? POLL_ARMED_S : POLL_DISARMED_S;
+        if (s_sounding != 0U) {
+            poll_interval = POLL_SOUNDING_S;
+        } else if (s_armed != 0U) {
+            poll_interval = POLL_ARMED_S;
+        } else {
+            poll_interval = POLL_DISARMED_S;
+        }
         if (poll_ticks >= poll_interval) {
             poll_ticks = 0U;
-            (void)send_packet(PKT_TYPE_POLL, s_armed ? 0x01U : 0x00U, 1U);
+            poll_with_ack_flush();
         }
     }
 }

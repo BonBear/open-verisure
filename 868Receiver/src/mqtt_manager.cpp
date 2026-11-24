@@ -263,7 +263,7 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
     const GatewayConfig& cfg = ConfigManager::get();
     String base = String(cfg.mqttTopic) + "/";
     String t(topic);
-    if (!t.startsWith(base) || len > 32) return;
+    if (!t.startsWith(base) || len > 128) return;
     String v;
     for (unsigned int i = 0; i < len; i++) v += (char)payload[i];
     v.trim();
@@ -290,11 +290,54 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
         else if (v == "HOLD") cmd = 0xE8;   // service: Blackfin on for 10 min, no picture (JTAG)
         bool ok = downlinkRequestPicture(dev.c_str(), cmd);
         Serial.printf("[Downlink] Picture 0x%02X for %s %s\n", cmd, dev.c_str(), ok ? "queued" : "NOT queued");
+        return;
+    }
+    const String sirenSuffix = "/siren/set";
+    if (rest.endsWith(sirenSuffix)) {
+        String dev = rest.substring(0, rest.length() - sirenSuffix.length());
+        if (!isDeviceIdText(dev) || !haIsSirenSensor(dev.c_str())) return;
+
+        bool on = false;
+        bool valid = false;
+        uint8_t dur = 60;
+        const char* s = v.c_str();
+        if (v == "ON" || v == "1") {
+            on = true;
+            valid = true;
+        } else if (v == "OFF" || v == "0") {
+            on = false;
+            valid = true;
+        } else if (s[0] == '{') {
+            const char* sp = strstr(s, "\"state\"");
+            const char* search = sp ? sp : s;
+            if (strstr(search, "\"ON\"") != nullptr || strstr(search, "\"on\"") != nullptr) {
+                on = true;
+                valid = true;
+            } else if (strstr(search, "\"OFF\"") != nullptr || strstr(search, "\"off\"") != nullptr) {
+                on = false;
+                valid = true;
+            }
+            const char* dp = strstr(s, "\"duration\"");
+            if (dp) {
+                const char* colon = strchr(dp + 10, ':');
+                if (colon) {
+                    unsigned long rawDur = strtoul(colon + 1, nullptr, 10);
+                    if (rawDur == 0) dur = 60;
+                    else if (rawDur > DOWNLINK_SIREN_MAX_SEC) dur = DOWNLINK_SIREN_MAX_SEC;
+                    else dur = (uint8_t)rawDur;
+                }
+            }
+        }
+        if (!valid) return;
+        bool ok = downlinkRequestSiren(dev.c_str(), on, dur);
+        Serial.printf("[Downlink] Siren %s (%u s) for %s %s\n",
+                      on ? "ON" : "OFF", (unsigned)dur, dev.c_str(), ok ? "queued" : "NOT queued");
     }
 }
 
 static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) {
     bool isMotionCam = haIsMotionCameraSensor(deviceId);
+    bool isSiren = haIsSirenSensor(deviceId);
     if (isMotionCam) {
         // Clear any legacy Door/Vibration discovery topics for this Motion Camera ID
         String oldContact = "homeassistant/binary_sensor/verisure_" + String(deviceId) + "_contact/config";
@@ -322,6 +365,24 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
 
         markDeviceDiscovered(deviceId);
         Serial.printf("[MQTT] Published Home Assistant Discovery for Motion Camera \"%s\" (%d sensor entities + 1 camera retained)\n", deviceId, count);
+    } else if (isSiren) {
+        int count = haDiscoveryGetSirenEntityCount();
+        for (int i = 0; i < count; i++) {
+            const HaEntityDef* def = haDiscoveryGetSirenEntityDef(i);
+            if (!def) continue;
+
+            String topic = haDiscoveryBuildTopic(deviceId, def);
+            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic);
+
+            s_mqttClient.publish(topic.c_str(), payload.c_str(), true);
+        }
+
+        String sirenTopic = haDiscoveryBuildSirenTopic(deviceId);
+        String sirenPayload = haDiscoveryBuildSirenPayload(deviceId, baseTopic);
+        s_mqttClient.publish(sirenTopic.c_str(), sirenPayload.c_str(), true);
+
+        markDeviceDiscovered(deviceId);
+        Serial.printf("[MQTT] Published Home Assistant Discovery for Siren \"%s\" (%d sensor entities + 1 siren retained)\n", deviceId, count);
     } else {
         int count = haDiscoveryGetSensorEntityCount();
         for (int i = 0; i < count; i++) {
@@ -450,8 +511,10 @@ static void checkMqttConnection() {
         publishAlarmState();
         String alarmSet = String(cfg.mqttTopic) + "/alarm/set";
         String pictureSet = String(cfg.mqttTopic) + "/+/picture/set";
+        String sirenSet = String(cfg.mqttTopic) + "/+/siren/set";
         s_mqttClient.subscribe(alarmSet.c_str());
         s_mqttClient.subscribe(pictureSet.c_str());
+        s_mqttClient.subscribe(sirenSet.c_str());
 
         int count = sensorRegistryGetCount();
         for (int i = 0; i < count; i++) {
