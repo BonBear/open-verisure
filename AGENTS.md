@@ -48,7 +48,7 @@ For focused, unambiguous changes (`< ~30` lines outside RF framing, crypto/repla
    - Pass explicit file paths, diff paths, and round numbers to subagents; ask for concise replies.
    - Avoid dumping repeated polling tables into the main thread (e.g. use `gh pr checks <n> --watch --interval 30` or summarize final status).
    - Between major milestones, update `.agents/handover.md` (git-ignored) and compact/rotate the session.
-7. **Git & PR ownership:** Only the Orchestrator commits, pushes, and opens PRs; `main` is protected (every change goes through a PR with green CI). Read `.agents/handover.md` at session start if present.
+7. **Git, docs & PR ownership:** Only the Orchestrator commits, pushes, and opens PRs; `main` is protected (every change goes through a PR with green CI). Before pushing a branch or opening a PR, update all affected repository documentation (`README.md`, component `README.md`s, and `documentation/*.md`) so docs ship in the same PR as the code. Read `.agents/handover.md` at session start if present.
 
 ---
 
