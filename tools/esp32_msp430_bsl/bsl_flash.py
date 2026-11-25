@@ -488,17 +488,25 @@ def run_flash(
                     next_pw = bytes(cand_pw_map[a] for a in range(0xFFE0, 0x10000))
                     bridge.enter()
                     bridge.rx_password(next_pw)
-                    status_bytes = bridge.tx_data_block(0x03F4, 2)
-                    (status,) = struct.unpack("<H", status_bytes)
-                    if status != 0xCAFE:
-                        last_err = BslError(
-                            f"BSL v1.10 RAM stub failed at 0x{addr:04X}: status=0x{status:04X}"
-                        )
-                        continue
                     if verify:
                         readback = bridge.tx_data_block(addr, len(data))
                         if readback != data:
-                            last_err = BslError(f"Verification mismatch at 0x{addr:04X}")
+                            status_bytes = bridge.tx_data_block(0x03F4, 2)
+                            (status,) = struct.unpack("<H", status_bytes)
+                            if status != 0xCAFE:
+                                last_err = BslError(
+                                    f"BSL v1.10 RAM stub failed at 0x{addr:04X}: status=0x{status:04X}"
+                                )
+                            else:
+                                last_err = BslError(f"Verification mismatch at 0x{addr:04X}")
+                            continue
+                    else:
+                        status_bytes = bridge.tx_data_block(0x03F4, 2)
+                        (status,) = struct.unpack("<H", status_bytes)
+                        if status != 0xCAFE:
+                            last_err = BslError(
+                                f"BSL v1.10 RAM stub failed at 0x{addr:04X}: status=0x{status:04X}"
+                            )
                             continue
                     cur_pw_map = cand_pw_map
                     break
