@@ -11,11 +11,13 @@
  * The gateway answers only a poll that passed authentication and the replay filter, with a
  * 24-byte packet: 8 bytes device ID (plain) + AES-128-ECB(device key, plaintext):
  *   [0] 'D'  [1] 'L'  [2..5] the poll's 32-bit counter (big endian)  [6] armed (0/1)
- *   [7] command (0 none, 0xD1..0xD6 take a picture, 0xE8 HOLD, 0xF0 resend)
+ *   [7] command (0 none, 0xD1..0xD6 take a picture, 0xE8 HOLD, 0xF0 resend, 0xA0/0xA1 siren OFF/ON)
  *   [8..9] resend (cmd 0xF0): first chunk (big endian), [10..13] resend: bitmap, bit i (byte 10 + i/8,
  *   bit i%8) = chunk first + i is missing.
- *   When cmd != 0xF0: [8] flags (DL_FLAG_*), [9] picture channel (0 = 869.525 MHz when DL_FLAG_PCH
- *   is set, else 0), [10..13] 0.  [14] 'V'  [15] 'S'
+ *   When cmd == 0xA1 (siren ON): [8] duration in seconds (0 = firmware default: 60 s for alarm,
+ *   1-shot natural duration for tones 1..5; else 1..180 s), [9] tone ID (0..5), [10..13] 0.
+ *   When cmd != 0xF0 and cmd != 0xA1: [8] flags (DL_FLAG_*), [9] picture channel (0 = 869.525 MHz
+ *   when DL_FLAG_PCH is set, else 0), [10..13] 0.  [14] 'V'  [15] 'S'
  * The camera accepts it only if the counter is the one of its own last poll. The counter
  * never repeats (it survives resets, see crypto.cpp), so a recorded answer never fits again.
  */
@@ -56,11 +58,14 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd);
 #define DOWNLINK_CMD_SIREN_OFF 0xA0
 #define DOWNLINK_CMD_SIREN_ON  0xA1
 #define DOWNLINK_SIREN_MAX_SEC 180
+#define DOWNLINK_SIREN_MAX_TONE 5
 
 /** Queue a siren ON/OFF command (0xA1/0xA0) for a siren device; sent with its next poll answer.
- *  When on is true, durationSec is clamped to 1..DOWNLINK_SIREN_MAX_SEC (0 defaults to 60 s).
+ *  tone is 0..5 (unknown values > 5 fall back to 0 "alarm"). When on is true, durationSec is
+ *  clamped to DOWNLINK_SIREN_MAX_SEC; durationSec == 0 defaults to 60 s for tone 0 ("alarm") or
+ *  stays 0 for tones 1..5 so the siren firmware selects its natural 1-shot duration.
  *  Returns false for an invalid ID or a full table. */
-bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec = 60);
+bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec = 60, uint8_t tone = 0);
 
 #define DL_FLAG_PCH           0x01
 #define DL_FLAG_GRANT         0x02

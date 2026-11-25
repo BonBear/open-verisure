@@ -314,7 +314,9 @@ static void answerSirenPoll(const VerisureTelemetry& t, uint32_t frameStartUs) {
     uint16_t first = 0;
     uint32_t map = 0;
     uint8_t cmd = downlinkCommandForPoll(t.deviceId, state, &first, &map);
-    downlinkBuildPlain(t.counter, armed, cmd, first, map, plain, 0, 0);
+    uint8_t dur = (uint8_t)(first & 0xFFU);
+    uint8_t tone = (cmd == DOWNLINK_CMD_SIREN_ON) ? (uint8_t)(first >> 8) : 0;
+    downlinkBuildPlain(t.counter, armed, cmd, dur, map, plain, 0, tone);
     memcpy(pkt, t.deviceId, 8);
     bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
     memset(key, 0, sizeof(key));
@@ -328,8 +330,8 @@ static void answerSirenPoll(const VerisureTelemetry& t, uint32_t frameStartUs) {
         return;
     }
     g_radioLoopDiag.pollAnswers++;
-    Serial.printf("[Downlink] -> %s (siren): armed %d, cmd 0x%02X (dur %u s, poll %lu, state 0x%02X)\n",
-                  t.deviceId, armed ? 1 : 0, cmd, (unsigned)first, (unsigned long)t.counter, state);
+    Serial.printf("[Downlink] -> %s (siren): armed %d, cmd 0x%02X (dur %u s, tone %u, poll %lu, state 0x%02X)\n",
+                  t.deviceId, armed ? 1 : 0, cmd, (unsigned)dur, (unsigned)tone, (unsigned long)t.counter, state);
 }
 
 #ifdef RADIO_EVAL

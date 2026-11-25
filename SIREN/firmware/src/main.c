@@ -82,6 +82,8 @@ static uint8_t s_tamper = 0U;
 static uint8_t s_sounding = 0U;
 static uint16_t s_sound_rem_s = 0U;
 static uint16_t s_ic2_retrig_s = 0U;
+static uint8_t s_sound_cmd = SIREN_IC2_CMD_ALARM;
+static uint8_t s_sound_repeat = 0U;
 static uint8_t s_cmd_ack = 0U;
 static uint8_t s_first_pkt_sent = 0U;
 static volatile uint8_t s_latched_cmd = 0U;
@@ -195,23 +197,42 @@ static void siren_audio_set(uint8_t on) {
         P1OUT &= (uint8_t)~BIT7;
 #endif
         hal_delay_ms(20U);
-        siren_ic2_strobe(SIREN_IC2_CMD_ALARM);
+        siren_ic2_strobe(s_sound_cmd);
         s_ic2_retrig_s = 0U;
     } else {
         P1OUT &= (uint8_t)~BIT7;
-        siren_ic2_strobe(SIREN_IC2_CMD_STOP);
-        hal_wdt_feed();
-        hal_delay_ms(60U);
-        P6OUT &= (uint8_t)~0x3FU;
-        P1OUT |= BIT4;
         s_ic2_retrig_s = 0U;
+        if ((P1OUT & BIT4) == 0U) {
+            siren_ic2_strobe(SIREN_IC2_CMD_STOP);
+            hal_wdt_feed();
+            hal_delay_ms(60U);
+            P6OUT &= (uint8_t)~0x3FU;
+        }
+        P1OUT |= BIT4;
     }
 }
 
-static void siren_handle_downlink_cmd(uint8_t cmd, uint8_t arg) {
+static void siren_handle_downlink_cmd(uint8_t cmd, uint8_t arg, uint8_t tone) {
+    static const uint8_t s_tone_cmds[6] = {
+        SIREN_IC2_CMD_ALARM,     /* 0: alarm */
+        SIREN_IC2_CMD_DINGDONG,  /* 1: ding_dong */
+        SIREN_IC2_CMD_CHIME2,    /* 2: chime */
+        SIREN_IC2_CMD_BEEP2,     /* 3: double_beep */
+        SIREN_IC2_CMD_BEEP1,     /* 4: beep */
+        SIREN_IC2_CMD_TONE       /* 5: tone */
+    };
     s_latched_cmd = cmd;
     if (cmd == SIREN_CMD_ON) {
-        uint16_t dur = (arg == 0U) ? SIREN_DEFAULT_SOUND_S : (uint16_t)arg;
+        uint8_t t = (tone <= 5U) ? tone : 0U;
+        uint16_t dur;
+        s_sound_cmd = s_tone_cmds[t];
+        if (t == 0U) {
+            dur = (arg == 0U) ? SIREN_DEFAULT_SOUND_S : (uint16_t)arg;
+            s_sound_repeat = 1U;
+        } else {
+            dur = (arg == 0U) ? ((t == 1U) ? 2U : 1U) : (uint16_t)arg;
+            s_sound_repeat = (dur > SIREN_IC2_RETRIG_S) ? 1U : 0U;
+        }
         if (dur > SIREN_MAX_SOUND_S) {
             dur = SIREN_MAX_SOUND_S;
         }
@@ -221,6 +242,7 @@ static void siren_handle_downlink_cmd(uint8_t cmd, uint8_t arg) {
     } else if (cmd == SIREN_CMD_OFF) {
         s_sounding = 0U;
         s_sound_rem_s = 0U;
+        s_sound_repeat = 0U;
         siren_audio_set(0U);
     }
 }
@@ -258,7 +280,7 @@ static uint8_t validate_downlink(const uint8_t rx[24], uint32_t poll_ctr) {
         s_armed = (dl_plain[6] != 0U) ? 1U : 0U;
     }
     if (dl_plain[7] != 0U) {
-        siren_handle_downlink_cmd(dl_plain[7], dl_plain[8]);
+        siren_handle_downlink_cmd(dl_plain[7], dl_plain[8], dl_plain[9]);
         s_cmd_ack = 1U;
     }
 
@@ -404,11 +426,13 @@ int main(void) {
             if (s_sounding != 0U) {
                 if (s_sound_rem_s > elapsed) {
                     s_sound_rem_s = (uint16_t)(s_sound_rem_s - elapsed);
-                    if ((uint32_t)s_ic2_retrig_s + elapsed >= SIREN_IC2_RETRIG_S) {
-                        s_ic2_retrig_s = 0U;
-                        siren_ic2_strobe(SIREN_IC2_CMD_ALARM);
-                    } else {
-                        s_ic2_retrig_s = (uint16_t)(s_ic2_retrig_s + elapsed);
+                    if (s_sound_repeat != 0U) {
+                        if ((uint32_t)s_ic2_retrig_s + elapsed >= SIREN_IC2_RETRIG_S) {
+                            s_ic2_retrig_s = 0U;
+                            siren_ic2_strobe(s_sound_cmd);
+                        } else {
+                            s_ic2_retrig_s = (uint16_t)(s_ic2_retrig_s + elapsed);
+                        }
                     }
                     hal_led_set(1U);
                     hal_delay_ms(30U);
@@ -416,6 +440,7 @@ int main(void) {
                 } else {
                     s_sound_rem_s = 0U;
                     s_sounding = 0U;
+                    s_sound_repeat = 0U;
                     siren_audio_set(0U);
                     poll_ticks = 0U;
                     poll_with_ack_flush();

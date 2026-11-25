@@ -314,6 +314,8 @@ TEST(ha_siren_discovery_and_state_payload) {
     CHECK_STR(sj.get("payload_on"), "ON");
     CHECK_STR(sj.get("payload_off"), "OFF");
     CHECK_STR(sj.get("support_duration"), "true");
+    CHECK(sj.has("available_tones"));
+    CHECK_STR(sj.get("available_tones"), "[\"alarm\",\"ding_dong\",\"chime\",\"double_beep\",\"beep\",\"tone\"]");
     CHECK(strstr(sirenPayload.c_str(), "Verisure Siren (GW-SI)") != nullptr);
 
     VerisureTelemetry t = {};

@@ -80,7 +80,7 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd) {
     return true;
 }
 
-bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec) {
+bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec, uint8_t tone) {
     if (!deviceId || deviceId[0] == '\0') return false;
     expirePending();
     PendingCommand* p = findPending(deviceId);
@@ -95,9 +95,11 @@ bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec) {
     p->deviceId[8] = '\0';
     p->cmd = on ? DOWNLINK_CMD_SIREN_ON : DOWNLINK_CMD_SIREN_OFF;
     if (on) {
-        uint16_t dur = (durationSec == 0) ? 60 : durationSec;
+        uint8_t t = (tone <= DOWNLINK_SIREN_MAX_TONE) ? tone : 0;
+        uint16_t dur = durationSec;
+        if (t == 0 && dur == 0) dur = 60;
         if (dur > DOWNLINK_SIREN_MAX_SEC) dur = DOWNLINK_SIREN_MAX_SEC;
-        p->resendFirst = dur;
+        p->resendFirst = (uint16_t)(((uint16_t)t << 8) | (dur & 0xFFU));
     } else {
         p->resendFirst = 0;
     }
@@ -191,7 +193,9 @@ void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t 
         out[9] = (uint8_t)first;
         for (int i = 0; i < 4; i++) out[10 + i] = (uint8_t)(map >> (8 * i));
     } else if (cmd == DOWNLINK_CMD_SIREN_ON) {
-        out[8] = (uint8_t)((first > DOWNLINK_SIREN_MAX_SEC) ? DOWNLINK_SIREN_MAX_SEC : first);
+        uint8_t dur = (uint8_t)(first & 0xFFU);
+        out[8] = (dur > DOWNLINK_SIREN_MAX_SEC) ? DOWNLINK_SIREN_MAX_SEC : dur;
+        out[9] = (channel <= DOWNLINK_SIREN_MAX_TONE) ? channel : 0;
     } else {
         out[8] = flags;
         out[9] = (flags & DL_FLAG_PCH) ? channel : 0;

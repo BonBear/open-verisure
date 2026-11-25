@@ -212,7 +212,7 @@ TEST(downlink_build_plain_pch_flags_and_resend) {
     CHECK_EQ(plain[14], 'V');
     CHECK_EQ(plain[15], 'S');
 
-    // Siren ON (0xA1): [8] = clamped duration (0..180 s), [9..13] = 0
+    // Siren ON (0xA1): [8] = clamped duration (0..180 s), [9] = tone (0..5), [10..13] = 0
     downlinkBuildPlain(0x01020304UL, false, DOWNLINK_CMD_SIREN_ON, 60, 0, plain);
     CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_ON);
     CHECK_EQ(plain[8], 60);
@@ -223,7 +223,19 @@ TEST(downlink_build_plain_pch_flags_and_resend) {
     downlinkBuildPlain(0x01020304UL, true, DOWNLINK_CMD_SIREN_ON, 250, 0, plain, DL_FLAG_PCH, 2);
     CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_ON);
     CHECK_EQ(plain[8], DOWNLINK_SIREN_MAX_SEC);
-    for (int i = 9; i <= 13; i++) CHECK_EQ(plain[i], 0);
+    CHECK_EQ(plain[9], 2);
+    for (int i = 10; i <= 13; i++) CHECK_EQ(plain[i], 0);
+
+    downlinkBuildPlain(0x01020304UL, false, DOWNLINK_CMD_SIREN_ON, 0, 0, plain, 0, 1);
+    CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ(plain[8], 0);
+    CHECK_EQ(plain[9], 1);
+    for (int i = 10; i <= 13; i++) CHECK_EQ(plain[i], 0);
+
+    // Invalid tone > DOWNLINK_SIREN_MAX_TONE clamps to 0 (alarm)
+    downlinkBuildPlain(0x01020304UL, false, DOWNLINK_CMD_SIREN_ON, 10, 0, plain, 0, 9);
+    CHECK_EQ(plain[8], 10);
+    CHECK_EQ(plain[9], 0);
 }
 
 TEST(downlink_siren_on_off_duration_clamping_and_ack_clearing) {
@@ -257,4 +269,43 @@ TEST(downlink_siren_on_off_duration_clamping_and_ack_clearing) {
     CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_OFF);
     CHECK_EQ(first, 0);
     CHECK_EQ(downlinkCommandForPoll("2S5F554X", DOWNLINK_STATE_ACK, &first, &map), 0);
+}
+
+TEST(downlink_siren_tone_queueing_and_out9_encoding) {
+    downlinkInit();
+    uint16_t first = 0;
+    uint32_t map = 0;
+    uint8_t plain[16];
+
+    // Tone 1 (ding_dong) with duration 0 preserves dur=0 so firmware chooses 1-shot duration
+    REQUIRE(downlinkRequestSiren("2S5F554X", true, 0, 1));
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ((uint8_t)(first & 0xFFU), 0);
+    CHECK_EQ((uint8_t)(first >> 8), 1);
+    downlinkBuildPlain(1, false, DOWNLINK_CMD_SIREN_ON, (uint8_t)(first & 0xFFU), map, plain, 0,
+                       (uint8_t)(first >> 8));
+    CHECK_EQ(plain[8], 0);
+    CHECK_EQ(plain[9], 1);
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", DOWNLINK_STATE_ACK, &first, &map), 0);
+
+    // Tone 5 (tone) with explicit duration 15 s
+    REQUIRE(downlinkRequestSiren("2S5F554X", true, 15, 5));
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ((uint8_t)(first & 0xFFU), 15);
+    CHECK_EQ((uint8_t)(first >> 8), 5);
+    downlinkBuildPlain(2, true, DOWNLINK_CMD_SIREN_ON, (uint8_t)(first & 0xFFU), map, plain, 0,
+                       (uint8_t)(first >> 8));
+    CHECK_EQ(plain[8], 15);
+    CHECK_EQ(plain[9], 5);
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", DOWNLINK_STATE_ACK, &first, &map), 0);
+
+    // Unknown tone (> 5) falls back to tone 0 (alarm) with default 60 s when duration == 0
+    REQUIRE(downlinkRequestSiren("2S5F554X", true, 0, 99));
+    CHECK_EQ(downlinkCommandForPoll("2S5F554X", 0, &first, &map), DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ((uint8_t)(first & 0xFFU), 60);
+    CHECK_EQ((uint8_t)(first >> 8), 0);
+    downlinkBuildPlain(3, false, DOWNLINK_CMD_SIREN_ON, (uint8_t)(first & 0xFFU), map, plain, 0,
+                       (uint8_t)(first >> 8));
+    CHECK_EQ(plain[8], 60);
+    CHECK_EQ(plain[9], 0);
 }

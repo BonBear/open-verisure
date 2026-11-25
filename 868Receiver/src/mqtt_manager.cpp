@@ -300,6 +300,8 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
         bool on = false;
         bool valid = false;
         uint8_t dur = 60;
+        uint8_t tone = 0;
+        bool hasDuration = false;
         const char* s = v.c_str();
         if (v == "ON" || v == "1") {
             on = true;
@@ -317,21 +319,53 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
                 on = false;
                 valid = true;
             }
+            const char* tp = strstr(s, "\"tone\"");
+            if (tp) {
+                const char* p = strchr(tp + 6, ':');
+                if (p) {
+                    p++;
+                    while (*p == ' ' || *p == '\t') p++;
+                    if (*p == '"') {
+                        p++;
+                        const char* q2 = strchr(p, '"');
+                        if (q2) {
+                            size_t tlen = (size_t)(q2 - p);
+                            static const char* const kTones[] = {
+                                "alarm", "ding_dong", "chime", "double_beep", "beep", "tone"
+                            };
+                            for (uint8_t i = 0; i < (uint8_t)(sizeof(kTones) / sizeof(kTones[0])); i++) {
+                                if (strlen(kTones[i]) == tlen && strncmp(p, kTones[i], tlen) == 0) {
+                                    tone = i;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             const char* dp = strstr(s, "\"duration\"");
             if (dp) {
                 const char* colon = strchr(dp + 10, ':');
                 if (colon) {
-                    unsigned long rawDur = strtoul(colon + 1, nullptr, 10);
-                    if (rawDur == 0) dur = 60;
-                    else if (rawDur > DOWNLINK_SIREN_MAX_SEC) dur = DOWNLINK_SIREN_MAX_SEC;
-                    else dur = (uint8_t)rawDur;
+                    const char* p = colon + 1;
+                    while (*p == ' ' || *p == '\t') p++;
+                    if (isdigit((unsigned char)*p)) {
+                        hasDuration = true;
+                        unsigned long rawDur = strtoul(p, nullptr, 10);
+                        if (rawDur == 0) dur = (tone == 0) ? 60 : 0;
+                        else if (rawDur > DOWNLINK_SIREN_MAX_SEC) dur = DOWNLINK_SIREN_MAX_SEC;
+                        else dur = (uint8_t)rawDur;
+                    }
                 }
+            }
+            if (!hasDuration && tone != 0) {
+                dur = 0;
             }
         }
         if (!valid) return;
-        bool ok = downlinkRequestSiren(dev.c_str(), on, dur);
-        Serial.printf("[Downlink] Siren %s (%u s) for %s %s\n",
-                      on ? "ON" : "OFF", (unsigned)dur, dev.c_str(), ok ? "queued" : "NOT queued");
+        bool ok = downlinkRequestSiren(dev.c_str(), on, dur, tone);
+        Serial.printf("[Downlink] Siren %s (%u s, tone %u) for %s %s\n",
+                      on ? "ON" : "OFF", (unsigned)dur, (unsigned)tone, dev.c_str(), ok ? "queued" : "NOT queued");
     }
 }
 

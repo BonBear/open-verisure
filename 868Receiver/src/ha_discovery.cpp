@@ -488,6 +488,7 @@ String haDiscoveryBuildSirenPayload(const char* deviceId, const char* baseTopic)
     p += "\"payload_on\":\"ON\",";
     p += "\"payload_off\":\"OFF\",";
     p += "\"support_duration\":true,";
+    p += "\"available_tones\":[\"alarm\",\"ding_dong\",\"chime\",\"double_beep\",\"beep\",\"tone\"],";
     p += "\"expire_after\":" + String(HA_CAMERA_EXPIRE_S) + ",";
     p += "\"availability_topic\":\"" + b + "/status\",";
     p += "\"payload_available\":\"online\",";
