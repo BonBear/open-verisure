@@ -5,8 +5,9 @@
  * Phase 2 scope: persistent counter, AES-128-ECB uplink telemetry (boot 0x00,
  * tamper 0xB5, poll 0xBA), 120 ms downlink RX validation (DL...VS), LPM3
  * low-power sleep, and OKI L22901-707 (IC2) parallel audio driver on P6.0..P6.5
- * with audio rail (P1.4). HV horn boost (P1.7) remains Hi-Z INPUT (OFF) unless
- * SIREN_ENABLE_HV_BOOST is explicitly defined at compile time.
+ * with audio rail (P1.4). HV horn boost (P1.7) remains Hi-Z INPUT (OFF) while
+ * idle and is driven OUTPUT HIGH while sounding when SIREN_ENABLE_HV_BOOST is
+ * defined (enabled by default in siren_f149; use siren_f149_bench on the bench).
  */
 
 #include <msp430.h>

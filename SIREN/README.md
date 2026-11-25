@@ -35,7 +35,7 @@ Open-source firmware, hardware documentation, and board photos for the Verisure 
 
 Bench-verified parallel interface between IC1 (`MSP430F149`) and IC2 (`OKI L22901-707`):
 
-- **Rails:** `P1.4` (IC1 pin 16, TP2) is the active-LOW audio/op-amp rail switch (`LOW` = ON, `HIGH` = OFF). `P1.7` (IC1 pin 19) is the active-HIGH IC9 HV horn boost enable (keep `LOW` on the bench when Saleae Logic 4 is attached).
+- **Rails:** `P1.4` (IC1 pin 16, TP2) is the active-LOW audio/op-amp rail switch (`LOW` = ON, `HIGH` = OFF). `P1.7` (IC1 pin 19) is the active-HIGH IC9 HV horn boost enable (`INPUT` Hi-Z when idle; enabled by default while sounding in `siren_f149`; use `siren_f149_bench` to keep it disabled when probing with Saleae Logic 4).
 - **Parallel port (`P6.0..P6.5` -> IC2 pins `13..18`):**
   - `P6.0` (pin 13): `STOP` / power-down (`val5 = 0x01` strobed stops playback, ~55 ms ramp-down to sleep).
   - `P6.1` (pin 14): Must be `0` for valid commands (`1` = no-op / empty bank).
