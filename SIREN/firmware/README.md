@@ -15,7 +15,7 @@ Phase 2 OpenVerisure firmware for the Verisure Siren (`M1765-1`, **TI MSP430F149
   - When **OFF**: `CC_SPWD` sleep (`7.6 uA` LPM3 floor) with standard `120 s` / `30 s` polls.
   - When **ON**: CC1101 runs 1.0 s `SWOR` (`~21.4 uA` standalone WOR idle) on **869.525 MHz** (Band 54, 10% duty cycle) with dedicated sync `0x2DD4` and 24-bit FNV-1a per-siren addressing (`ADDR` + `tag16`) so `MD_CAM` picture chunks (`0xD391`) and other sirens are ignored. A wake packet never plays audio directly — it only triggers a `TAR`-aligned authenticated `0xBA` poll on `868.950 MHz` (~1–2 s end-to-end latency), protected by anti-DoS cooldown/backoff (`5 -> 10 -> 20 -> 40 s`) and 5-strike `300 s` `SPWD` pause.
 - **OKI L22901-707 (`IC2`) parallel audio driver:** `P6.0..P6.5` (`P6DIR = 0x3F`, `P6.4` falling-edge strobe) with active-LOW audio/op-amp rail `P1.4` (`1` = OFF idle, `0` = ON while sounding). Supports tone IDs `0..5` (`alarm`, `ding_dong`, `chime`, `double_beep`, `beep`, `tone`), auto-retriggering every `2 s` for `alarm` or durations `> 2 s`.
-- **Safety:** High-voltage horn boost converter (`P1.7` / `IC9`, active-HIGH) stays **INPUT (Hi-Z)** by default (`7.6 uA` LPM3 idle; driving `P1.7` `OUTPUT LOW` sinks `12.05 mA`) and is only driven `OUTPUT HIGH` while sounding if `SIREN_ENABLE_HV_BOOST` is explicitly defined at compile time. Bench-verified at full volume with `CN2` piezo horn connected at `3.0 V` across all 6 tones (`110.8–133.8 mA` peak, `81.04 mA` `alarm` mean, zero brownout, clean return to Hi-Z `INPUT`).
+- **HV horn boost & bench safety:** High-voltage horn boost converter (`P1.7` / `IC9`, active-HIGH) stays **INPUT (Hi-Z)** while idle (`7.6 uA` LPM3 idle; driving `P1.7` `OUTPUT LOW` sinks `12.05 mA`) and is driven `OUTPUT HIGH` while sounding via `-DSIREN_ENABLE_HV_BOOST` (enabled by default in `siren_f149`). Use `-e siren_f149_bench` to build with `P1.7` disabled when probing with a logic analyzer. Bench-verified at full volume with `CN2` piezo horn connected at `3.0 V` across all 6 tones (`110.8–133.8 mA` peak, `81.04 mA` `alarm` mean, zero brownout, clean return to Hi-Z `INPUT`).
 
 ## Configuration
 
@@ -31,8 +31,11 @@ Use `-DCTR_SEED=<block>` when rebuilding after a flash erase so the counter cont
 ## Build
 
 ```bash
-# Local build using include/config.h
+# Local build using include/config.h (full-volume HV horn boost enabled)
 pio run -d SIREN/firmware
+
+# Bench build without HV horn boost (safe for logic-analyzer probing)
+pio run -d SIREN/firmware -e siren_f149_bench
 
 # CI / example-config build using include/config.h.example
 pio run -d SIREN/firmware -e siren_f149_ci
@@ -52,7 +55,7 @@ python tools/esp32_msp430_bsl/bsl_flash.py flash --port COMx SIREN/firmware/.pio
 | :--- | :--- | :--- | :--- |
 | `P1.4` | `TP2` / `Q3` audio power rail (active-LOW) | Output | `1` (OFF) idle, `0` (ON) while sounding |
 | `P1.6` | `SW1` tamper switch | Input (no `PxREN`) | `P1IE` dynamic edge IRQ |
-| `P1.7` | `IC9` horn boost enable (active-HIGH) | Input (Hi-Z) idle / Output if enabled | `INPUT` Hi-Z (`7.6 uA` LPM3); `OUTPUT HIGH` while sounding only with `SIREN_ENABLE_HV_BOOST` |
+| `P1.7` | `IC9` horn boost enable (active-HIGH) | Input (Hi-Z) idle / Output while sounding | `INPUT` Hi-Z (`7.6 uA` LPM3); `OUTPUT HIGH` while sounding (`-DSIREN_ENABLE_HV_BOOST`, default on in `siren_f149`; use `siren_f149_bench` to disable) |
 | `P2.6` | CC1101 `GDO0` | Input | Sync / packet status |
 | `P2.7` | CC1101 `GDO2` | Input | WOR packet IRQ (`PORT2_VECTOR` falling edge when Fast Wake ON; `HW0` low when OFF) |
 | `P4.7` | `LED1` (active-high via `Q1`) | Output | `0` idle, brief blink on TX/boot/sounding |
