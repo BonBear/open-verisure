@@ -50,6 +50,13 @@ struct HaEntityDef {
 bool haIsMotionCameraSensor(const char* deviceId);
 
 /**
+ * @brief Check if a sensor ID belongs to a Verisure Siren (GW-SI).
+ * @param deviceId 8-character sensor identifier.
+ * @return True if device is a siren (e.g. "2S5F...").
+ */
+bool haIsSirenSensor(const char* deviceId);
+
+/**
  * @brief Get total number of entity definitions exposed per door/window sensor node.
  * @return Number of sensor entities (typically 6).
  */
@@ -74,6 +81,34 @@ int haDiscoveryGetMotionSensorEntityCount();
  * @return Pointer to HaEntityDef structure.
  */
 const HaEntityDef* haDiscoveryGetMotionSensorEntityDef(int idx);
+
+/**
+ * @brief Get total number of sensor entity definitions exposed per siren node.
+ * @return Number of siren sensor entities (4).
+ */
+int haDiscoveryGetSirenEntityCount();
+
+/**
+ * @brief Get siren sensor entity definition by zero-based index.
+ * @param idx Index from 0 to count-1.
+ * @return Pointer to HaEntityDef structure.
+ */
+const HaEntityDef* haDiscoveryGetSirenEntityDef(int idx);
+
+/**
+ * @brief Construct MQTT config discovery topic for a Siren entity.
+ * @param deviceId 8-character sensor identifier.
+ * @return Full topic string: `homeassistant/siren/verisure_<deviceId>_siren/config`.
+ */
+String haDiscoveryBuildSirenTopic(const char* deviceId);
+
+/**
+ * @brief Construct JSON payload for Siren auto-discovery.
+ * @param deviceId 8-character sensor identifier.
+ * @param baseTopic Base MQTT topic (e.g. "verisure").
+ * @return JSON configuration string for Home Assistant MQTT Siren entity.
+ */
+String haDiscoveryBuildSirenPayload(const char* deviceId, const char* baseTopic);
 
 /**
  * @brief Construct MQTT config discovery topic for a sensor entity.

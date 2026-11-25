@@ -80,6 +80,34 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd) {
     return true;
 }
 
+bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec, uint8_t tone) {
+    if (!deviceId || deviceId[0] == '\0') return false;
+    expirePending();
+    PendingCommand* p = findPending(deviceId);
+    if (!p) {
+        for (int i = 0; i < DOWNLINK_MAX_CAMERAS && !p; i++) {
+            if (!s_pending[i].cmd && !s_pending[i].resendMap) p = &s_pending[i];
+        }
+        if (p) p->resendMap = 0;
+    }
+    if (!p) return false;
+    strncpy(p->deviceId, deviceId, 8);
+    p->deviceId[8] = '\0';
+    p->cmd = on ? DOWNLINK_CMD_SIREN_ON : DOWNLINK_CMD_SIREN_OFF;
+    if (on) {
+        uint8_t t = (tone <= DOWNLINK_SIREN_MAX_TONE) ? tone : 0;
+        uint16_t dur = durationSec;
+        if (t == 0 && dur == 0) dur = 60;
+        if (dur > DOWNLINK_SIREN_MAX_SEC) dur = DOWNLINK_SIREN_MAX_SEC;
+        p->resendFirst = (uint16_t)(((uint16_t)t << 8) | (dur & 0xFFU));
+    } else {
+        p->resendFirst = 0;
+    }
+    p->sent = false;
+    p->queuedAt = millis();
+    return true;
+}
+
 bool downlinkRequestResend(const char* deviceId, uint16_t first, uint32_t map) {
     if (!deviceId || map == 0) return false;
     expirePending();
@@ -143,6 +171,7 @@ uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16
     }
     if (p->cmd && !(cameraState & DOWNLINK_STATE_ACK)) {
         p->sent = true;
+        if (p->cmd == DOWNLINK_CMD_SIREN_ON && first) *first = p->resendFirst;
         return p->cmd;
     }
     return 0;
@@ -163,6 +192,10 @@ void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t 
         out[8] = (uint8_t)(first >> 8);
         out[9] = (uint8_t)first;
         for (int i = 0; i < 4; i++) out[10 + i] = (uint8_t)(map >> (8 * i));
+    } else if (cmd == DOWNLINK_CMD_SIREN_ON) {
+        uint8_t dur = (uint8_t)(first & 0xFFU);
+        out[8] = (dur > DOWNLINK_SIREN_MAX_SEC) ? DOWNLINK_SIREN_MAX_SEC : dur;
+        out[9] = (channel <= DOWNLINK_SIREN_MAX_TONE) ? channel : 0;
     } else {
         out[8] = flags;
         out[9] = (flags & DL_FLAG_PCH) ? channel : 0;

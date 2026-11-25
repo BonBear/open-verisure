@@ -276,3 +276,73 @@ TEST(mqtt_camera_image_length_guard) {
     CHECK(!mqttCameraImageLengthOk(23, SIZE_MAX));
     CHECK(!mqttCameraImageLengthOk(0, SIZE_MAX));
 }
+
+TEST(ha_siren_discovery_and_state_payload) {
+    CHECK(haIsSirenSensor("2S5F554X"));
+    CHECK(!haIsSirenSensor("2JHL2MVN"));
+    CHECK(!haIsSirenSensor("2NCEKS3T"));
+    CHECK(!haIsSirenSensor(nullptr));
+
+    int count = haDiscoveryGetSirenEntityCount();
+    CHECK_EQ(count, 4);
+    CHECK(!haDiscoveryGetSirenEntityDef(-1));
+    CHECK(!haDiscoveryGetSirenEntityDef(count));
+
+    for (int i = 0; i < count; i++) {
+        const HaEntityDef* def = haDiscoveryGetSirenEntityDef(i);
+        REQUIRE(def);
+        CHECK(strcmp(def->key, "contact") != 0);
+        CHECK(strcmp(def->key, "vibration") != 0);
+        String topic = haDiscoveryBuildTopic("2S5F554X", def);
+        String payload = haDiscoveryBuildPayload("2S5F554X", def, "verisure");
+        Json j(payload.c_str());
+        REQUIRE(j.ok);
+        CHECK(topic.length() + payload.length() + 10 < MQTT_BUFFER);
+        CHECK(strstr(payload.c_str(), "Verisure Siren (GW-SI)") != nullptr);
+    }
+
+    String sirenTopic = haDiscoveryBuildSirenTopic("2S5F554X");
+    CHECK_STR(sirenTopic.c_str(), "homeassistant/siren/verisure_2S5F554X_siren/config");
+
+    String sirenPayload = haDiscoveryBuildSirenPayload("2S5F554X", "verisure");
+    Json sj(sirenPayload.c_str());
+    REQUIRE(sj.ok);
+    CHECK(sirenTopic.length() + sirenPayload.length() + 10 < MQTT_BUFFER);
+    CHECK_STR(sj.get("command_topic"), "verisure/2S5F554X/siren/set");
+    CHECK_STR(sj.get("state_topic"), "verisure/2S5F554X/state");
+    CHECK_STR(sj.get("value_template"), "{{ value_json.siren }}");
+    CHECK_STR(sj.get("payload_on"), "ON");
+    CHECK_STR(sj.get("payload_off"), "OFF");
+    CHECK_STR(sj.get("support_duration"), "true");
+    CHECK(sj.has("available_tones"));
+    CHECK_STR(sj.get("available_tones"), "[\"alarm\",\"ding_dong\",\"chime\",\"double_beep\",\"beep\",\"tone\"]");
+    CHECK(strstr(sirenPayload.c_str(), "Verisure Siren (GW-SI)") != nullptr);
+
+    VerisureTelemetry t = {};
+    strcpy(t.deviceId, "2S5F554X");
+    t.batteryPct = 95;
+    t.batteryMv = 3010;
+    t.rssi = -52;
+    t.lqi = 40;
+    t.counter = 0x105;
+    t.isOpen = true;
+    t.valid = true;
+    Json stOn(haStateBuildPayload(t).c_str());
+    REQUIRE(stOn.ok);
+    CHECK_STR(stOn.get("siren"), "ON");
+
+    t.isOpen = false;
+    Json stOff(haStateBuildPayload(t).c_str());
+    REQUIRE(stOff.ok);
+    CHECK_STR(stOff.get("siren"), "OFF");
+
+    strcpy(t.deviceId, "2JHL2MVN");
+    Json stDoor(haStateBuildPayload(t).c_str());
+    REQUIRE(stDoor.ok);
+    CHECK(!stDoor.has("siren"));
+
+    strcpy(t.deviceId, "2NCEKS3T");
+    Json stCam(haStateBuildPayload(t).c_str());
+    REQUIRE(stCam.ok);
+    CHECK(!stCam.has("siren"));
+}

@@ -290,6 +290,50 @@ static void answerCameraTokenReq(const VerisureTelemetry& t, uint32_t frameStart
     imageReceiverAfterPollAnswer(t.deviceId);
 }
 
+/**
+ * @brief Answer a siren poll (0xBA) with the alarm state and any queued siren ON/OFF command.
+ */
+static void answerSirenPoll(const VerisureTelemetry& t, uint32_t frameStartUs) {
+    uint8_t key[16], plain[16], pkt[VERISURE_PACKET_LEN];
+    uint8_t state = t.rawP1;
+    bool armed = downlinkArmed();
+
+    if (!t.hasCounter) {
+        Serial.printf("[Downlink] %s polls without the persistent counter: not answered\n",
+                      t.deviceId);
+        return;
+    }
+    const uint32_t ageUs = radioNowUs() - frameStartUs;
+    if (ageUs > POLL_ANSWER_MAX_AGE_MS * 1000UL) {
+        g_radioLoopDiag.pollLate++;
+        Serial.printf("[Downlink] %s: siren poll answer skipped, frame is %lu ms old (limit %u ms)\n",
+                      t.deviceId, (unsigned long)(ageUs / 1000), (unsigned)POLL_ANSWER_MAX_AGE_MS);
+        return;
+    }
+    if (!cryptoDeriveDeviceKey(ConfigManager::get().masterKey, t.deviceId, key)) return;
+    uint16_t first = 0;
+    uint32_t map = 0;
+    uint8_t cmd = downlinkCommandForPoll(t.deviceId, state, &first, &map);
+    uint8_t dur = (uint8_t)(first & 0xFFU);
+    uint8_t tone = (cmd == DOWNLINK_CMD_SIREN_ON) ? (uint8_t)(first >> 8) : 0;
+    downlinkBuildPlain(t.counter, armed, cmd, dur, map, plain, 0, tone);
+    memcpy(pkt, t.deviceId, 8);
+    bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
+    memset(key, 0, sizeof(key));
+    if (!ok) return;
+    {
+        const uint32_t sendAgeUs = radioNowUs() - frameStartUs;
+        if (sendAgeUs > g_radioLoopDiag.maxPollAnswerAgeUs) g_radioLoopDiag.maxPollAnswerAgeUs = sendAgeUs;
+    }
+    if (!radioRequestTx(pkt, frameStartUs)) {
+        Serial.printf("[Downlink] %s: siren poll answer not queued (radio command queue full)\n", t.deviceId);
+        return;
+    }
+    g_radioLoopDiag.pollAnswers++;
+    Serial.printf("[Downlink] -> %s (siren): armed %d, cmd 0x%02X (dur %u s, tone %u, poll %lu, state 0x%02X)\n",
+                  t.deviceId, armed ? 1 : 0, cmd, (unsigned)dur, (unsigned)tone, (unsigned long)t.counter, state);
+}
+
 #ifdef RADIO_EVAL
 /** Evaluation only (CLI sniff): which frames are dumped as [Sniff#n] lines. Off at boot. */
 volatile uint8_t g_sniffMode = SNIFF_OFF;
@@ -431,6 +475,8 @@ static void handleRadioFrame(const RadioFrame& item) {
                     const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
                     if (prev) telem.batteryLoadMv = prev->lastTelem.batteryLoadMv;
                 }
+            } else if (haIsSirenSensor(telem.deviceId) && telem.rawP0 == DOWNLINK_POLL_MARKER) {
+                answerSirenPoll(telem, item.startUs);
             }
             packetCount++;
             sensorRegistryUpdate(telem); // Cache in memory

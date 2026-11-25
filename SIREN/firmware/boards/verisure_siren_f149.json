@@ -1,0 +1,18 @@
+{
+  "build": {
+    "core": "msp430",
+    "extra_flags": "-D__MSP430F149__",
+    "f_cpu": "1048576L",
+    "hwids": [],
+    "mcu": "msp430f149",
+    "variant": "MSP-EXP430F5529LP"
+  },
+  "name": "Verisure Siren GW-SI (MSP430F149)",
+  "upload": {
+    "maximum_ram_size": 2048,
+    "maximum_size": 61184,
+    "protocol": "custom"
+  },
+  "url": "https://www.ti.com/product/MSP430F149",
+  "vendor": "Texas Instruments"
+}

@@ -196,6 +196,60 @@ static const HaEntityDef S_MOTION_SENSOR_ENTITIES[] = {
 };
 
 /**
+ * @brief Verisure Siren (GW-SI) diagnostic/telemetry entity configuration table.
+ */
+static const HaEntityDef S_SIREN_ENTITIES[] = {
+    {
+        "button",
+        "binary_sensor",
+        "Tamper",
+        "tamper",
+        nullptr,
+        nullptr,
+        "{{ value_json.button }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
+        "battery",
+        "sensor",
+        "Battery",
+        "battery",
+        "measurement",
+        "%",
+        "{{ value_json.battery_pct }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "voltage",
+        "sensor",
+        "Battery Voltage",
+        "voltage",
+        "measurement",
+        "mV",
+        "{{ value_json.battery_mv }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "rssi",
+        "sensor",
+        "Signal Strength",
+        "signal_strength",
+        "measurement",
+        "dBm",
+        "{{ value_json.rssi }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    }
+};
+
+/**
  * @brief Gateway health and diagnostics entity configuration table.
  */
 static const HaEntityDef S_GATEWAY_ENTITIES[] = {
@@ -372,10 +426,15 @@ static const HaEntityDef S_GATEWAY_ENTITIES[] = {
 
 static const int NUM_SENSOR_ENTITIES = sizeof(S_SENSOR_ENTITIES) / sizeof(S_SENSOR_ENTITIES[0]);
 static const int NUM_MOTION_SENSOR_ENTITIES = sizeof(S_MOTION_SENSOR_ENTITIES) / sizeof(S_MOTION_SENSOR_ENTITIES[0]);
+static const int NUM_SIREN_ENTITIES = sizeof(S_SIREN_ENTITIES) / sizeof(S_SIREN_ENTITIES[0]);
 static const int NUM_GATEWAY_ENTITIES = sizeof(S_GATEWAY_ENTITIES) / sizeof(S_GATEWAY_ENTITIES[0]);
 
 bool haIsMotionCameraSensor(const char* deviceId) {
     return deviceId && strncmp(deviceId, "2NCE", 4) == 0;
+}
+
+bool haIsSirenSensor(const char* deviceId) {
+    return deviceId && strncmp(deviceId, "2S5F", 4) == 0;
 }
 
 int haDiscoveryGetSensorEntityCount() {
@@ -396,8 +455,53 @@ const HaEntityDef* haDiscoveryGetMotionSensorEntityDef(int idx) {
     return &S_MOTION_SENSOR_ENTITIES[idx];
 }
 
+int haDiscoveryGetSirenEntityCount() {
+    return NUM_SIREN_ENTITIES;
+}
+
+const HaEntityDef* haDiscoveryGetSirenEntityDef(int idx) {
+    if (idx < 0 || idx >= NUM_SIREN_ENTITIES) return nullptr;
+    return &S_SIREN_ENTITIES[idx];
+}
+
 String haDiscoveryBuildTopic(const char* deviceId, const HaEntityDef* def) {
     return "homeassistant/" + String(def->component) + "/verisure_" + String(deviceId) + "_" + String(def->key) + "/config";
+}
+
+String haDiscoveryBuildSirenTopic(const char* deviceId) {
+    return "homeassistant/siren/verisure_" + String(deviceId) + "_siren/config";
+}
+
+String haDiscoveryBuildSirenPayload(const char* deviceId, const char* baseTopic) {
+    String b(baseTopic);
+    String id(deviceId);
+    String stateTopic = haStateBuildTopic(deviceId, baseTopic);
+    String cmdTopic = b + "/" + id + "/siren/set";
+    String uniqueId = "verisure_" + id + "_siren";
+
+    String p = "{";
+    p += "\"name\":\"Siren\",";
+    p += "\"unique_id\":\"" + uniqueId + "\",";
+    p += "\"command_topic\":\"" + cmdTopic + "\",";
+    p += "\"state_topic\":\"" + stateTopic + "\",";
+    p += "\"value_template\":\"{{ value_json.siren }}\",";
+    p += "\"payload_on\":\"ON\",";
+    p += "\"payload_off\":\"OFF\",";
+    p += "\"support_duration\":true,";
+    p += "\"available_tones\":[\"alarm\",\"ding_dong\",\"chime\",\"double_beep\",\"beep\",\"tone\"],";
+    p += "\"expire_after\":" + String(HA_CAMERA_EXPIRE_S) + ",";
+    p += "\"availability_topic\":\"" + b + "/status\",";
+    p += "\"payload_available\":\"online\",";
+    p += "\"payload_not_available\":\"offline\",";
+    p += "\"device\":{";
+    p += "\"identifiers\":[\"verisure_" + id + "\"],";
+    p += "\"name\":\"Verisure Siren " + id + "\",";
+    p += "\"model\":\"Verisure Siren (GW-SI)\",";
+    p += "\"manufacturer\":\"Verisure\",";
+    p += "\"sw_version\":\"1.0-MSP430\",";
+    p += "\"via_device\":\"verisure_gateway\"";
+    p += "}}";
+    return p;
 }
 
 String haDiscoveryBuildCameraTopic(const char* deviceId) {
@@ -430,6 +534,7 @@ String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, con
     String stateTopic = haStateBuildTopic(deviceId, baseTopic);
     String uniqueId = "verisure_" + String(deviceId) + "_" + String(def->key);
     bool isMotionCam = haIsMotionCameraSensor(deviceId);
+    bool isSiren = haIsSirenSensor(deviceId);
 
     String p = "{";
     p += "\"name\":\"" + String(def->name) + "\",";
@@ -456,9 +561,9 @@ String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, con
         p += "\"entity_category\":\"" + String(def->category) + "\",";
     }
     // Without packets for this long the entities turn unavailable (dead battery, out of range)
-    // instead of keeping old values: the camera polls at least every ~2 minutes, the door
+    // instead of keeping old values: cameras and sirens poll at least every ~2 minutes, the door
     // sensor sends a heartbeat about every hour
-    p += "\"expire_after\":" + String(isMotionCam ? HA_CAMERA_EXPIRE_S : HA_SENSOR_EXPIRE_S) + ",";
+    p += "\"expire_after\":" + String((isMotionCam || isSiren) ? HA_CAMERA_EXPIRE_S : HA_SENSOR_EXPIRE_S) + ",";
 
     String availTopic = String(baseTopic) + "/status";
     p += "\"availability_topic\":\"" + availTopic + "\",";
@@ -471,12 +576,17 @@ String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, con
     if (isMotionCam) {
         p += "\"name\":\"Verisure Motion Camera " + String(deviceId) + "\",";
         p += "\"model\":\"GW MD CAM2 (Motion Detector & Camera)\",";
+        p += "\"sw_version\":\"2.0-CC1110\",";
+    } else if (isSiren) {
+        p += "\"name\":\"Verisure Siren " + String(deviceId) + "\",";
+        p += "\"model\":\"Verisure Siren (GW-SI)\",";
+        p += "\"sw_version\":\"1.0-MSP430\",";
     } else {
         p += "\"name\":\"Verisure Sensor " + String(deviceId) + "\",";
         p += "\"model\":\"GW-MC-SHOCK (Door/Window & Shock)\",";
+        p += "\"sw_version\":\"2.0-CC1110\",";
     }
     p += "\"manufacturer\":\"Verisure\",";
-    p += "\"sw_version\":\"2.0-CC1110\",";
     p += "\"via_device\":\"verisure_gateway\"";
     p += "}}";
 
@@ -497,6 +607,9 @@ String haStateBuildPayload(const VerisureTelemetry& telem) {
     p += "\"battery_pct\":" + String(telem.batteryPct) + ",";
     p += "\"battery_mv\":" + String(telem.batteryMv) + ",";
     p += "\"low_battery\":\"" + String(telem.isLowBatt ? "ON" : "OFF") + "\",";
+    if (haIsSirenSensor(telem.deviceId)) {
+        p += "\"siren\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";
+    }
     if (telem.batteryLoadMv) p += "\"battery_load_mv\":" + String(telem.batteryLoadMv) + ",";
     p += "\"rssi\":" + String(telem.rssi) + ",";
     p += "\"lqi\":" + String(telem.lqi) + ",";
