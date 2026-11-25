@@ -80,7 +80,6 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 ├── monitor.py            Gateway serial monitor
 ├── port_selector.py      Serial port discovery used by the scripts (COMx / /dev/tty*)
 ├── requirements.txt      Python packages for the scripts
-├── TODO.md               Open work: what can be done unattended and what needs someone at the bench
 └── AGENTS.md             Roles and quality gates for the AI agents working on the project
 ```
 
