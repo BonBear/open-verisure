@@ -1,8 +1,8 @@
 # GW-SD3 smoke detector: bench worksheet
 
 Fill in on the bench. Leave a cell empty when it has not been measured; write `n/a` when it does
-not apply. Background and part list: [README.md](README.md). Procedures, pinouts and the list of
-actions that can erase the unit: [documentation/bench_recipes.md](../documentation/bench_recipes.md).
+not apply. Background and part list: [README.md](../README.md). Procedures, pinouts and the list of
+actions that can erase the unit: [documentation/bench_recipes.md](../../documentation/bench_recipes.md).
 
 Unit used: ☐ 3EA8VKXK ☐ 3EB7KFZQ  Date: ________  Tools: ______________________
 
@@ -14,8 +14,8 @@ radioactive source).
 
 | Point | Expected | Measured | Notes |
 | :--- | :--- | :--- | :--- |
-| Battery voltage (open circuit) | 3.0–3.6 V (lithium) | | |
-| Battery type / marking (inside the base) | | | |
+| Battery voltage (open circuit) | 3.0 V (`CR-2/3AZ`) | | |
+| Battery type / marking (inside the base) | | `1× CR-2/3AZ` (3.0 V Li-MnO2) | Same cell type as SIREN `GW-SI` |
 | `VCC` pad to GND | ~3 V or ~1.8 V | | |
 | `VCA` pad to GND | analog supply? | | |
 | EFR32 DECOUPLE pin / DVDD | ~1.2 V / ~1.8 V | | |

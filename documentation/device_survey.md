@@ -7,7 +7,7 @@ and voicebox remain research-only. Each device has a README and a bench workshee
 | | Smoke detector GW-SD3 | Voicebox GW-AUD-VB | Siren GW-SI |
 | :--- | :--- | :--- | :--- |
 | Folder | [SMOKE_DETECTOR](../SMOKE_DETECTOR/README.md) | [VOICEBOX](../VOICEBOX/README.md) | [SIREN](../SIREN/README.md) |
-| Worksheet / notes | [re_worksheet.md](../SMOKE_DETECTOR/re_worksheet.md) | [re_worksheet.md](../VOICEBOX/re_worksheet.md) | [hardware_pinout_and_measurements.md](../SIREN/docs/hardware_pinout_and_measurements.md) |
+| Worksheet / notes | [re_worksheet.md](../SMOKE_DETECTOR/docs/re_worksheet.md) | [re_worksheet.md](../VOICEBOX/re_worksheet.md) | [hardware_pinout_and_measurements.md](../SIREN/docs/hardware_pinout_and_measurements.md) |
 | Maker | Made in Japan (PCB K2226) | Panasonic, Japan (PCB K1969-1) | Panasonic, Japan (PCB M1765-1) |
 | MCU | Silicon Labs EFR32FG14P231 (Cortex-M4) | TI MSP430F5435A | TI MSP430F149 Rev S |
 | Sub-GHz radio | integrated in the EFR32 | Silicon Labs Si4460 (assumed) | TI CC1101 (26 MHz XT1) |
@@ -17,7 +17,7 @@ and voicebox remain research-only. Each device has a README and a bench workshee
 | Other sensors | optical smoke chamber | PIR | thermistor (`TH1`), tamper switch (`SW1`) |
 | Debug | labelled pads: CLK, DIO, SW, RES, TXD, RXD, TPR, FIRE (SWD + UART) | unlabelled pogo cluster (JTAG/SBW to find) | JTAG fuse blown (`TP61–64`/`TP5`); flashed via ROM BSL (`tools/esp32_msp430_bsl/`) |
 | Bench recipes | [bench_recipes.md](bench_recipes.md) §1, §2 | §2, §3, §4 | §3, §4 (firmware working) |
-| Battery | built in, not replaceable | 3x lithium, 3 V | 3x parallel `CR-2/3AZ` 3 V (`CN5`–`CN7`) |
+| Battery | 1× `CR-2/3AZ` 3.0 V (built in, not replaceable) | 3x lithium, 3 V | 3x parallel `CR-2/3AZ` 3 V (`CN5`–`CN7`) |
 
 ## What the photos already tell
 
