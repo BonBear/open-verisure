@@ -2,12 +2,13 @@
 """Build the release package: a zip with only what is needed to set the system up.
 
     python release/make_release.py            # dist/open-verisure-<version>.zip from HEAD
-    python release/make_release.py --check    # also unpack it and build all three firmwares
+    python release/make_release.py --check    # also unpack it and build all four firmwares
 
 The package holds the gateway firmware sources, both CC1110 firmwares with their build and
-flash scripts, the key and flash tools, the Blackfin program and JTAG scripts for converting a
-camera, and the user documentation. It leaves out the research notes and logs (MD_CAM/docs,
-VerisureDoorSensor/docs, SIREN), the agent files and TODO.
+flash scripts, the siren MSP430 firmware and its ESP32-C3 ROM BSL flasher, the key and flash
+tools, the Blackfin program and JTAG scripts for converting a camera, and the user
+documentation. It leaves out the research notes and logs (MD_CAM/docs, VerisureDoorSensor/docs,
+SIREN/re_worksheet.md, SIREN photos), the agent files and TODO.
 
 Only files tracked by git are packed (git archive), so secrets.h and config.h, which are
 generated on the user's machine and git-ignored, can never end up in it. Nothing is prebuilt:
@@ -29,6 +30,7 @@ INCLUDE = [
     "VerisureDoorSensor/build_and_flash.py",
     "MD_CAM/README.md", "MD_CAM/build_and_flash_md_cam.py", "MD_CAM/firmware", "MD_CAM/blackfin",
     "MD_CAM/test_camera_e2e.py", "MD_CAM/test_resend.py", "MD_CAM/dump_cc1110.py",
+    "SIREN/README.md", "SIREN/firmware", "tools/esp32_msp430_bsl",
     "documentation",
 ]
 # never in the package, even if tracked by mistake
@@ -156,6 +158,7 @@ def check(zip_path, name):
             ("door sensor", [sys.executable, "VerisureDoorSensor/build_and_flash.py", "--compile-only"]),
             ("camera", [sys.executable, "MD_CAM/build_and_flash_md_cam.py", "--compile-only"]),
             ("gateway", ["pio", "run", "-d", "868Receiver"]),
+            ("siren", ["pio", "run", "-d", "SIREN/firmware", "-e", "siren_f149_ci"]),
         ]
         for what, cmd in steps:
             if cmd[0] == "pio" and not shutil.which("pio"):

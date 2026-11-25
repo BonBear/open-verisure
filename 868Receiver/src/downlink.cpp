@@ -19,11 +19,11 @@ struct PendingCommand {
 };
 
 static bool s_armed = false;
-static PendingCommand s_pending[DOWNLINK_MAX_CAMERAS];
+static PendingCommand s_pending[DOWNLINK_MAX_DEVICES];
 
 static void expirePending() {
     unsigned long now = millis();
-    for (int i = 0; i < DOWNLINK_MAX_CAMERAS; i++) {
+    for (int i = 0; i < DOWNLINK_MAX_DEVICES; i++) {
         if ((s_pending[i].cmd || s_pending[i].resendMap) && now - s_pending[i].queuedAt > DOWNLINK_CMD_TTL_MS) {
             s_pending[i].cmd = 0;
             s_pending[i].resendMap = 0;
@@ -54,7 +54,7 @@ void downlinkSetArmed(bool armed) {
 }
 
 static PendingCommand* findPending(const char* deviceId) {
-    for (int i = 0; i < DOWNLINK_MAX_CAMERAS; i++) {
+    for (int i = 0; i < DOWNLINK_MAX_DEVICES; i++) {
         if ((s_pending[i].cmd || s_pending[i].resendMap) && strncmp(s_pending[i].deviceId, deviceId, 8) == 0)
             return &s_pending[i];
     }
@@ -66,7 +66,7 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd) {
     expirePending();
     PendingCommand* p = findPending(deviceId);
     if (!p) {
-        for (int i = 0; i < DOWNLINK_MAX_CAMERAS && !p; i++) {
+        for (int i = 0; i < DOWNLINK_MAX_DEVICES && !p; i++) {
             if (!s_pending[i].cmd && !s_pending[i].resendMap) p = &s_pending[i];
         }
         if (p) p->resendMap = 0;
@@ -85,7 +85,7 @@ bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec, ui
     expirePending();
     PendingCommand* p = findPending(deviceId);
     if (!p) {
-        for (int i = 0; i < DOWNLINK_MAX_CAMERAS && !p; i++) {
+        for (int i = 0; i < DOWNLINK_MAX_DEVICES && !p; i++) {
             if (!s_pending[i].cmd && !s_pending[i].resendMap) p = &s_pending[i];
         }
         if (p) p->resendMap = 0;
@@ -113,7 +113,7 @@ bool downlinkRequestResend(const char* deviceId, uint16_t first, uint32_t map) {
     expirePending();
     PendingCommand* p = findPending(deviceId);
     if (!p) {
-        for (int i = 0; i < DOWNLINK_MAX_CAMERAS && !p; i++) {
+        for (int i = 0; i < DOWNLINK_MAX_DEVICES && !p; i++) {
             if (!s_pending[i].cmd && !s_pending[i].resendMap) p = &s_pending[i];
         }
         if (!p) return false;

@@ -74,7 +74,10 @@ typedef char siren_dev_id_len_check[(sizeof(DEVICE_ID_STR) >= 9U) ? 1 : -1];
 
 #define PKT_TYPE_ANNOUNCE 0x00U
 #define PKT_TYPE_TAMPER   0xB5U
+#define PKT_TYPE_TEMP     0xB6U
 #define PKT_TYPE_POLL     0xBAU
+#define TEMP_ENC_INVALID  0xFFU
+#define TEMP_POLL_INTERVAL 10U
 
 static uint8_t s_rst_cause = 0U;
 static uint8_t s_armed = 0U;
@@ -86,6 +89,8 @@ static uint8_t s_sound_cmd = SIREN_IC2_CMD_ALARM;
 static uint8_t s_sound_repeat = 0U;
 static uint8_t s_cmd_ack = 0U;
 static uint8_t s_first_pkt_sent = 0U;
+static uint8_t s_last_temp_enc = TEMP_ENC_INVALID;
+static uint8_t s_temp_poll_cnt = 0U;
 static volatile uint8_t s_latched_cmd = 0U;
 
 static void wipe_bytes(volatile uint8_t *p, uint8_t len) {
@@ -103,6 +108,45 @@ static uint8_t calc_battery_pct(uint16_t mv) {
         return 0U;
     }
     return (uint8_t)(((uint32_t)(mv - 2200U) * 100UL) / 800UL);
+}
+
+typedef struct {
+    uint16_t adc;
+    int16_t c10;
+} th1_lut_t;
+
+static uint8_t encode_th1_temp(uint16_t adc) {
+    /* 10 kOhm B=3950 NTC to BAT+ with 10 kOhm pull-down to GND (12-bit ratiometric). */
+    static const th1_lut_t lut[] = {
+        {   99U, -400 }, {  195U, -300 }, {  355U, -200 }, {  600U, -100 },
+        {  939U,    0 }, { 1357U,  100 }, { 1817U,  200 }, { 2048U,  250 },
+        { 2270U,  300 }, { 2676U,  400 }, { 3014U,  500 }, { 3280U,  600 },
+        { 3482U,  700 }, { 3694U,  850 }
+    };
+    uint8_t i;
+    int16_t t_c10;
+    uint16_t enc;
+
+    if (adc < 32U || adc > 4063U) {
+        return TEMP_ENC_INVALID;
+    }
+    if (adc <= lut[0].adc) {
+        t_c10 = lut[0].c10;
+    } else if (adc >= lut[(sizeof(lut) / sizeof(lut[0])) - 1U].adc) {
+        t_c10 = lut[(sizeof(lut) / sizeof(lut[0])) - 1U].c10;
+    } else {
+        t_c10 = lut[0].c10;
+        for (i = 0U; i < (uint8_t)((sizeof(lut) / sizeof(lut[0])) - 1U); i++) {
+            if (adc <= lut[i + 1U].adc) {
+                uint16_t da = (uint16_t)(lut[i + 1U].adc - lut[i].adc);
+                int32_t num = (int32_t)(adc - lut[i].adc) * (int32_t)(lut[i + 1U].c10 - lut[i].c10);
+                t_c10 = (int16_t)(lut[i].c10 + (int16_t)(num / (int32_t)da));
+                break;
+            }
+        }
+    }
+    enc = (uint16_t)(t_c10 + 400) / 5U;
+    return (enc > 254U) ? 254U : (uint8_t)enc;
 }
 
 static void sleep_seconds(uint16_t sec) {
@@ -352,6 +396,26 @@ static void poll_with_ack_flush(void) {
     }
 }
 
+static void send_temp_if_needed(uint8_t force) {
+    uint8_t enc = encode_th1_temp(hal_read_th1_adc());
+    uint8_t diff;
+    if (enc == TEMP_ENC_INVALID) {
+        return;
+    }
+    if (force == 0U && s_last_temp_enc != TEMP_ENC_INVALID) {
+        diff = (enc >= s_last_temp_enc)
+                   ? (uint8_t)(enc - s_last_temp_enc)
+                   : (uint8_t)(s_last_temp_enc - enc);
+        if (s_temp_poll_cnt < TEMP_POLL_INTERVAL && diff < 2U) {
+            return;
+        }
+    }
+    s_temp_poll_cnt = 0U;
+    if (send_packet(PKT_TYPE_TEMP, enc, 0U) == 0) {
+        s_last_temp_enc = enc;
+    }
+}
+
 int main(void) {
     uint8_t i;
     uint16_t poll_ticks = 0U;
@@ -385,6 +449,7 @@ int main(void) {
 
     s_tamper = hal_read_sw1();
     (void)send_packet(PKT_TYPE_ANNOUNCE, 0U, 0U);
+    send_temp_if_needed(1U);
     poll_with_ack_flush();
 
     for (;;) {
@@ -476,6 +541,10 @@ int main(void) {
         if (poll_ticks >= poll_interval) {
             poll_ticks = 0U;
             poll_with_ack_flush();
+            if (s_sounding == 0U) {
+                s_temp_poll_cnt++;
+                send_temp_if_needed(0U);
+            }
         }
     }
 }

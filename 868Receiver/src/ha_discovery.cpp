@@ -236,6 +236,18 @@ static const HaEntityDef S_SIREN_ENTITIES[] = {
         "diagnostic"
     },
     {
+        "temperature",
+        "sensor",
+        "Temperature",
+        "temperature",
+        "measurement",
+        "°C",
+        "{{ value_json.temperature_c }}",
+        nullptr,
+        nullptr,
+        nullptr
+    },
+    {
         "rssi",
         "sensor",
         "Signal Strength",
@@ -609,6 +621,11 @@ String haStateBuildPayload(const VerisureTelemetry& telem) {
     p += "\"low_battery\":\"" + String(telem.isLowBatt ? "ON" : "OFF") + "\",";
     if (haIsSirenSensor(telem.deviceId)) {
         p += "\"siren\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";
+    }
+    if (telem.hasTemp) {
+        char tbuf[12];
+        snprintf(tbuf, sizeof(tbuf), "%.1f", telem.tempC);
+        p += "\"temperature_c\":" + String(tbuf) + ",";
     }
     if (telem.batteryLoadMv) p += "\"battery_load_mv\":" + String(telem.batteryLoadMv) + ",";
     p += "\"rssi\":" + String(telem.rssi) + ",";

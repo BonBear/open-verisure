@@ -284,10 +284,11 @@ TEST(ha_siren_discovery_and_state_payload) {
     CHECK(!haIsSirenSensor(nullptr));
 
     int count = haDiscoveryGetSirenEntityCount();
-    CHECK_EQ(count, 4);
+    CHECK_EQ(count, 5);
     CHECK(!haDiscoveryGetSirenEntityDef(-1));
     CHECK(!haDiscoveryGetSirenEntityDef(count));
 
+    bool sawTempEntity = false;
     for (int i = 0; i < count; i++) {
         const HaEntityDef* def = haDiscoveryGetSirenEntityDef(i);
         REQUIRE(def);
@@ -299,7 +300,15 @@ TEST(ha_siren_discovery_and_state_payload) {
         REQUIRE(j.ok);
         CHECK(topic.length() + payload.length() + 10 < MQTT_BUFFER);
         CHECK(strstr(payload.c_str(), "Verisure Siren (GW-SI)") != nullptr);
+        if (strcmp(def->key, "temperature") == 0) {
+            sawTempEntity = true;
+            CHECK_STR(j.get("device_class"), "temperature");
+            CHECK_STR(j.get("state_class"), "measurement");
+            CHECK_STR(j.get("unit_of_measurement"), "°C");
+            CHECK_STR(j.get("value_template"), "{{ value_json.temperature_c }}");
+        }
     }
+    CHECK(sawTempEntity);
 
     String sirenTopic = haDiscoveryBuildSirenTopic("2S5F554X");
     CHECK_STR(sirenTopic.c_str(), "homeassistant/siren/verisure_2S5F554X_siren/config");
@@ -326,15 +335,20 @@ TEST(ha_siren_discovery_and_state_payload) {
     t.lqi = 40;
     t.counter = 0x105;
     t.isOpen = true;
+    t.hasTemp = true;
+    t.tempC = 22.5f;
     t.valid = true;
     Json stOn(haStateBuildPayload(t).c_str());
     REQUIRE(stOn.ok);
     CHECK_STR(stOn.get("siren"), "ON");
+    CHECK_STR(stOn.get("temperature_c"), "22.5");
 
     t.isOpen = false;
+    t.hasTemp = false;
     Json stOff(haStateBuildPayload(t).c_str());
     REQUIRE(stOff.ok);
     CHECK_STR(stOff.get("siren"), "OFF");
+    CHECK(!stOff.has("temperature_c"));
 
     strcpy(t.deviceId, "2JHL2MVN");
     Json stDoor(haStateBuildPayload(t).c_str());
