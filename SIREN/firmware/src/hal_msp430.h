@@ -36,6 +36,7 @@ void hal_wdt_arm_active(void);
 void hal_wdt_feed(void);
 
 uint8_t hal_reset_cause(void);
+uint8_t hal_xtal_fault(void);
 
 #endif
 

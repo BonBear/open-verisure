@@ -602,7 +602,10 @@ async function controlSiren(state) {
     try { reply = await res.json(); } catch (e) {}
     if (res.ok && reply.ok) {
       msg.style.color = 'var(--success)';
-      msg.textContent = (state === 'ON' ? ('Queued ' + tone + (dur !== '' ? (' (' + dur + ' s)') : '')) : 'Queued STOP') + ' for ' + id + '.';
+      const durText = (typeof reply.duration === 'number')
+        ? (reply.duration > 0 ? (' (' + reply.duration + ' s)') : '')
+        : (dur !== '' ? (' (' + dur + ' s)') : '');
+      msg.textContent = (state === 'ON' ? ('Queued ' + tone + durText) : 'Queued STOP') + ' for ' + id + '.';
     } else {
       msg.style.color = 'var(--danger)';
       msg.textContent = reply.error || 'Siren request failed.';
@@ -1347,21 +1350,28 @@ static void handleApiSiren() {
                 return;
             }
         }
-        long rawDur = durStr.toInt();
-        if (rawDur < 0 || rawDur > DOWNLINK_SIREN_MAX_SEC) {
-            s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Duration must be 0..180\"}");
-            return;
+        unsigned int rawDur = 0;
+        for (unsigned i = 0; i < durStr.length(); i++) {
+            rawDur = rawDur * 10U + (unsigned int)(durStr[i] - '0');
+            if (rawDur > DOWNLINK_SIREN_MAX_SEC) {
+                s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Duration must be 0..180\"}");
+                return;
+            }
         }
         dur = (uint8_t)rawDur;
     }
 
-    if (!downlinkRequestSiren(devId.c_str(), isOn, dur, toneId)) {
+    uint8_t effDur = (toneId == 0 && dur == 0) ? 60 : dur;
+    if (!downlinkRequestSiren(devId.c_str(), isOn, effDur, toneId)) {
         s_server.send(503, "application/json", "{\"ok\":false,\"error\":\"Request table full\"}");
         return;
     }
     Serial.printf("[WebPortal] Siren %s (%u s, tone %u) requested for %s\n",
-                  isOn ? "ON" : "OFF", (unsigned)dur, (unsigned)toneId, devId.c_str());
-    s_server.send(200, "application/json", "{\"ok\":true}");
+                  isOn ? "ON" : "OFF", (unsigned)effDur, (unsigned)toneId, devId.c_str());
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"duration\":%u,\"tone\":%u}",
+             (unsigned)(isOn ? effDur : 0), (unsigned)toneId);
+    s_server.send(200, "application/json", resp);
 }
 
 /* POST /api/ota: firmware update. The image is the raw request body (Content-Type

@@ -33,19 +33,23 @@ const size_t GRAY_MAX = 16384;          // image_receiver.cpp
 const char* CAM = "CAMA0001";
 const char* CAM_B = "CAMB0002";
 
+static uint32_t s_picTag = 1;
+
 void resetAll() {
     imageReceiverHostTestRestart();
     downlinkInit();
     pictureTokenInit();
     dutyCycleInit();
     hostMqttReset();
+    s_picTag = 1;
 }
 
 /** imageReceiverProcessChunk() with the data in an exactly sized heap block. */
-void chunk(const char* dev, uint16_t idx, uint8_t len, bool first, bool last, const uint8_t* src, uint8_t ch = 0) {
+void chunk(const char* dev, uint16_t idx, uint8_t len, bool first, bool last, const uint8_t* src, uint8_t ch = 0,
+           uint32_t picTag = 0) {
     ExactBuf b(len);
     if (len) memcpy(b.p, src, len);
-    imageReceiverProcessChunk(dev, idx, len, first, last, b.p, ch);
+    imageReceiverProcessChunk(dev, idx, len, first, last, b.p, ch, picTag);
 }
 
 void resend(const char* dev, uint16_t idx, uint8_t len, bool last, const uint8_t* src, uint8_t ch = 0) {
@@ -64,7 +68,8 @@ uint8_t chunkLen(const std::vector<uint8_t>& blob, unsigned c) {
 /** Send a blob as the camera does: chunks in order, first and last flagged. */
 void sendBlob(const char* dev, const std::vector<uint8_t>& blob) {
     unsigned n = chunksOf(blob.size());
-    for (unsigned c = 0; c < n; c++) chunk(dev, (uint16_t)c, chunkLen(blob, c), c == 0, c + 1 == n, &blob[c * CHUNK]);
+    uint32_t tag = s_picTag++;
+    for (unsigned c = 0; c < n; c++) chunk(dev, (uint16_t)c, chunkLen(blob, c), c == 0, c + 1 == n, &blob[c * CHUNK], 0, tag);
 }
 
 /** sendBlob(), then the publish that follows the camera's poll answer. Finishing a picture must not
@@ -378,11 +383,12 @@ TEST(fuzz_image_random_operations) {
             lastBlob = blob;
             unsigned nc = chunksOf(blob.size());
             const char* bdev = r.chance(60) ? CAM : dev;
+            uint32_t tag = s_picTag++;
             for (unsigned c = 0; c < nc; c++) {
                 unsigned cc = r.chance(5) ? r.below(nc) : c;            // out of order
                 if (r.chance(5)) continue;                              // lost
-                chunk(bdev, (uint16_t)cc, chunkLen(blob, cc), cc == 0, cc + 1 == nc, &blob[cc * CHUNK]);
-                if (r.chance(3)) chunk(bdev, (uint16_t)cc, chunkLen(blob, cc), cc == 0, cc + 1 == nc, &blob[cc * CHUNK]);
+                chunk(bdev, (uint16_t)cc, chunkLen(blob, cc), cc == 0, cc + 1 == nc, &blob[cc * CHUNK], 0, tag);
+                if (r.chance(3)) chunk(bdev, (uint16_t)cc, chunkLen(blob, cc), cc == 0, cc + 1 == nc, &blob[cc * CHUNK], 0, tag);
                 if (r.chance(1)) chunk(devs[r.below(NDEV)], (uint16_t)c, len, false, false, data);   // interleaved
             }
         } else if (op < 87) {
@@ -485,14 +491,16 @@ TEST(fuzz_image_newer_picture_flushes_pending) {
 /** A picture of 4+ chunks with chunk `lost` (not the first, not the last) missing, sent as the camera
  *  does; then the poll that follows it, answered with the resend request (the order of main.cpp:
  *  imageReceiverPollSeen, answer, imageReceiverAfterPollAnswer). */
-static void sendHoleyAndAnswerPoll(Rng& r, std::vector<uint8_t>& pic, unsigned* lost) {
+static void sendHoleyAndAnswerPoll(Rng& r, std::vector<uint8_t>& pic, unsigned* lost, uint32_t* outTag = nullptr) {
     FuzzJpeg j = fuzzMakeJpeg(r, 320, (int)r.below(256), r.range(20, 200), r.range(5, 45));
     pic = fuzzAssemble(j);
     unsigned nc = chunksOf(pic.size());
     CHECK(nc > 3);
     *lost = nc > 3 ? r.range(1, nc - 2) : 1;
+    uint32_t tag = s_picTag++;
+    if (outTag) *outTag = tag;
     for (unsigned c = 0; c < nc; c++)
-        if (c != *lost) chunk(CAM, (uint16_t)c, chunkLen(pic, c), c == 0, c + 1 == nc, &pic[c * CHUNK]);
+        if (c != *lost) chunk(CAM, (uint16_t)c, chunkLen(pic, c), c == 0, c + 1 == nc, &pic[c * CHUNK], 0, tag);
     CHECK_EQ(hostMqtt.images, 0);
     hostAdvanceMillis(30);
     imageReceiverPollSeen(CAM);
@@ -880,8 +888,9 @@ TEST(fuzz_image_new_picture_after_cancelled_resend_has_clean_holes) {
         unsigned h = r.range(3, m - 2);
         if (h == lost) continue;
         hostAdvanceMillis(100);
+        uint32_t nextTag = s_picTag++;
         for (unsigned c = 0; c < nNew; c++)
-            if (c != h) chunk(CAM, (uint16_t)c, chunkLen(np, c), c == 0, c + 1 == nNew, &np[c * CHUNK]);
+            if (c != h) chunk(CAM, (uint16_t)c, chunkLen(np, c), c == 0, c + 1 == nNew, &np[c * CHUNK], 0, nextTag);
         CHECK_EQ(hostMqtt.images, 1);                       // finishing flushed the first pass, intact
         CHECK_EQ(hostMqtt.last.size(), old.size());
         size_t hole0 = (size_t)lost * CHUNK, hole1 = hole0 + chunkLen(old, lost);
@@ -1180,5 +1189,47 @@ TEST(fuzz_image_picture_token_integration) {
     CHECK(pictureTokenRequest(CAM_B, (uint32_t)millis()));
     pictureTokenRelease(CAM_B, (uint32_t)millis());
     imageReceiverPublishPending();
+    checkOutputs();
+}
+
+// Replayed/late 0x82 chunk carrying the same picTag while a resend is active must be ignored
+// without cancelling the resend or wiping imgBuf; a new picture with a different picTag cancels it.
+TEST(fuzz_image_same_tag_0x82_ignored_during_resend) {
+    Rng r(0x1A6E0013);
+    resetAll();
+    hostAdvanceMillis(1000);
+    std::vector<uint8_t> pic;
+    unsigned lost = 0;
+    uint32_t tag = 0;
+    sendHoleyAndAnswerPoll(r, pic, &lost, &tag);
+    CHECK_EQ(hostMqtt.images, 0);
+
+    // Replay a 0x82 chunk with the active resend's picTag -> ignored, resend completes normally
+    chunk(CAM, 0, chunkLen(pic, 0), true, false, &pic[0], 0, tag);
+    hostAdvanceMillis(50);
+    resend(CAM, (uint16_t)lost, chunkLen(pic, lost), false, &pic[lost * CHUNK]);
+    imageReceiverPollSeen(CAM);
+    uint16_t first = 0;
+    uint32_t map = 0;
+    CHECK(!takeResendRequest(CAM, &first, &map));
+    imageReceiverAfterPollAnswer(CAM);
+    CHECK_EQ(hostMqtt.images, 1);
+    CHECK(hostMqtt.last == pic);
+    CHECK(current() == pic);
+
+    // Different picTag cancels active resend and receives the new picture
+    hostMqttReset();
+    std::vector<uint8_t> pic2;
+    unsigned lost2 = 0;
+    uint32_t tag2 = 0;
+    sendHoleyAndAnswerPoll(r, pic2, &lost2, &tag2);
+    CHECK_EQ(hostMqtt.images, 0);
+    std::vector<uint8_t> pic3 = fuzzAssemble(randomPicture(r, 320, 42, MAX_IMAGE_SIZE));
+    sendBlob(CAM, pic3);
+    CHECK_EQ(hostMqtt.images, 1); // first pass of pic2 flushed, pic3 stored as current
+    imageReceiverAfterPollAnswer(CAM);
+    CHECK_EQ(hostMqtt.images, 2);
+    CHECK(hostMqtt.last == pic3);
+    CHECK(current() == pic3);
     checkOutputs();
 }

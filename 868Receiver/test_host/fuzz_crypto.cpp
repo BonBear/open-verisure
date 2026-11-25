@@ -18,6 +18,7 @@
 
 void cryptoHostTestRestart();           // crypto.cpp, HOST_TEST only
 bool cryptoHostTestPicTagRetired(const char* devId);
+bool cryptoHostTestPicTagResendOnly(const char* devId);
 void imageReceiverHostTestRestart();    // image_receiver.cpp, HOST_TEST only
 
 namespace {
@@ -333,9 +334,11 @@ TEST(fuzz_crypto_picture_tag_window) {
             uint32_t rebuilt = lastCtr + (uint32_t)(int32_t)dd;
             bool inWindow = !badHigh && rebuilt == tag && dd <= 64 && dd >= -128;
             bool retired = cryptoHostTestPicTagRetired(CAM);
+            bool resendOnly = cryptoHostTestPicTagResendOnly(CAM);
             bool taken = wellFormed && inWindow &&
                          (type == 0x83 ? hasPicTag && !retired && tag == picTag
-                                       : !hasPicTag || (int32_t)(tag - picTag) > 0 || (!retired && tag == picTag));
+                                       : !hasPicTag || (int32_t)(tag - picTag) > 0 ||
+                                             (!retired && !resendOnly && tag == picTag));
             imageReceiverPublishPending();      // a finished picture is published after the poll answer
             int before = hostMqtt.images;
             CHECK_EQ(rx56(bigPacket(CAM, p)), wellFormed);

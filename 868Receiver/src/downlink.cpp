@@ -193,8 +193,7 @@ void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t 
         out[9] = (uint8_t)first;
         for (int i = 0; i < 4; i++) out[10 + i] = (uint8_t)(map >> (8 * i));
     } else if (cmd == DOWNLINK_CMD_SIREN_ON) {
-        uint8_t dur = (uint8_t)(first & 0xFFU);
-        out[8] = (dur > DOWNLINK_SIREN_MAX_SEC) ? DOWNLINK_SIREN_MAX_SEC : dur;
+        out[8] = (first > DOWNLINK_SIREN_MAX_SEC) ? (uint8_t)DOWNLINK_SIREN_MAX_SEC : (uint8_t)first;
         out[9] = (channel <= DOWNLINK_SIREN_MAX_TONE) ? channel : 0;
     } else {
         out[8] = flags;

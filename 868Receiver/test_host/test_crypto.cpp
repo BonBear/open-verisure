@@ -738,3 +738,31 @@ TEST(big_packet_retire_pic_tag) {
     CHECK(sendChunk(CAM, 0x1002, 0x83, 1, 10));
     CHECK_EQ(s_resends, 2);
 }
+
+TEST(big_packet_resend_only_blocks_0x82_allows_0x83) {
+    resetImageCounters();
+    CHECK(sendCtr(CAM, 0x1000));
+
+    CHECK(sendChunk(CAM, 0x1001, 0x82, 0, 0x80 | 40));
+    CHECK_EQ(s_chunks, 1);
+
+    // Resend-only rejects replayed 0x82 with the same tag, while keeping 0x83 open
+    cryptoSetPicTagResendOnly(CAM);
+    CHECK(sendChunk(CAM, 0x1001, 0x82, 1, 40));
+    CHECK_EQ(s_chunks, 1);
+    CHECK_EQ(g_gatewayDiag.picStale, 1);
+    CHECK(sendChunk(CAM, 0x1001, 0x83, 1, 40));
+    CHECK_EQ(s_resends, 1);
+
+    // Retiring clears resend-only and blocks both 0x82 and 0x83
+    cryptoRetirePicTag(CAM, 0x1001);
+    CHECK(sendChunk(CAM, 0x1001, 0x83, 2, 10));
+    CHECK_EQ(s_resends, 1);
+
+    // A newer tag clears resend-only and accepts 0x82 again
+    CHECK(sendChunk(CAM, 0x1002, 0x82, 0, 0x80 | 40));
+    CHECK_EQ(s_chunks, 2);
+    cryptoSetPicTagResendOnly(CAM);
+    CHECK(sendChunk(CAM, 0x1003, 0x82, 0, 0x80 | 40));
+    CHECK_EQ(s_chunks, 3);
+}

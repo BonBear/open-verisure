@@ -130,7 +130,7 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.platformio
-          key: pio-siren-${{ hashFiles('SIREN/firmware/platformio.ini') }}
+          key: pio-siren-${{ hashFiles('SIREN/firmware/platformio.ini', 'tools/esp32_msp430_bsl/platformio.ini') }}
       - name: Fewer mmap random bits for AddressSanitizer
         # ASan of GCC 13 can crash at start-up with the kernel's 32 bits (Ubuntu 24.04 runners)
         run: sudo sysctl vm.mmap_rnd_bits=28
@@ -140,6 +140,8 @@ jobs:
         run: pip install "platformio>=6.1"
       - name: Build firmware (example config)
         run: pio run -d SIREN/firmware -e siren_f149_ci
+      - name: Build BSL flasher (ESP32-C3)
+        run: pio run -d tools/esp32_msp430_bsl
 
   secrets:
     name: Key guard (no real keys in the repository)

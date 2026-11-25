@@ -226,6 +226,13 @@ TEST(downlink_build_plain_pch_flags_and_resend) {
     CHECK_EQ(plain[9], 2);
     for (int i = 10; i <= 13; i++) CHECK_EQ(plain[i], 0);
 
+    // Clamp > DOWNLINK_SIREN_MAX_SEC before narrowing to uint8_t (260 -> 180, not 4)
+    downlinkBuildPlain(0x01020304UL, true, DOWNLINK_CMD_SIREN_ON, 260, 0, plain, DL_FLAG_PCH, 2);
+    CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ(plain[8], DOWNLINK_SIREN_MAX_SEC);
+    CHECK_EQ(plain[9], 2);
+    for (int i = 10; i <= 13; i++) CHECK_EQ(plain[i], 0);
+
     downlinkBuildPlain(0x01020304UL, false, DOWNLINK_CMD_SIREN_ON, 0, 0, plain, 0, 1);
     CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_ON);
     CHECK_EQ(plain[8], 0);

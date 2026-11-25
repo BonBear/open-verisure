@@ -54,34 +54,6 @@ static uint8_t xtime(uint8_t x) {
     return (uint8_t)((x << 1) ^ (((x >> 7) & 1U) * 0x1BU));
 }
 
-static uint8_t mul9(uint8_t x) {
-    uint8_t x2 = xtime(x);
-    uint8_t x4 = xtime(x2);
-    uint8_t x8 = xtime(x4);
-    return (uint8_t)(x8 ^ x);
-}
-
-static uint8_t mul11(uint8_t x) {
-    uint8_t x2 = xtime(x);
-    uint8_t x4 = xtime(x2);
-    uint8_t x8 = xtime(x4);
-    return (uint8_t)(x8 ^ x2 ^ x);
-}
-
-static uint8_t mul13(uint8_t x) {
-    uint8_t x2 = xtime(x);
-    uint8_t x4 = xtime(x2);
-    uint8_t x8 = xtime(x4);
-    return (uint8_t)(x8 ^ x4 ^ x);
-}
-
-static uint8_t mul14(uint8_t x) {
-    uint8_t x2 = xtime(x);
-    uint8_t x4 = xtime(x2);
-    uint8_t x8 = xtime(x4);
-    return (uint8_t)(x8 ^ x4 ^ x2);
-}
-
 static void aes_wipe(volatile uint8_t *p, uint8_t len) {
     uint8_t i;
     for (i = 0; i < len; i++) {
@@ -172,17 +144,17 @@ static void mix_columns(uint8_t s[16]) {
 }
 
 static void inv_mix_columns(uint8_t s[16]) {
-    uint8_t c;
-    for (c = 0; c < 16; c += 4) {
-        uint8_t a = s[c];
-        uint8_t b = s[c + 1];
-        uint8_t d = s[c + 2];
-        uint8_t e = s[c + 3];
-        s[c]     = (uint8_t)(mul14(a) ^ mul11(b) ^ mul13(d) ^ mul9(e));
-        s[c + 1] = (uint8_t)(mul9(a)  ^ mul14(b) ^ mul11(d) ^ mul13(e));
-        s[c + 2] = (uint8_t)(mul13(a) ^ mul9(b)  ^ mul14(d) ^ mul11(e));
-        s[c + 3] = (uint8_t)(mul11(a) ^ mul13(b) ^ mul9(d)  ^ mul14(e));
+    uint8_t col;
+    for (col = 0U; col < 4U; col++) {
+        uint8_t *c = s + (col * 4U);
+        uint8_t u = xtime(xtime((uint8_t)(c[0] ^ c[2])));
+        uint8_t v = xtime(xtime((uint8_t)(c[1] ^ c[3])));
+        c[0] ^= u;
+        c[1] ^= v;
+        c[2] ^= u;
+        c[3] ^= v;
     }
+    mix_columns(s);
 }
 
 void aes128_ecb_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]) {
