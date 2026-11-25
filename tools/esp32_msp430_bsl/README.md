@@ -1,10 +1,13 @@
 # ESP32-C3 MSP430 ROM BSL Flasher (TI SLAU319)
 
-USB-to-BSL bridge firmware for an **ESP32-C3 Super Mini** and host CLI tool (`bsl_flash.py`) targeting the **TI MSP430F149 Rev S** (ROM BSL v1.60, devices without a dedicated `TEST` pin) on the Verisure Siren (`M1765-1`).
+USB-to-BSL bridge firmware for an **ESP32-C3 Super Mini** and host CLI tool (`bsl_flash.py`) targeting the **TI MSP430F149 Rev S** (ROM BSL v1.10 and v1.60, devices without a dedicated `TEST` pin) on the Verisure Siren (`M1765-1`).
 
 ## Hardware Wiring (SIREN M1765-1)
 
-Power the SIREN board from its own supply (e.g. bench supply on `CN2`, current-limited) — **do not** connect ESP32-C3 `3V3` to the target. Put **330 Ω** series resistors on all four signal lines to protect both MCUs and allow the target to stay powered independently.
+Power the SIREN board from its own current-limited bench supply on **`CN5`/`CN6`/`CN7` (`TP1A`/`TP1B`/`TP1C`) and `TP68` (`GND`)** — **NEVER** connect power to `CN2` (piezo horn H-bridge output), and **do not** connect ESP32-C3 `3V3` to the target. Put **330 Ω** series resistors on all four signal lines to protect both MCUs and allow the target to stay powered independently.
+
+> [!TIP]
+> **BSL v1.10 & reliable flashing:** The Verisure Siren (`MSP430F149 Rev S`) runs **ROM BSL v1.10** (`0x0FF0..0x0FFF = F149...0110`), which lacks `TX BSL Version (0x1E)` and ignores direct flash writes `>= 0x8000`. `bsl_flash.py` automatically detects `bsl_ver < 0x0160` and uploads an 80-byte PIC RAM flash-writer stub (`0x0300`). For maximum reliability during flash programming, supply **3.3 V** (gives +0.6 V headroom above the MSP430F149 2.7 V flash programming minimum, safely within the 3.6 V limit of all board ICs) and keep chunk sizes `<= 96 B` to stay inside the ESP32-C3 USB-CDC 256-byte RX buffer.
 
 | ESP32-C3 Super Mini | Series Resistor | SIREN Point | MSP430F149 (`IC1`) Function | Notes |
 | :--- | :--- | :--- | :--- | :--- |
