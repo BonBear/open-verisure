@@ -113,13 +113,33 @@ Sniffed on 2026-11-24 (Saleae Logic 4 @ 12 MS/s, Ch0=`SCLK`, Ch1=`MOSI`, Ch3=`CS
 
 | Item | Result |
 | :--- | :--- |
-| Full marking (`L22901-707 OKI JAPAN 3285F01J`) | OKI ML22 family custom mask-ROM speech-synthesis LSI (`-707` ROM code); `IC2` pin 12 -> `TP13`, pin 20 -> `TP12`, pin 23 -> `TP18`, pin 26 -> `R90` -> `Q3` -> `TP2` |
+| Full marking (`L22901-707 OKI JAPAN 3285F01J`) | OKI L22901-707 parallel audio/tone synthesizer LSI (`-707` ROM code) — **Confirmed**; `IC2` pin 12 -> `TP13`, pin 20 -> `TP12`, pin 23 -> `TP18`, pin 26 -> `R90` -> `Q3` -> `TP2` |
 | Boost regulator (`IC9`) | Enable = **`IC1` pin 19 (`P1.7`)**; `IC9` pins 3, 5, 6 = `TP2` = `IC5` pin 8 (`V+`) |
-| Interface to the MSP430 (serial command pins) | To be probed after ROM BSL bring-up |
+| Interface to the MSP430 (parallel command pins) | `P6.0..P6.5` -> IC2 pins `13..18` (falling-edge strobe on `P6.4` / `TP38`); `P1.4` (`TP2`) audio rail (active-LOW); `P1.7` `IC9` HV boost (active-HIGH) |
 | Output to the horn (direct or through IC5 / the Q15–Q19 stage) | H-bridge (`Q15–Q19`, 2x `4F` + 2x `4A` SOT-89) -> `D1`/`D2` -> `CN2` (`アカ`/`クロ`) |
 | IC5 `2115 E58 JRC` | NJM2115 dual op-amp: `V+` (pin 8) tied to `TP2` (switched/fed with `IC9` pins 3,5,6 & `Q3`) |
 | Q15/Q16/Q17 ... `4F`, `4A`, `LG` marked transistors: H-bridge? | Confirmed complementary H-bridge (2x `4F` + 2x `4A` + `LG`/`L6` level-shifters + 4x `5.1 Ω`) |
 | Horn type and impedance | **Piezo horn** (`OL` open-circuit resistance across disconnected `CN2` leads) |
+
+**Confirmed IC2 pinout & strobe protocol:**
+- **Power rails:** `P1.4` (IC1 pin 16, TP2) enables the audio/op-amp rail (`LOW` = ON, `HIGH` = OFF). `P1.7` (IC1 pin 19) enables IC9 high-voltage horn boost (`HIGH` = ON; keep `LOW` on bench when Saleae Logic 4 is attached).
+- **Parallel bus (`P6.0..P6.5` -> IC2 pins `13..18`):**
+  - `P6.0` (IC2 pin 13): `STOP` / power-down (`val5 = 0x01` strobed stops playback, ~55 ms ramp-down to sleep).
+  - `P6.1` (IC2 pin 14): Must be `0` for valid sound commands (`1` = no-op / empty bank).
+  - `(P6.5, P6.3, P6.2)` (IC2 pins `18, 16, 15`): 3-bit sound index `1..7` (`P6OUT` bit mapping for 5-bit `val5`: `((val5 & 0x10U) << 1) | (val5 & 0x0FU)`).
+  - `P6.4` (IC2 pin 17, TP38): Falling-edge strobe (`STARTB`/`STB`): drive target bits with `P6.4 = 1` for 10 ms setup, then drive `P6.4 = 0` to latch and trigger.
+
+**Confirmed 7-sound table (`val5`):**
+
+| `val5` | Index `(P6.5, P6.3, P6.2)` | Sound / behavior |
+| :--- | :--- | :--- |
+| `0x04` | `001` | 2-beep chime (~440 ms, auto-stops) |
+| `0x08` | `010` | ~2112 Hz decaying tone (~560 ms, auto-stops) |
+| `0x0C` | `011` | 2-tone chime 1122 Hz -> 1046 Hz (~650 ms, auto-stops) |
+| `0x10` | `100` | Powered-up idle / silence (>2.5 s, +1.1 mA) |
+| `0x14` | `101` | Full-amplitude continuous alarm siren burst (~2.15 s, auto-stops; re-trigger every 2 s for continuous alarm) |
+| `0x18` | `110` | Ding-dong bell 2007 Hz -> 1514 Hz (~1.8 s, auto-stops) |
+| `0x1C` | `111` | 1-beep chime (~200 ms, auto-stops) |
 
 ## 7. Connectors, switches and sensors
 

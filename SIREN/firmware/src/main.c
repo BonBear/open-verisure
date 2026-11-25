@@ -1,10 +1,12 @@
 /**
  * @file main.c
- * @brief OpenVerisure SIREN Phase 1 Firmware (MSP430F149 Rev S + CC1101 26 MHz).
+ * @brief OpenVerisure SIREN Phase 2 Firmware (MSP430F149 Rev S + CC1101 26 MHz).
  *
- * Phase 1 scope: persistent counter, AES-128-ECB uplink telemetry (boot 0x00,
- * tamper 0xB5, poll 0xBA), 120 ms downlink RX validation (DL...VS), and LPM3
- * low-power sleep. Horn boost (P1.7) and audio rail (P1.4) remain strictly OFF.
+ * Phase 2 scope: persistent counter, AES-128-ECB uplink telemetry (boot 0x00,
+ * tamper 0xB5, poll 0xBA), 120 ms downlink RX validation (DL...VS), LPM3
+ * low-power sleep, and OKI L22901-707 (IC2) parallel audio driver on P6.0..P6.5
+ * with audio rail (P1.4). HV horn boost (P1.7) remains strictly OFF unless
+ * SIREN_ENABLE_HV_BOOST is explicitly defined at compile time.
  */
 
 #include <msp430.h>
@@ -53,6 +55,15 @@ typedef char siren_dev_id_len_check[(sizeof(DEVICE_ID_STR) >= 9U) ? 1 : -1];
 #define SIREN_DEFAULT_SOUND_S 60U
 #define SIREN_MAX_SOUND_S     180U
 
+#define SIREN_IC2_CMD_STOP     0x01U
+#define SIREN_IC2_CMD_BEEP2    0x04U
+#define SIREN_IC2_CMD_TONE     0x08U
+#define SIREN_IC2_CMD_CHIME2   0x0CU
+#define SIREN_IC2_CMD_ALARM    0x14U
+#define SIREN_IC2_CMD_DINGDONG 0x18U
+#define SIREN_IC2_CMD_BEEP1    0x1CU
+#define SIREN_IC2_RETRIG_S     2U
+
 #define BOOT_MIN_MV      2700U
 #define BOOT_RECHECK_S   60U
 #define RX_WINDOW_MS     120U
@@ -70,6 +81,7 @@ static uint8_t s_armed = 0U;
 static uint8_t s_tamper = 0U;
 static uint8_t s_sounding = 0U;
 static uint16_t s_sound_rem_s = 0U;
+static uint16_t s_ic2_retrig_s = 0U;
 static uint8_t s_cmd_ack = 0U;
 static uint8_t s_first_pkt_sent = 0U;
 static volatile uint8_t s_latched_cmd = 0U;
@@ -165,11 +177,35 @@ static void build_uplink_frame(uint32_t ctr, uint16_t batt_mv, uint8_t is_por,
     wipe_bytes(plain, (uint8_t)sizeof(plain));
 }
 
-/* Phase 2 hook: keeps audio hardware silent/safe (P1.7 LOW, P1.4 HIGH) in Phase 1. */
+/* Latch 5-bit command onto IC2 (P6.5, P6.3..P6.0) via falling edge on P6.4. */
+static void siren_ic2_strobe(uint8_t val5) {
+    uint8_t p6_bits = (uint8_t)(((val5 & 0x10U) << 1) | (val5 & 0x0FU));
+    P6OUT = (uint8_t)((P6OUT & (uint8_t)~0x3FU) | p6_bits | BIT4);
+    hal_wdt_feed();
+    hal_delay_ms(10U);
+    P6OUT &= (uint8_t)~BIT4;
+}
+
 static void siren_audio_set(uint8_t on) {
-    (void)on;
-    P1OUT &= (uint8_t)~BIT7;
-    P1OUT |= BIT4;
+    if (on != 0U) {
+        P1OUT &= (uint8_t)~BIT4;
+#ifdef SIREN_ENABLE_HV_BOOST
+        P1OUT |= BIT7;
+#else
+        P1OUT &= (uint8_t)~BIT7;
+#endif
+        hal_delay_ms(20U);
+        siren_ic2_strobe(SIREN_IC2_CMD_ALARM);
+        s_ic2_retrig_s = 0U;
+    } else {
+        P1OUT &= (uint8_t)~BIT7;
+        siren_ic2_strobe(SIREN_IC2_CMD_STOP);
+        hal_wdt_feed();
+        hal_delay_ms(60U);
+        P6OUT &= (uint8_t)~0x3FU;
+        P1OUT |= BIT4;
+        s_ic2_retrig_s = 0U;
+    }
 }
 
 static void siren_handle_downlink_cmd(uint8_t cmd, uint8_t arg) {
@@ -368,6 +404,12 @@ int main(void) {
             if (s_sounding != 0U) {
                 if (s_sound_rem_s > elapsed) {
                     s_sound_rem_s = (uint16_t)(s_sound_rem_s - elapsed);
+                    if ((uint32_t)s_ic2_retrig_s + elapsed >= SIREN_IC2_RETRIG_S) {
+                        s_ic2_retrig_s = 0U;
+                        siren_ic2_strobe(SIREN_IC2_CMD_ALARM);
+                    } else {
+                        s_ic2_retrig_s = (uint16_t)(s_ic2_retrig_s + elapsed);
+                    }
                     hal_led_set(1U);
                     hal_delay_ms(30U);
                     hal_led_set(0U);
