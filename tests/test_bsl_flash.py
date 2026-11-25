@@ -240,7 +240,9 @@ class FakeBridgeSerial:
         stub_statuses: list[int] | None = None,
         corrupt_readback_once_addrs: list[int] | None = None,
         probe_err: str = "ERR SHORT A0",
+        corrupt_ram_writes: int = 0,
     ) -> None:
+        self.corrupt_ram_writes = corrupt_ram_writes
         self.commands: list[str] = []
         self.xfer_frames: list[bytes] = []
         self.flash: dict[int, int] = {a: 0xFF for a in range(0x1100, 0x10000)}
@@ -329,6 +331,9 @@ class FakeBridgeSerial:
                 if 0x0200 <= addr < 0x0A00:
                     for i, b in enumerate(data):
                         self.ram[addr + i] = b
+                    if addr == bsl_flash.BSL_V110_BUF and self.corrupt_ram_writes > 0:
+                        self.corrupt_ram_writes -= 1
+                        self.ram[addr] ^= 0xFF
                 elif self.bsl_ver < 0x0160 and addr >= 0x8000:
                     # Simulate TI BSL v1.10 signed-address bug ignoring >= 0x8000 writes
                     pass
@@ -361,7 +366,7 @@ class FakeBridgeSerial:
                 words = self.ram[0x03F2] | (self.ram[0x03F3] << 8)
                 self.load_pc_dsts.append(dst)
                 for i in range(words * 2):
-                    self.flash[dst + i] &= self.ram[0x0400 + i]
+                    self.flash[dst + i] &= self.ram[bsl_flash.BSL_V110_BUF + i]
                 st = self.stub_statuses.pop(0) if self.stub_statuses else self.stub_status
                 self.ram[0x03F4] = st & 0xFF
                 self.ram[0x03F5] = (st >> 8) & 0xFF
@@ -536,6 +541,39 @@ def test_flash_v110_retries_transient_stub_status_and_readback_mismatch(monkeypa
     assert fake.flash[0x8000] == 0xAA
     assert fake.flash[0xFFFE] == 0x00
     assert fake.commands[-1] == "RELEASE"
+
+
+def test_flash_v110_rewrites_corrupted_ram_buffer_before_running_stub(monkeypatch):
+    monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
+    fake = FakeBridgeSerial(locked=True, bsl_ver=0x0110, corrupt_ram_writes=1)
+    bridge = bsl_flash.BslBridge(fake)
+    chunks = [(0x1100, b"\x12\x34"), (0xFFFE, b"\x00\x11")]
+
+    bsl_flash.run_flash(bridge, chunks, verify=True)
+
+    # One bad RAM write is rewritten before load_pc, so each chunk runs the stub exactly once
+    assert fake.load_pc_dsts == [0x1100, 0xFFFE]
+    assert fake.flash[0x1100] == 0x12 and fake.flash[0x1101] == 0x34
+    assert fake.commands[-1] == "RELEASE"
+
+
+def test_flash_v110_raises_if_ram_buffer_stays_corrupted(monkeypatch):
+    monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
+    fake = FakeBridgeSerial(locked=True, bsl_ver=0x0110, corrupt_ram_writes=99)
+    bridge = bsl_flash.BslBridge(fake)
+
+    with pytest.raises(bsl_flash.BslError, match="RAM buffer corrupted at 0x1100"):
+        bsl_flash.run_flash(bridge, [(0x1100, b"\x12\x34")], verify=True)
+
+    assert fake.load_pc_dsts == []
+    assert fake.commands[-1] == "RELEASE"
+
+
+def test_v110_stub_reads_from_safe_ram_buffer():
+    # `mov #BSL_V110_BUF, r14` (3E40 + little-endian immediate) must match the host constant
+    imm = bsl_flash.BSL_V110_BUF.to_bytes(2, "little")
+    assert b"\x3e\x40" + imm in bsl_flash.BSL_V110_RAM_STUB
+    assert bsl_flash.BSL_V110_BUF == 0x0600
 
 
 def test_flash_allow_info_erases_touched_segments(monkeypatch):

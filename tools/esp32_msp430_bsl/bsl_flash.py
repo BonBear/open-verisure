@@ -20,12 +20,15 @@ import serial
 # 80-byte position-independent MSP430 RAM flash-writer stub (loaded at 0x0300) for BSL v1.10:
 #   SP = 0x09FE, WDTCTL = 0x5A80 (stop WDT), FCTL2 = 0xA542 (MCLK/3),
 #   FCTL3 = 0xA500 (unlock flash), FCTL1 = 0xA540 (WRT).
-#   Copies *(uint16_t *)0x03F2 words from 0x0400 to *(uint16_t *)0x03F0,
+#   Copies *(uint16_t *)0x03F2 words from BSL_V110_BUF (0x0600) to *(uint16_t *)0x03F0,
 #   polling (FCTL3 & BUSY) after each word write; locks flash (FCTL1 = 0xA500,
 #   FCTL3 = 0xA510), writes 0xCAFE to 0x03F4, and loops forever (jmp $).
+# The data buffer is at 0x0600: on bench (MSP430F149 Rev S, BSL v1.10) RAM 0x0400..0x05FF
+# corrupted written bytes deterministically, and flash cannot be rewritten without an erase.
+BSL_V110_BUF = 0x0600
 BSL_V110_RAM_STUB = bytes.fromhex(
     "3140FE09B240805A2001B24042A52A01B24000A52C01B24040A52801"
-    "1C42F0031D42F2033E4000040D930824BC4E000092B32C01FD232C53"
+    "1C42F0031D42F2033E4000060D930824BC4E000092B32C01FD232C53"
     "1D83F63FB24000A52801B24010A52C01B240FECAF403FF3F"
 )
 
@@ -478,7 +481,14 @@ def run_flash(
                     if attempt > 0 or bridge.tx_data_block(0x0300, 2) != b"\x31\x40":
                         bridge.rx_data_block(0x0300, BSL_V110_RAM_STUB)
                     bridge.rx_data_block(0x03F0, hdr)
-                    bridge.rx_data_block(0x0400, data)
+                    # Check the buffer in RAM before running the stub: RAM is rewritable,
+                    # flash is not (a bad word cannot be fixed without a mass erase).
+                    for _ram_try in range(3):
+                        bridge.rx_data_block(BSL_V110_BUF, data)
+                        if bridge.tx_data_block(BSL_V110_BUF, len(data)) == data:
+                            break
+                    else:
+                        raise BslError(f"RAM buffer corrupted at 0x{addr:04X}")
                     bridge.load_pc(0x0300)
                     time.sleep(max(0.05, len(data) * 0.00015))
                     cand_pw_map = dict(cur_pw_map)
