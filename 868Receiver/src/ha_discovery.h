@@ -111,6 +111,21 @@ String haDiscoveryBuildSirenTopic(const char* deviceId);
 String haDiscoveryBuildSirenPayload(const char* deviceId, const char* baseTopic);
 
 /**
+ * @brief Construct MQTT config discovery topic for a Siren Fast Wake (Doorbell) switch.
+ * @param deviceId 8-character sensor identifier.
+ * @return Full topic string: `homeassistant/switch/verisure_<deviceId>_fast_wake/config`.
+ */
+String haDiscoveryBuildSirenFastWakeTopic(const char* deviceId);
+
+/**
+ * @brief Construct JSON payload for Siren Fast Wake (Doorbell) switch auto-discovery.
+ * @param deviceId 8-character sensor identifier.
+ * @param baseTopic Base MQTT topic (e.g. "verisure").
+ * @return JSON configuration string for Home Assistant MQTT Switch entity (< 1024 B).
+ */
+String haDiscoveryBuildSirenFastWakePayload(const char* deviceId, const char* baseTopic);
+
+/**
  * @brief Construct MQTT config discovery topic for a sensor entity.
  * @param deviceId 8-character sensor identifier.
  * @param def Entity definition pointer.

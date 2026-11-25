@@ -10,6 +10,7 @@
 
 extern volatile uint16_t g_ticks;
 extern volatile uint8_t g_tamper_irq;
+extern volatile uint8_t g_wor_irq;
 extern uint8_t g_xtal_fault;
 
 void hal_init(void);
@@ -30,6 +31,7 @@ void hal_led_set(uint8_t on);
 
 uint8_t hal_read_sw1(void);
 void hal_sw1_arm_irq(uint8_t current_level);
+void hal_wor_arm_irq(uint8_t enable);
 
 void hal_wdt_hold(void);
 void hal_wdt_arm_active(void);

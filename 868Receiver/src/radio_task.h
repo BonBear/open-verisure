@@ -42,7 +42,9 @@
 
 #include <Arduino.h>
 #include <stdint.h>
+#ifndef HOST_TEST
 #include <esp_timer.h>
+#endif
 
 /** @brief Length of sensor telemetry payload: 8B Header + 16B AES Ciphertext. */
 #define VERISURE_PACKET_LEN 24
@@ -99,7 +101,14 @@ struct RadioFrame {               // copied by value through the RX queue
 };
 static_assert(sizeof(RadioFrame) == 76, "layout");
 
-enum RadioCmdType : uint8_t { RADIO_CMD_TX = 1, RADIO_CMD_REINIT, RADIO_CMD_TESTSPI, RADIO_CMD_SETMODE };
+enum RadioCmdType : uint8_t {
+    RADIO_CMD_TX = 1,
+    RADIO_CMD_REINIT,
+    RADIO_CMD_TESTSPI,
+    RADIO_CMD_SETMODE,
+    RADIO_CMD_WAKE,
+    RADIO_CMD_WAKE_CANCEL
+};
 struct RadioCmd {
     uint8_t  type;
     uint8_t  module;
@@ -119,6 +128,7 @@ struct RadioStatus {
     volatile int16_t  rssiDbm;
     volatile uint32_t sampledMs;   // millis() of the last RSSI/MARCSTATE sample
     volatile uint32_t txCount;     // cumulative STX count on module 0 (never reset by radioDiagReset)
+    volatile uint32_t txWakeCount; // cumulative WOR wake packet count on module 0 (not in txCount)
 };
 
 /**
@@ -152,7 +162,11 @@ extern RadioDiag     g_radioDiag2;
 extern RadioLoopDiag g_radioLoopDiag;
 
 /** @brief Microsecond timestamp (wraps after 71 min): compare only by unsigned difference. */
+#ifndef HOST_TEST
 static inline uint32_t radioNowUs() { return (uint32_t)esp_timer_get_time(); }
+#else
+static inline uint32_t radioNowUs() { return (uint32_t)(millis() * 1000UL); }
+#endif
 
 /** setup(), before the task exists: SPI attach, probe, register init for both modules.
  *  Returns true if module 0 is online. */
@@ -163,8 +177,27 @@ bool radioTaskStart(bool online, bool online2 = false);
 
 /** loop() only: next queue item, waiting up to waitMs (0 = poll). */
 bool radioReceive(RadioFrame* out, uint32_t waitMs);
+/** Derive deterministic 8-bit WOR address (0x01..0xFE) and 16-bit tag from 8-char device ID. */
+inline void radioWorIdHash(const char* deviceId, uint8_t* addr8, uint16_t* tag16) {
+    uint32_t h = 2166136261UL;
+    if (deviceId) {
+        for (uint8_t i = 0; i < 8 && deviceId[i] != '\0'; i++) {
+            h ^= (uint8_t)deviceId[i];
+            h *= 16777619UL;
+        }
+    }
+    uint8_t a = (uint8_t)((h ^ (h >> 8)) & 0xFFU);
+    if (a == 0U || a == 0xFFU) a ^= 0x5AU;
+    if (addr8) *addr8 = a;
+    if (tag16) *tag16 = (uint16_t)(h >> 16);
+}
+
 /** Queue a 24-byte downlink packet (module 0 only); asynchronous. frameStartUs = startUs of the poll frame. */
 bool radioRequestTx(const uint8_t pkt[VERISURE_PACKET_LEN], uint32_t frameStartUs);
+/** Queue a non-blocking CC1101 Wake-on-Radio burst (~2.07 s interleaved TX/RX) for a siren. */
+bool radioRequestWake(const char* deviceId);
+/** Cancel an active/pending WOR wake burst for a siren (e.g. once its 0xBA poll arrives). */
+void radioCancelWake(const char* deviceId);
 /** Re-run the register init (new freqoffset) on module 0 or 1; waits up to waitMs for completion. */
 bool radioRequestReinit(uint8_t module, uint32_t waitMs);
 /** Run the CLI testspi sequence in the task on module 0 or 1; waits up to waitMs for the result. */

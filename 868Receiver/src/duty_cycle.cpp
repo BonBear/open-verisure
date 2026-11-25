@@ -38,6 +38,9 @@ struct DutyState {
     BandTrack gw;
     uint32_t  gwTxPackets;
     uint64_t  gwTxTotalUs;
+    BandTrack gwB54;
+    uint32_t  gwB54Packets;
+    uint64_t  gwB54TotalUs;
     uint32_t  totalFallbackPictures;
     uint32_t  totalFallbackChunks;
     uint64_t  totalFallbackUs;
@@ -126,6 +129,7 @@ void advanceClock(DutyState* st, uint32_t nowMs) {
     const uint32_t steps = elapsed / DUTY_BUCKET_MS;
     if (steps >= DUTY_BUCKETS) {
         memset(st->gw.bucketsUs, 0, sizeof(st->gw.bucketsUs));
+        memset(st->gwB54.bucketsUs, 0, sizeof(st->gwB54.bucketsUs));
         for (uint8_t i = 0; i < DUTY_MAX_CAMERAS; i++) {
             if (!st->cameras[i].used) continue;
             memset(st->cameras[i].b50.bucketsUs, 0, sizeof(st->cameras[i].b50.bucketsUs));
@@ -136,6 +140,7 @@ void advanceClock(DutyState* st, uint32_t nowMs) {
         for (uint32_t s = 0; s < steps; s++) {
             st->curIdx = (uint8_t)((st->curIdx + 1U) % DUTY_BUCKETS);
             st->gw.bucketsUs[st->curIdx] = 0;
+            st->gwB54.bucketsUs[st->curIdx] = 0;
             for (uint8_t i = 0; i < DUTY_MAX_CAMERAS; i++) {
                 if (!st->cameras[i].used) continue;
                 st->cameras[i].b50.bucketsUs[st->curIdx] = 0;
@@ -147,6 +152,7 @@ void advanceClock(DutyState* st, uint32_t nowMs) {
     st->bucketStartMs = (uint32_t)(nowMs - (elapsed % DUTY_BUCKET_MS));
 
     recomputeBand(st->gw, DUTY_BAND50_LIMIT_US);
+    recomputeBand(st->gwB54, DUTY_BAND54_LIMIT_US);
     for (uint8_t i = 0; i < DUTY_MAX_CAMERAS; i++) {
         if (!st->cameras[i].used) continue;
         recomputeBand(st->cameras[i].b50, DUTY_BAND50_LIMIT_US);
@@ -208,6 +214,22 @@ void dutyCycleRecordGwTx(uint32_t nowMs) {
     st->gwTxPackets++;
     st->gwTxTotalUs += DUTY_AIRTIME_PKT24_US;
     addAirtime(st->gw, st->curIdx, DUTY_AIRTIME_PKT24_US, DUTY_BAND50_LIMIT_US, nullptr);
+}
+
+void dutyCycleRecordGwWakeTx(uint32_t nowMs) {
+    DutyState* st = getState();
+    if (!st) return;
+    advanceClock(st, nowMs);
+    st->gwB54Packets++;
+    st->gwB54TotalUs += DUTY_AIRTIME_WAKE6_US;
+    addAirtime(st->gwB54, st->curIdx, DUTY_AIRTIME_WAKE6_US, DUTY_BAND54_LIMIT_US, nullptr);
+}
+
+bool dutyCycleAllowGwWake(uint32_t nowMs) {
+    DutyState* st = getState();
+    if (!st) return false;
+    advanceClock(st, nowMs);
+    return (st->gwB54.sumUs + 1600000ULL) < (uint64_t)DUTY_BAND54_LIMIT_US;
 }
 
 void dutyCycleRecordCamPkt24(const char* deviceId, uint32_t nowMs) {
@@ -272,6 +294,13 @@ void dutyCycleGetStatus(uint32_t nowMs, DutyCycleStatus* out) {
     out->gwTxOverBudget = st->gw.overBudget;
     out->gwTxPackets = st->gwTxPackets;
     out->gwTxTotalMs = usToMs(st->gwTxTotalUs);
+
+    out->gwB54WindowUs = st->gwB54.sumUs;
+    out->gwB54_1hMs = usToMs(st->gwB54.sumUs);
+    out->gwB54PctTenths = pctTenths(st->gwB54.sumUs, DUTY_BAND54_LIMIT_US);
+    out->gwB54Packets = st->gwB54Packets;
+    out->gwB54TotalMs = usToMs(st->gwB54TotalUs);
+    out->gwB54OverBudget = st->gwB54.overBudget;
 
     out->totalFallbackPictures = st->totalFallbackPictures;
     out->totalFallbackChunks = st->totalFallbackChunks;

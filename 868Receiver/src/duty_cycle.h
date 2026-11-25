@@ -17,6 +17,7 @@
 
 #define DUTY_AIRTIME_PKT24_US   7080UL
 #define DUTY_AIRTIME_CHUNK56_US 13740UL
+#define DUTY_AIRTIME_WAKE6_US   3335UL
 
 #define DUTY_BAND50_LIMIT_US    3600000UL
 #define DUTY_BAND54_LIMIT_US    360000000UL
@@ -51,6 +52,12 @@ struct DutyCycleStatus {
     uint32_t gwTxTotalMs;
     uint64_t gwTx1hUs;
     bool     gwTxOverBudget;
+    uint64_t gwB54WindowUs;
+    uint32_t gwB54_1hMs;
+    uint32_t gwB54PctTenths;
+    uint32_t gwB54Packets;
+    uint32_t gwB54TotalMs;
+    bool     gwB54OverBudget;
     uint32_t totalFallbackPictures;
     uint32_t totalFallbackChunks;
     uint32_t totalFallbackAirtimeMs;
@@ -69,6 +76,12 @@ void dutyCycleTick(uint32_t nowMs);
 
 /** Record one 24-byte gateway downlink transmission on band 50 (868.950 MHz). */
 void dutyCycleRecordGwTx(uint32_t nowMs);
+
+/** Record one 6-byte gateway WOR wake transmission on band 54 (869.525 MHz). */
+void dutyCycleRecordGwWakeTx(uint32_t nowMs);
+
+/** True if band 54 gateway wake headroom allows starting a ~1.6 s wake burst. */
+bool dutyCycleAllowGwWake(uint32_t nowMs);
 
 /** Record one authenticated 24-byte camera packet on band 50 (868.950 MHz). */
 void dutyCycleRecordCamPkt24(const char* deviceId, uint32_t nowMs);

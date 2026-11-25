@@ -42,6 +42,7 @@ verisure/
     image                    <-- JPEG picture (camera only)
     picture/set              <-- picture command to a camera (D1..D6, HOLD)
     siren/set                <-- siren ON/OFF JSON command (siren only: state, duration, tone)
+    siren/fast_wake/set      <-- siren CC1101 WOR fast-wake switch (siren only: ON / OFF)
   alarm/
     set                      <-- alarm on/off for the cameras
     state                    <-- current alarm state
@@ -53,6 +54,7 @@ homeassistant/
   camera/verisure_<deviceId>_camera/config         <-- camera picture (camera only)
   button/verisure_<deviceId>_picture*/config       <-- picture buttons (camera only)
   siren/verisure_<deviceId>_siren/config           <-- HA siren entity with duration & available_tones (siren only)
+  switch/verisure_<deviceId>_fast_wake/config      <-- "Fast Wake (Doorbell)" CC1101 WOR switch (siren only)
   switch/verisure_gateway_alarm/config             <-- "Alarm (cameras)" switch
   sensor/verisure_gateway_<key>/config             <-- gateway diagnostics
 ```
@@ -93,12 +95,14 @@ The camera's sensor entities have `expire_after` 600 s: without a packet for 10 
 every ~30 s, every ~2 minutes when disarmed) they turn unavailable instead of keeping old values.
 The door sensor's entities have `expire_after` 9000 s (2.5 h; it sends a heartbeat about every hour).
 
-### Siren (`2S5F*`, 5 entities)
+### Siren (`2S5F*`, 7 entities)
 
 | Entity | Platform | Device Class / Topic | Description |
 | :--- | :---: | :---: | :--- |
 | **Siren** | `siren` | `verisure/<id>/siren/set` | Supports `duration` (1–180 s, default 60 s for `alarm`) and `available_tones`: `alarm`, `ding_dong`, `chime`, `double_beep`, `beep`, `tone`. State read from `{{ value_json.siren }}` (`ON` / `OFF`). |
+| **Fast Wake (Doorbell)** | `switch` | `verisure/<id>/siren/fast_wake/set` | Optional CC1101 Wake-on-Radio (`869.525 MHz`, ~1–2 s response for doorbell chimes and alarms; `OFF` = 7.6 µA LPM3 sleep with 120 s / 30 s polls). State read from `{{ value_json.fast_wake }}` (`ON` / `OFF`). |
 | **Tamper** | `binary_sensor` | `tamper` | Cover tamper switch `SW1` (`button` field: `ON` = cover removed) |
+| **Temperature** | `sensor` | `temperature` (`°C`) | On-board NTC thermistor `TH1` (`temperature_c`) |
 | **Battery**, **Battery Voltage**, **Signal Strength** | `sensor` | as for the door sensor | Battery `%`, `mV`, and RF `rssi` (`expire_after` 600 s) |
 
 Example `verisure/2S5F554X/siren/set` payloads:

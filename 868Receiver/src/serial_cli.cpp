@@ -210,6 +210,13 @@ static void printDutyStatus() {
                   dc.gwTxOverBudget ? " [OVER]" : "",
                   (unsigned long)dc.gwTxPackets,
                   (unsigned long)dc.gwTxTotalMs);
+    Serial.printf("  GW Wake (B54): %lu ms (%lu.%lu%% of 360000 ms/h)%s | total %lu pkt (%lu ms)\n",
+                  (unsigned long)dc.gwB54_1hMs,
+                  (unsigned long)(dc.gwB54PctTenths / 10),
+                  (unsigned long)(dc.gwB54PctTenths % 10),
+                  dc.gwB54OverBudget ? " [OVER]" : "",
+                  (unsigned long)dc.gwB54Packets,
+                  (unsigned long)dc.gwB54TotalMs);
     Serial.printf("  Fallback B50 : %lu pic(s) | %lu chunk(s) | %lu ms | cam B50 over %lu | bucket age %lu s\n",
                   (unsigned long)dc.totalFallbackPictures,
                   (unsigned long)dc.totalFallbackChunks,

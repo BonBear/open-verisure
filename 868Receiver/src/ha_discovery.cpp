@@ -516,6 +516,42 @@ String haDiscoveryBuildSirenPayload(const char* deviceId, const char* baseTopic)
     return p;
 }
 
+String haDiscoveryBuildSirenFastWakeTopic(const char* deviceId) {
+    return "homeassistant/switch/verisure_" + String(deviceId) + "_fast_wake/config";
+}
+
+String haDiscoveryBuildSirenFastWakePayload(const char* deviceId, const char* baseTopic) {
+    String b(baseTopic);
+    String id(deviceId);
+    String stateTopic = haStateBuildTopic(deviceId, baseTopic);
+    String cmdTopic = b + "/" + id + "/siren/fast_wake/set";
+    String uniqueId = "verisure_" + id + "_fast_wake";
+
+    String p = "{";
+    p += "\"name\":\"Fast Wake (Doorbell)\",";
+    p += "\"unique_id\":\"" + uniqueId + "\",";
+    p += "\"icon\":\"mdi:bell-ring-outline\",";
+    p += "\"entity_category\":\"config\",";
+    p += "\"command_topic\":\"" + cmdTopic + "\",";
+    p += "\"state_topic\":\"" + stateTopic + "\",";
+    p += "\"value_template\":\"{{ value_json.fast_wake if value_json.fast_wake is defined else None }}\",";
+    p += "\"payload_on\":\"ON\",";
+    p += "\"payload_off\":\"OFF\",";
+    p += "\"expire_after\":" + String(HA_CAMERA_EXPIRE_S) + ",";
+    p += "\"availability_topic\":\"" + b + "/status\",";
+    p += "\"payload_available\":\"online\",";
+    p += "\"payload_not_available\":\"offline\",";
+    p += "\"device\":{";
+    p += "\"identifiers\":[\"verisure_" + id + "\"],";
+    p += "\"name\":\"Verisure Siren " + id + "\",";
+    p += "\"model\":\"Verisure Siren (GW-SI)\",";
+    p += "\"manufacturer\":\"Verisure\",";
+    p += "\"sw_version\":\"1.0-MSP430\",";
+    p += "\"via_device\":\"verisure_gateway\"";
+    p += "}}";
+    return p;
+}
+
 String haDiscoveryBuildCameraTopic(const char* deviceId) {
     return "homeassistant/camera/verisure_" + String(deviceId) + "_camera/config";
 }
@@ -621,6 +657,9 @@ String haStateBuildPayload(const VerisureTelemetry& telem) {
     p += "\"low_battery\":\"" + String(telem.isLowBatt ? "ON" : "OFF") + "\",";
     if (haIsSirenSensor(telem.deviceId)) {
         p += "\"siren\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";
+        if (telem.fastWakeState != 0) {
+            p += "\"fast_wake\":\"" + String(telem.fastWakeState == 2 ? "ON" : "OFF") + "\",";
+        }
     }
     if (telem.hasTemp) {
         char tbuf[12];

@@ -15,6 +15,7 @@
 #define CC_PKTLEN    0x06U
 #define CC_PKTCTRL1  0x07U
 #define CC_PKTCTRL0  0x08U
+#define CC_ADDR      0x09U
 #define CC_CHANNR    0x0AU
 #define CC_FSCTRL1   0x0BU
 #define CC_FSCTRL0   0x0CU
@@ -35,6 +36,9 @@
 #define CC_AGCCTRL2  0x1BU
 #define CC_AGCCTRL1  0x1CU
 #define CC_AGCCTRL0  0x1DU
+#define CC_WOREVT1   0x1EU
+#define CC_WOREVT0   0x1FU
+#define CC_WORCTRL   0x20U
 #define CC_FREND1    0x21U
 #define CC_FREND0    0x22U
 #define CC_FSCAL3    0x23U
@@ -54,9 +58,11 @@
 #define CC_SRX       0x34U
 #define CC_STX       0x35U
 #define CC_SIDLE     0x36U
+#define CC_SWOR      0x38U
 #define CC_SPWD      0x39U
 #define CC_SFRX      0x3AU
 #define CC_SFTX      0x3BU
+#define CC_SWORRST   0x3CU
 
 /* Status Registers (read with 0xC0 burst bit) */
 #define CC_PARTNUM   0x30U
@@ -64,12 +70,48 @@
 #define CC_MARCSTATE 0x35U
 #define CC_RXBYTES   0x3BU
 
-#define CC_FRAME_LEN 24U
+#define CC_FRAME_LEN     24U
+#define CC_WOR_FRAME_LEN 6U
+#define CC_WOR_MAX_RX_MS 200U
 
 typedef struct {
     uint8_t reg;
     uint8_t val;
 } cc_reg_cfg_t;
+
+static uint8_t s_wor_addr = 0x01U;
+static uint16_t s_wor_tag = 0U;
+
+static const cc_reg_cfg_t s_wor_cfg[] = {
+    { CC_FREQ2,    0x21U },
+    { CC_FREQ1,    0x71U },
+    { CC_FREQ0,    0x7AU },
+    { CC_SYNC1,    0x2DU },
+    { CC_SYNC0,    0xD4U },
+    { CC_PKTLEN,   CC_WOR_FRAME_LEN },
+    { CC_PKTCTRL1, 0x0DU },
+    { CC_AGCCTRL2, 0x03U },
+    { CC_AGCCTRL1, 0x49U },
+    { CC_MCSM2,    0x13U },
+    { CC_WOREVT1,  0x87U },
+    { CC_WOREVT0,  0x6BU },
+    { CC_WORCTRL,  0x78U },
+    { CC_IOCFG2,   0x06U }
+};
+
+static const cc_reg_cfg_t s_norm_cfg[] = {
+    { CC_IOCFG2,   0x2FU },
+    { CC_SYNC1,    0xD3U },
+    { CC_SYNC0,    0x91U },
+    { CC_PKTLEN,   CC_FRAME_LEN },
+    { CC_PKTCTRL1, 0x04U },
+    { CC_FREQ2,    0x21U },
+    { CC_FREQ1,    0x6BU },
+    { CC_FREQ0,    0xD1U },
+    { CC_AGCCTRL2, 0x43U },
+    { CC_AGCCTRL1, 0x40U },
+    { CC_MCSM2,    0x07U }
+};
 
 static const cc_reg_cfg_t s_cc_cfg[] = {
     { CC_IOCFG2,   0x2FU },
@@ -426,5 +468,71 @@ void cc1101_sleep(void) {
     (void)cc_strobe(CC_SFRX);
     (void)cc_strobe(CC_SFTX);
     (void)cc_strobe(CC_SPWD);
+}
+
+void cc1101_wor_set_id(const char *device_id) {
+    cc1101_wor_derive_id(device_id, &s_wor_addr, &s_wor_tag);
+}
+
+void cc1101_enter_wor(void) {
+    uint8_t i;
+
+    hal_wor_arm_irq(0U);
+    cc1101_wake();
+    for (i = 0U; i < (uint8_t)(sizeof(s_wor_cfg) / sizeof(s_wor_cfg[0])); i++) {
+        (void)cc_write_reg(s_wor_cfg[i].reg, s_wor_cfg[i].val);
+    }
+    (void)cc_write_reg(CC_ADDR, s_wor_addr);
+    (void)cc_strobe(CC_SFRX);
+    (void)cc_strobe(CC_SWORRST);
+    (void)cc_strobe(CC_SWOR);
+    hal_wor_arm_irq(1U);
+}
+
+void cc1101_exit_wor_to_main(void) {
+    uint8_t i;
+
+    hal_wor_arm_irq(0U);
+    cc1101_wake();
+    for (i = 0U; i < (uint8_t)(sizeof(s_norm_cfg) / sizeof(s_norm_cfg[0])); i++) {
+        (void)cc_write_reg(s_norm_cfg[i].reg, s_norm_cfg[i].val);
+    }
+    (void)cc_strobe(CC_SFRX);
+    (void)cc_strobe(CC_SFTX);
+}
+
+int cc1101_wor_read(uint8_t *rx_in_ms) {
+    uint8_t rxbytes = 0U;
+    uint8_t buf[CC_WOR_FRAME_LEN + 2U];
+
+    cc1101_wake();
+    if (cc_read_status_safe(CC_RXBYTES, &rxbytes) != 0) {
+        (void)cc_strobe(CC_SFRX);
+        return -1;
+    }
+    if ((rxbytes & 0x80U) != 0U || (rxbytes & 0x7FU) != (CC_WOR_FRAME_LEN + 2U)) {
+        (void)cc_strobe(CC_SFRX);
+        return -1;
+    }
+    if (cc_read_burst(CC_RXFIFO, buf, (uint8_t)(CC_WOR_FRAME_LEN + 2U)) != 0) {
+        (void)cc_strobe(CC_SFRX);
+        return -1;
+    }
+    (void)cc_strobe(CC_SFRX);
+
+    if ((buf[CC_WOR_FRAME_LEN + 1U] & 0x80U) == 0U) {
+        return -1;
+    }
+    if (buf[0] != s_wor_addr ||
+        buf[1] != (uint8_t)'W' ||
+        buf[2] != (uint8_t)'O' ||
+        buf[3] != (uint8_t)(s_wor_tag >> 8) ||
+        buf[4] != (uint8_t)(s_wor_tag & 0xFFU)) {
+        return -1;
+    }
+    if (rx_in_ms != (uint8_t *)0) {
+        *rx_in_ms = (buf[5] > CC_WOR_MAX_RX_MS) ? CC_WOR_MAX_RX_MS : buf[5];
+    }
+    return 0;
 }
 

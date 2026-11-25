@@ -5,9 +5,11 @@
 #include "downlink.h"
 
 #include <Preferences.h>
+#include <stdlib.h>
 #include <string.h>
 
-#define DOWNLINK_CMD_TTL_MS  (15UL * 60UL * 1000UL)   // a request not delivered by then is dropped
+#define DOWNLINK_CMD_TTL_MS    (15UL * 60UL * 1000UL)   // a request not delivered by then is dropped
+#define DOWNLINK_MAX_FAST_WAKE 8
 
 struct PendingCommand {
     char deviceId[9];
@@ -18,8 +20,16 @@ struct PendingCommand {
     unsigned long queuedAt;
 };
 
+struct FastWakeEntry {
+    bool used;
+    bool enabled;
+    char deviceId[9];
+};
+
 static bool s_armed = false;
 static PendingCommand s_pending[DOWNLINK_MAX_DEVICES];
+// Heap-allocated once to keep .dram0.bss to a 4-byte pointer on ESP32-S2.
+static FastWakeEntry* s_fw = nullptr;
 
 static void expirePending() {
     unsigned long now = millis();
@@ -38,6 +48,102 @@ void downlinkInit() {
     s_armed = prefs.getBool("armed", false);
     prefs.end();
     memset(s_pending, 0, sizeof(s_pending));
+    if (!s_fw) {
+        s_fw = static_cast<FastWakeEntry*>(calloc(DOWNLINK_MAX_FAST_WAKE, sizeof(FastWakeEntry)));
+    } else {
+        memset(s_fw, 0, sizeof(FastWakeEntry) * DOWNLINK_MAX_FAST_WAKE);
+    }
+}
+
+static bool validSirenId(const char* deviceId) {
+    if (!deviceId) return false;
+    for (int i = 0; i < 8; i++) {
+        if (!deviceId[i]) return false;
+    }
+    return deviceId[8] == '\0';
+}
+
+static void makeFastWakeKey(const char* deviceId, char outKey[12]) {
+    memcpy(outKey, "fw_", 3);
+    memcpy(outKey + 3, deviceId, 8);
+    outKey[11] = '\0';
+}
+
+static FastWakeEntry* getFwTable() {
+    if (!s_fw) {
+        s_fw = static_cast<FastWakeEntry*>(calloc(DOWNLINK_MAX_FAST_WAKE, sizeof(FastWakeEntry)));
+    }
+    return s_fw;
+}
+
+static FastWakeEntry* findOrAllocFwEntry(FastWakeEntry* tbl, const char* deviceId, bool* wasCached) {
+    if (wasCached) *wasCached = false;
+    FastWakeEntry* freeSlot = nullptr;
+    for (int i = 0; i < DOWNLINK_MAX_FAST_WAKE; i++) {
+        if (tbl[i].used) {
+            if (strncmp(tbl[i].deviceId, deviceId, 8) == 0) {
+                if (wasCached) *wasCached = true;
+                return &tbl[i];
+            }
+        } else if (!freeSlot) {
+            freeSlot = &tbl[i];
+        }
+    }
+    FastWakeEntry* slot = freeSlot ? freeSlot : &tbl[0];
+    slot->used = true;
+    slot->enabled = false;
+    memcpy(slot->deviceId, deviceId, 8);
+    slot->deviceId[8] = '\0';
+    return slot;
+}
+
+void downlinkSetSirenFastWake(const char* deviceId, bool enabled) {
+    if (!validSirenId(deviceId)) return;
+    FastWakeEntry* tbl = getFwTable();
+    bool cached = false;
+    FastWakeEntry* e = tbl ? findOrAllocFwEntry(tbl, deviceId, &cached) : nullptr;
+    char key[12];
+    makeFastWakeKey(deviceId, key);
+
+    bool prev = false;
+    if (cached && e) {
+        prev = e->enabled;
+    } else {
+        Preferences prefs;
+        prefs.begin("downlink", true);
+        prev = prefs.getBool(key, false);
+        prefs.end();
+    }
+    if (e) e->enabled = enabled;
+    if (prev != enabled) {
+        Preferences prefs;
+        prefs.begin("downlink", false);
+        prefs.putBool(key, enabled);
+        prefs.end();
+    }
+}
+
+bool downlinkGetSirenFastWake(const char* deviceId) {
+    if (!validSirenId(deviceId)) return false;
+    FastWakeEntry* tbl = getFwTable();
+    if (tbl) {
+        for (int i = 0; i < DOWNLINK_MAX_FAST_WAKE; i++) {
+            if (tbl[i].used && strncmp(tbl[i].deviceId, deviceId, 8) == 0) {
+                return tbl[i].enabled;
+            }
+        }
+    }
+    char key[12];
+    makeFastWakeKey(deviceId, key);
+    Preferences prefs;
+    prefs.begin("downlink", true);
+    bool en = prefs.getBool(key, false);
+    prefs.end();
+    if (tbl) {
+        FastWakeEntry* e = findOrAllocFwEntry(tbl, deviceId, nullptr);
+        if (e) e->enabled = en;
+    }
+    return en;
 }
 
 bool downlinkArmed() {
@@ -178,7 +284,7 @@ uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16
 }
 
 void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t first, uint32_t map,
-                        uint8_t out[16], uint8_t flags, uint8_t channel) {
+                        uint8_t out[16], uint8_t flags, uint8_t channel, uint8_t sirenFlags) {
     memset(out, 0, 16);
     out[0] = 'D';
     out[1] = 'L';
@@ -195,9 +301,11 @@ void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t 
     } else if (cmd == DOWNLINK_CMD_SIREN_ON) {
         out[8] = (first > DOWNLINK_SIREN_MAX_SEC) ? (uint8_t)DOWNLINK_SIREN_MAX_SEC : (uint8_t)first;
         out[9] = (channel <= DOWNLINK_SIREN_MAX_TONE) ? channel : 0;
+        out[10] = sirenFlags;
     } else {
         out[8] = flags;
         out[9] = (flags & DL_FLAG_PCH) ? channel : 0;
+        out[10] = sirenFlags;
     }
     out[14] = 'V';
     out[15] = 'S';

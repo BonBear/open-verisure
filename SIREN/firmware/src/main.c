@@ -79,6 +79,17 @@ typedef char siren_dev_id_len_check[(sizeof(DEVICE_ID_STR) >= 9U) ? 1 : -1];
 #define TEMP_ENC_INVALID  0xFFU
 #define TEMP_POLL_INTERVAL 10U
 
+#define DL_SFLAG_FAST_WAKE_VALID 0x80U
+#define DL_SFLAG_FAST_WAKE_ON    0x01U
+#define SIREN_STATE_FAST_WAKE    0x08U
+
+#define WOR_COOLDOWN_CMD_S   5U
+#define WOR_BACKOFF_MIN_S    5U
+#define WOR_BACKOFF_MAX_S   40U
+#define WOR_EMPTY_STRIKE_MAX 5U
+#define WOR_PAUSE_S        300U
+#define WOR_CALM_S         600U
+
 static uint8_t s_rst_cause = 0U;
 static uint8_t s_armed = 0U;
 static uint8_t s_tamper = 0U;
@@ -92,6 +103,15 @@ static uint8_t s_first_pkt_sent = 0U;
 static uint8_t s_last_temp_enc = TEMP_ENC_INVALID;
 static uint8_t s_temp_poll_cnt = 0U;
 static volatile uint8_t s_latched_cmd = 0U;
+static uint8_t s_fast_wake = 0U;
+static uint8_t s_fw_ack_flush = 0U;
+static uint8_t s_wor_active = 0U;
+static uint16_t s_wor_cooldown_s = 0U;
+static uint16_t s_wor_backoff_s = WOR_BACKOFF_MIN_S;
+static uint8_t s_wor_empty_streak = 0U;
+static uint16_t s_wor_pause_s = 0U;
+static uint16_t s_wor_calm_s = 0U;
+static uint8_t s_dl_action = 0U;
 
 static void wipe_bytes(volatile uint8_t *p, uint8_t len) {
     uint8_t i;
@@ -163,6 +183,7 @@ static void sleep_seconds(uint16_t sec) {
         elapsed = g_ticks;
         g_ticks = 0U;
         g_tamper_irq = 0U;
+        g_wor_irq = 0U;
         __enable_interrupt();
 
         if (elapsed >= sec) {
@@ -334,6 +355,18 @@ static uint8_t validate_downlink(const uint8_t rx[24], uint32_t poll_ctr) {
     if (dl_plain[7] != 0U) {
         siren_handle_downlink_cmd(dl_plain[7], dl_plain[8], dl_plain[9]);
         s_cmd_ack = 1U;
+        s_dl_action = 1U;
+    }
+    if ((dl_plain[10] & DL_SFLAG_FAST_WAKE_VALID) != 0U) {
+        uint8_t new_fw = (dl_plain[10] & DL_SFLAG_FAST_WAKE_ON) ? 1U : 0U;
+        if (new_fw != s_fast_wake) {
+            s_fast_wake = new_fw;
+            s_wor_pause_s = 0U;
+            s_wor_empty_streak = 0U;
+            s_wor_backoff_s = WOR_BACKOFF_MIN_S;
+            s_fw_ack_flush = 1U;
+            s_dl_action = 1U;
+        }
     }
 
     wipe_bytes(dl_plain, (uint8_t)sizeof(dl_plain));
@@ -351,6 +384,9 @@ static uint8_t siren_poll_state(void) {
     if (s_cmd_ack != 0U) {
         st |= 0x04U;
     }
+    if (s_fast_wake != 0U) {
+        st |= SIREN_STATE_FAST_WAKE;
+    }
     return st;
 }
 
@@ -360,7 +396,58 @@ static void blink_tx_led(void) {
     hal_led_set(0U);
 }
 
-static int send_packet(uint8_t pkt_type, uint8_t pkt_arg, uint8_t listen_dl) {
+static void siren_radio_park(void) {
+    if (s_fast_wake != 0U && s_wor_pause_s == 0U && s_wor_cooldown_s == 0U) {
+        cc1101_enter_wor();
+        s_wor_active = 1U;
+    } else {
+        if (s_wor_active != 0U) {
+            cc1101_exit_wor_to_main();
+            s_wor_active = 0U;
+        }
+        cc1101_sleep();
+    }
+}
+
+static uint16_t read_tar_safe(void) {
+    uint16_t a = TAR;
+    uint16_t b = TAR;
+    while (a != b) {
+        a = b;
+        b = TAR;
+    }
+    return a;
+}
+
+static void wait_wor_align(uint16_t tar_start, uint8_t rx_in_ms) {
+    uint16_t target_ticks;
+    uint16_t acc = 0U;
+    uint16_t prev = tar_start;
+    uint32_t guard = 100000UL;
+
+    if (rx_in_ms == 0U) {
+        return;
+    }
+    if (hal_xtal_fault() != 0U) {
+        if (rx_in_ms > 22U) {
+            hal_delay_ms((uint16_t)(rx_in_ms - 22U));
+        }
+        return;
+    }
+    target_ticks = (uint16_t)(((uint32_t)rx_in_ms * 4096UL + 500UL) / 1000UL);
+    while (guard-- != 0UL) {
+        uint16_t now = read_tar_safe();
+        acc = (uint16_t)(acc + ((uint16_t)(now - prev) & 0x0FFFU));
+        prev = now;
+        if (acc >= target_ticks) {
+            break;
+        }
+        hal_wdt_feed();
+    }
+}
+
+static int send_packet_at(uint8_t pkt_type, uint8_t pkt_arg, uint8_t listen_dl,
+                          uint16_t tar_start, uint8_t rx_in_ms) {
     uint16_t batt_mv = hal_read_batt_mv();
     uint32_t ctr = 0UL;
     uint8_t frame[24];
@@ -378,7 +465,13 @@ static int send_packet(uint8_t pkt_type, uint8_t pkt_arg, uint8_t listen_dl) {
 
     build_uplink_frame(ctr, batt_mv, is_por, pkt_type, pkt_arg, frame);
 
-    cc1101_wake();
+    if (s_wor_active != 0U) {
+        cc1101_exit_wor_to_main();
+        s_wor_active = 0U;
+    } else {
+        cc1101_wake();
+    }
+    wait_wor_align(tar_start, rx_in_ms);
     tx_ok = cc1101_tx(frame);
     if (tx_ok == 0 && listen_dl != 0U) {
         uint8_t rx_frame[24];
@@ -394,7 +487,7 @@ static int send_packet(uint8_t pkt_type, uint8_t pkt_arg, uint8_t listen_dl) {
             rx_budget >>= 1;
         }
     }
-    cc1101_sleep();
+    siren_radio_park();
 
     if (tx_ok == 0) {
         blink_tx_led();
@@ -402,10 +495,35 @@ static int send_packet(uint8_t pkt_type, uint8_t pkt_arg, uint8_t listen_dl) {
     return tx_ok;
 }
 
-static void poll_with_ack_flush(void) {
-    (void)send_packet(PKT_TYPE_POLL, siren_poll_state(), 1U);
-    if (s_cmd_ack != 0U) {
+static int send_packet(uint8_t pkt_type, uint8_t pkt_arg, uint8_t listen_dl) {
+    return send_packet_at(pkt_type, pkt_arg, listen_dl, 0U, 0U);
+}
+
+static void poll_with_ack_flush_at(uint16_t tar_start, uint8_t rx_in_ms) {
+    (void)send_packet_at(PKT_TYPE_POLL, siren_poll_state(), 1U, tar_start, rx_in_ms);
+    if (s_cmd_ack != 0U || s_fw_ack_flush != 0U) {
+        s_fw_ack_flush = 0U;
         (void)send_packet(PKT_TYPE_POLL, siren_poll_state(), 1U);
+    }
+}
+
+static void poll_with_ack_flush(void) {
+    poll_with_ack_flush_at(0U, 0U);
+}
+
+static void wor_record_empty_wake(void) {
+    s_wor_calm_s = 0U;
+    s_wor_empty_streak++;
+    if (s_wor_empty_streak >= WOR_EMPTY_STRIKE_MAX) {
+        s_wor_pause_s = WOR_PAUSE_S;
+        s_wor_cooldown_s = 0U;
+        s_wor_empty_streak = 0U;
+        s_wor_backoff_s = WOR_BACKOFF_MIN_S;
+    } else {
+        s_wor_cooldown_s = s_wor_backoff_s;
+        s_wor_backoff_s = (s_wor_backoff_s <= (WOR_BACKOFF_MAX_S / 2U))
+                              ? (uint16_t)(s_wor_backoff_s * 2U)
+                              : WOR_BACKOFF_MAX_S;
     }
 }
 
@@ -450,6 +568,7 @@ int main(void) {
         hal_led_set(0U);
         sleep_seconds(BOOT_RECHECK_S);
     }
+    cc1101_wor_set_id(DEVICE_ID_STR);
 
     boot_battery_guard();
     ctr_boot(CTR_SEED);
@@ -469,6 +588,7 @@ int main(void) {
     for (;;) {
         uint16_t elapsed;
         uint8_t irq_flag;
+        uint8_t wor_flag;
         uint16_t poll_interval;
 
         hal_wdt_hold();
@@ -479,8 +599,10 @@ int main(void) {
         __nop();
         elapsed = g_ticks;
         irq_flag = g_tamper_irq;
+        wor_flag = g_wor_irq;
         g_ticks = 0U;
         g_tamper_irq = 0U;
+        g_wor_irq = 0U;
         __enable_interrupt();
 
         if (elapsed > 0U) {
@@ -502,6 +624,28 @@ int main(void) {
                     tamper_backoff = TAMPER_MIN_GAP_S;
                 } else {
                     tamper_calm = (uint16_t)(tamper_calm + elapsed);
+                }
+            }
+
+            if (s_wor_cooldown_s > elapsed) {
+                s_wor_cooldown_s = (uint16_t)(s_wor_cooldown_s - elapsed);
+            } else {
+                s_wor_cooldown_s = 0U;
+            }
+
+            if (s_wor_pause_s > elapsed) {
+                s_wor_pause_s = (uint16_t)(s_wor_pause_s - elapsed);
+            } else {
+                s_wor_pause_s = 0U;
+            }
+
+            if (s_wor_calm_s < WOR_CALM_S) {
+                if ((uint32_t)s_wor_calm_s + elapsed >= WOR_CALM_S) {
+                    s_wor_calm_s = WOR_CALM_S;
+                    s_wor_empty_streak = 0U;
+                    s_wor_backoff_s = WOR_BACKOFF_MIN_S;
+                } else {
+                    s_wor_calm_s = (uint16_t)(s_wor_calm_s + elapsed);
                 }
             }
 
@@ -527,6 +671,36 @@ int main(void) {
                     poll_ticks = 0U;
                     poll_with_ack_flush();
                 }
+            }
+        }
+
+        if (wor_flag != 0U) {
+            if (s_fast_wake != 0U && s_wor_active != 0U &&
+                s_wor_pause_s == 0U && s_wor_cooldown_s == 0U) {
+                uint16_t tar_start = read_tar_safe();
+                uint8_t rx_in_ms = 0U;
+                if (cc1101_wor_read(&rx_in_ms) == 0) {
+                    cc1101_exit_wor_to_main();
+                    s_wor_active = 0U;
+                    s_dl_action = 0U;
+                    s_wor_cooldown_s = WOR_COOLDOWN_CMD_S;
+                    poll_ticks = 0U;
+                    poll_with_ack_flush_at(tar_start, rx_in_ms);
+                    s_wor_calm_s = 0U;
+                    if (s_dl_action != 0U) {
+                        s_wor_empty_streak = 0U;
+                        s_wor_backoff_s = WOR_BACKOFF_MIN_S;
+                        s_wor_cooldown_s = WOR_COOLDOWN_CMD_S;
+                    } else {
+                        wor_record_empty_wake();
+                    }
+                    siren_radio_park();
+                } else {
+                    wor_record_empty_wake();
+                    siren_radio_park();
+                }
+            } else if (s_wor_active != 0U) {
+                siren_radio_park();
             }
         }
 
@@ -559,6 +733,12 @@ int main(void) {
                 s_temp_poll_cnt++;
                 send_temp_if_needed(0U);
             }
+        }
+
+        if (s_fast_wake != 0U && s_wor_active == 0U &&
+            s_wor_pause_s == 0U && s_wor_cooldown_s == 0U) {
+            cc1101_enter_wor();
+            s_wor_active = 1U;
         }
     }
 }

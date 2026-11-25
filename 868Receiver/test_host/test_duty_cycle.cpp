@@ -260,3 +260,49 @@ TEST(duty_cycle_lru_eviction_monotonic_totals_and_invalid_ids) {
     CHECK(!found2);
     CHECK(found5);
 }
+
+TEST(duty_cycle_gw_wake_b54_and_allow_gate) {
+    DutyCycleStatus st;
+    uint32_t t = 20000;
+
+    dutyCycleGetStatus(t, &st);
+    CHECK_EQ(st.gwB54WindowUs, 0ULL);
+    CHECK_EQ(st.gwB54_1hMs, 0U);
+    CHECK_EQ(st.gwB54PctTenths, 0U);
+    CHECK_EQ(st.gwB54Packets, 0U);
+    CHECK(dutyCycleAllowGwWake(t));
+
+    // One TX slice = 17 * 3335 us = 56,695 us (~57 ms) on Band 54; Band 50 unaffected
+    for (int i = 0; i < 17; i++) {
+        dutyCycleRecordGwWakeTx(t);
+    }
+    dutyCycleGetStatus(t, &st);
+    CHECK_EQ(st.gwB54Packets, 17U);
+    CHECK_EQ(st.gwB54WindowUs, 56695ULL);
+    CHECK_EQ(st.gwB54_1hMs, 57U);
+    CHECK_EQ(st.gwTx1hUs, 0ULL);
+    CHECK(dutyCycleAllowGwWake(t));
+
+    // Push up to 107,466 * 3335 = 358,399,110 us: + 1,600,000 = 359,999,110 < 360,000,000 (allowed)
+    for (uint32_t i = 17; i < 107466UL; i++) {
+        dutyCycleRecordGwWakeTx(t);
+    }
+    dutyCycleGetStatus(t, &st);
+    CHECK_EQ(st.gwB54WindowUs, 358399110ULL);
+    CHECK(dutyCycleAllowGwWake(t));
+
+    // 107,467th packet -> 358,402,445 + 1,600,000 = 360,002,445 >= 360,000,000 (blocked)
+    dutyCycleRecordGwWakeTx(t);
+    dutyCycleGetStatus(t, &st);
+    CHECK_EQ(st.gwB54WindowUs, 358402445ULL);
+    CHECK_EQ(st.gwB54PctTenths, 995U);
+    CHECK(!dutyCycleAllowGwWake(t));
+
+    // 70 minutes later: sliding window rotates out and allows wake bursts again
+    t += 7UL * DUTY_BUCKET_MS;
+    dutyCycleTick(t);
+    dutyCycleGetStatus(t, &st);
+    CHECK_EQ(st.gwB54WindowUs, 0ULL);
+    CHECK_EQ(st.gwB54_1hMs, 0U);
+    CHECK(dutyCycleAllowGwWake(t));
+}

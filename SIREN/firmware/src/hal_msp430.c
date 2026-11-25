@@ -9,6 +9,7 @@
 
 volatile uint16_t g_ticks = 0U;
 volatile uint8_t g_tamper_irq = 0U;
+volatile uint8_t g_wor_irq = 0U;
 uint8_t g_xtal_fault = 0U;
 
 static uint8_t s_reset_cause = 0U;
@@ -203,7 +204,7 @@ void hal_sleep_lpm3(uint8_t expected_sw1) {
     __disable_interrupt();
     __nop();
     hal_sw1_arm_irq(expected_sw1);
-    if (g_ticks == 0U && g_tamper_irq == 0U && hal_read_sw1() == expected_sw1) {
+    if (g_ticks == 0U && g_tamper_irq == 0U && g_wor_irq == 0U && hal_read_sw1() == expected_sw1) {
         if (g_xtal_fault != 0U) {
             __bis_SR_register(LPM0_bits | GIE);
         } else {
@@ -357,6 +358,17 @@ void hal_sw1_arm_irq(uint8_t current_level) {
     P1IE |= BIT6;
 }
 
+void hal_wor_arm_irq(uint8_t enable) {
+    P2IE &= (uint8_t)~BIT7;
+    if (enable != 0U) {
+        P2IES |= BIT7;
+        P2IFG &= (uint8_t)~BIT7;
+        P2IE |= BIT7;
+    } else {
+        P2IFG &= (uint8_t)~BIT7;
+    }
+}
+
 void hal_wdt_hold(void) {
     WDTCTL = WDTPW | WDTHOLD;
 }
@@ -401,6 +413,14 @@ void port1_isr(void) {
     P1IE &= (uint8_t)~BIT6;
     P1IFG = 0x00U;
     g_tamper_irq = 1U;
+    __bic_SR_register_on_exit(LPM3_bits);
+}
+
+__attribute__((interrupt(PORT2_VECTOR)))
+void port2_isr(void) {
+    P2IE &= (uint8_t)~BIT7;
+    P2IFG &= (uint8_t)~BIT7;
+    g_wor_irq = 1U;
     __bic_SR_register_on_exit(LPM3_bits);
 }
 

@@ -316,7 +316,9 @@ static void answerSirenPoll(const VerisureTelemetry& t, uint32_t frameStartUs) {
     uint8_t cmd = downlinkCommandForPoll(t.deviceId, state, &first, &map);
     uint8_t dur = (uint8_t)(first & 0xFFU);
     uint8_t tone = (cmd == DOWNLINK_CMD_SIREN_ON) ? (uint8_t)(first >> 8) : 0;
-    downlinkBuildPlain(t.counter, armed, cmd, dur, map, plain, 0, tone);
+    uint8_t sirenFlags = DL_SFLAG_FAST_WAKE_VALID |
+                         (downlinkGetSirenFastWake(t.deviceId) ? DL_SFLAG_FAST_WAKE_ON : 0);
+    downlinkBuildPlain(t.counter, armed, cmd, dur, map, plain, 0, tone, sirenFlags);
     memcpy(pkt, t.deviceId, 8);
     bool ok = cryptoEncryptPayload(key, plain, &pkt[8]);
     memset(key, 0, sizeof(key));
@@ -329,6 +331,7 @@ static void answerSirenPoll(const VerisureTelemetry& t, uint32_t frameStartUs) {
         Serial.printf("[Downlink] %s: siren poll answer not queued (radio command queue full)\n", t.deviceId);
         return;
     }
+    radioCancelWake(t.deviceId);
     g_radioLoopDiag.pollAnswers++;
     Serial.printf("[Downlink] -> %s (siren): armed %d, cmd 0x%02X (dur %u s, tone %u, poll %lu, state 0x%02X)\n",
                   t.deviceId, armed ? 1 : 0, cmd, (unsigned)dur, (unsigned)tone, (unsigned long)t.counter, state);
@@ -476,18 +479,19 @@ static void handleRadioFrame(const RadioFrame& item) {
                     if (prev) telem.batteryLoadMv = prev->lastTelem.batteryLoadMv;
                 }
             } else if (haIsSirenSensor(telem.deviceId)) {
+                const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
                 if (telem.rawP0 == DOWNLINK_POLL_MARKER) {
+                    telem.fastWakeState = (telem.rawP1 & SIREN_STATE_FAST_WAKE) ? 2 : 1;
                     answerSirenPoll(telem, item.startUs);
+                } else if (prev) {
+                    telem.fastWakeState = prev->lastTelem.fastWakeState;
                 }
                 if (telem.rawP0 == 0xB6 && telem.rawP1 != 0xFF) {
                     telem.hasTemp = true;
                     telem.tempC = (telem.rawP1 * 0.5f) - 40.0f;
-                } else {
-                    const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
-                    if (prev && prev->hasTemp) {
-                        telem.hasTemp = true;
-                        telem.tempC = prev->tempC;
-                    }
+                } else if (prev && prev->hasTemp) {
+                    telem.hasTemp = true;
+                    telem.tempC = prev->tempC;
                 }
             }
             packetCount++;
@@ -673,15 +677,25 @@ void loop() {
     }
     {
         static uint32_t s_lastGwTxCount = 0;
+        static uint32_t s_lastGwWakeCount = 0;
         const uint32_t curTx = g_radioStatus.txCount;
+        const uint32_t curWake = g_radioStatus.txWakeCount;
         const uint32_t delta = (uint32_t)(curTx - s_lastGwTxCount);
+        const uint32_t wakeDelta = (uint32_t)(curWake - s_lastGwWakeCount);
         const uint32_t dutyNow = (uint32_t)millis();
         if (delta > 0) {
             for (uint32_t i = 0; i < delta; i++) {
                 dutyCycleRecordGwTx(dutyNow);
             }
             s_lastGwTxCount = curTx;
-        } else {
+        }
+        if (wakeDelta > 0) {
+            for (uint32_t i = 0; i < wakeDelta; i++) {
+                dutyCycleRecordGwWakeTx(dutyNow);
+            }
+            s_lastGwWakeCount = curWake;
+        }
+        if (delta == 0 && wakeDelta == 0) {
             dutyCycleTick(dutyNow);
         }
     }
