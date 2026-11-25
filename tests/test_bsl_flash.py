@@ -167,8 +167,8 @@ def test_prepare_flash_chunks_alignment_and_padding():
     ]
 
 
-def test_prepare_flash_chunks_splits_240_and_skips_blank():
-    mem = {0x1100 + i: 0xFF for i in range(240)}
+def test_prepare_flash_chunks_splits_default_96_and_skips_blank():
+    mem = {0x1100 + i: 0xFF for i in range(96)}
     for i in range(500):
         mem[0x1200 + i] = i & 0xFF
     mem[0xFFFE] = 0x00
@@ -176,6 +176,17 @@ def test_prepare_flash_chunks_splits_240_and_skips_blank():
 
     chunks = bsl_flash.prepare_flash_chunks(mem)
     assert [(addr, len(data)) for addr, data in chunks] == [
+        (0x1200, 96),
+        (0x1260, 96),
+        (0x12C0, 96),
+        (0x1320, 96),
+        (0x1380, 96),
+        (0x13E0, 20),
+        (0xFFFE, 2),
+    ]
+
+    chunks_240 = bsl_flash.prepare_flash_chunks(mem, max_chunk=240)
+    assert [(addr, len(data)) for addr, data in chunks_240] == [
         (0x1200, 240),
         (0x12F0, 240),
         (0x13E0, 20),
@@ -226,6 +237,8 @@ class FakeBridgeSerial:
         locked: bool = True,
         bsl_ver: int = 0x0160,
         stub_status: int = 0xCAFE,
+        stub_statuses: list[int] | None = None,
+        corrupt_readback_once_addrs: list[int] | None = None,
         probe_err: str = "ERR SHORT A0",
     ) -> None:
         self.commands: list[str] = []
@@ -241,6 +254,10 @@ class FakeBridgeSerial:
         self.locked = locked
         self.bsl_ver = bsl_ver
         self.stub_status = stub_status
+        self.stub_statuses = list(stub_statuses) if stub_statuses is not None else []
+        self.corrupt_readback_once_addrs = (
+            list(corrupt_readback_once_addrs) if corrupt_readback_once_addrs is not None else []
+        )
         self.probe_err = probe_err
         self.load_pc_dsts: list[int] = []
         self.synced = False
@@ -330,6 +347,9 @@ class FakeBridgeSerial:
                     data = bytes(self.ram[addr + i] for i in range(length))
                 else:
                     data = bytes(self.flash[addr + i] for i in range(length))
+                    if addr in self.corrupt_readback_once_addrs:
+                        self.corrupt_readback_once_addrs.remove(addr)
+                        data = bytes([data[0] ^ 0xFF]) + data[1:]
                 return f"OK {_make_rx_frame(data).hex().upper()}\r\n".encode("ascii")
             if cmd == 0x1A:
                 addr = frame[4] | (frame[5] << 8)
@@ -342,8 +362,9 @@ class FakeBridgeSerial:
                 self.load_pc_dsts.append(dst)
                 for i in range(words * 2):
                     self.flash[dst + i] &= self.ram[0x0400 + i]
-                self.ram[0x03F4] = self.stub_status & 0xFF
-                self.ram[0x03F5] = (self.stub_status >> 8) & 0xFF
+                st = self.stub_statuses.pop(0) if self.stub_statuses else self.stub_status
+                self.ram[0x03F4] = st & 0xFF
+                self.ram[0x03F5] = (st >> 8) & 0xFF
                 self.locked = True
                 return b"OK 90\r\n"
         raise AssertionError(f"Unexpected bridge command: {line!r}")
@@ -456,8 +477,64 @@ def test_flash_v110_raises_if_stub_status_not_cafe(monkeypatch):
     chunks = [(0x1100, b"\x12\x34"), (0xFFFE, b"\x00\x11")]
 
     with pytest.raises(bsl_flash.BslError, match="status=0xDEAD"):
-        bsl_flash.run_flash(bridge, chunks, verify=True)
+        bsl_flash.run_flash(bridge, chunks, verify=False)
 
+    assert fake.load_pc_dsts == [0x1100, 0x1100, 0x1100]
+    assert fake.commands[-1] == "RELEASE"
+
+
+def test_flash_v110_verify_succeeds_even_if_03f4_clobbered(monkeypatch):
+    monkeypatch.setattr(bsl_flash.time, "sleep", lambda _s: None)
+    fake = FakeBridgeSerial(locked=True, bsl_ver=0x0110, stub_status=0x0004)
+    bridge = bsl_flash.BslBridge(fake)
+    chunks = [
+        (0x1100, b"\x12\x34"),
+        (0x8000, b"\xaa\xbb"),
+        (0xFFFE, b"\x00\x11"),
+    ]
+
+    chip_id, bsl_ver, _ = bsl_flash.run_flash(bridge, chunks, verify=True)
+    assert chip_id == 0xF149
+    assert bsl_ver == 0x0110
+    assert fake.load_pc_dsts == [0x1100, 0x8000, 0xFFFE]
+    assert fake.flash[0x1100] == 0x12
+    assert fake.flash[0x8000] == 0xAA
+    assert fake.flash[0xFFFE] == 0x00
+    assert fake.commands[-1] == "RELEASE"
+
+
+def test_flash_v110_retries_transient_stub_status_and_readback_mismatch(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(bsl_flash.time, "sleep", lambda s: sleeps.append(s))
+    fake = FakeBridgeSerial(
+        locked=True,
+        bsl_ver=0x0110,
+        stub_statuses=[0x0000, 0xCAFE, 0xCAFE, 0xCAFE],
+        corrupt_readback_once_addrs=[0x1100, 0x8000],
+    )
+    bridge = bsl_flash.BslBridge(fake)
+    chunks = [
+        (0x1100, b"\x12\x34"),
+        (0x8000, b"\xaa\xbb"),
+        (0xFFFE, b"\x00\x11"),
+    ]
+
+    chip_id, bsl_ver, _ = bsl_flash.run_flash(bridge, chunks, verify=True)
+    assert chip_id == 0xF149
+    assert bsl_ver == 0x0110
+
+    # 0x1100 retried once (mismatch + status=0x0000); 0x8000 retried once (mismatch + status=0xCAFE); 0xFFFE once
+    assert fake.load_pc_dsts == [0x1100, 0x1100, 0x8000, 0x8000, 0xFFFE]
+    stub_uploads = [
+        f
+        for f in fake.xfer_frames
+        if f[1] == 0x12 and (f[4] | (f[5] << 8)) == 0x0300 and f[8:-2] == bsl_flash.BSL_V110_RAM_STUB
+    ]
+    assert len(stub_uploads) == 3  # initial upload + 2 retries
+    assert any(s >= 0.05 for s in sleeps)
+    assert fake.flash[0x1100] == 0x12
+    assert fake.flash[0x8000] == 0xAA
+    assert fake.flash[0xFFFE] == 0x00
     assert fake.commands[-1] == "RELEASE"
 
 

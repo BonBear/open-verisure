@@ -14,13 +14,13 @@ uint8_t g_xtal_fault = 0U;
 static uint8_t s_reset_cause = 0U;
 
 static void gpio_init_safe(void) {
-    /* Port 1: P1.7 (IC9 boost) = OUT 0, P1.4 (Q3 audio, active-LOW) = OUT 1 (OFF),
+    /* Port 1: P1.7 (IC9 boost) = IN (Hi-Z, keeps IC9 OFF without 12 mA sink), P1.4 (Q3 audio, active-LOW) = OUT 1 (OFF),
      * P1.6 (SW1) = IN, all other P1 pins = OUT 0. MSP430F149 has no PxREN; never drive P1.6 HIGH. */
     P1IE = 0x00U;
     P1IFG = 0x00U;
     P1SEL = 0x00U;
     P1OUT = BIT4;
-    P1DIR = (uint8_t)~BIT6;
+    P1DIR = (uint8_t)~(BIT6 | BIT7);
 
     /* Port 2: P2.6 (GDO0) & P2.7 (GDO2) = inputs only; P2.0..P2.5 = OUT 0. */
     P2IE = 0x00U;
