@@ -438,6 +438,8 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     outTelem->rawRst     = hasCtr ? (flags >> 6) : plain[15];   // with the counter: reset cause in flags[7:6]
     outTelem->counter    = hasCtr ? ctr : seq;
     outTelem->hasCounter = hasCtr;
+    outTelem->tempC      = 0.0f;
+    outTelem->hasTemp    = false;
     outTelem->rssi       = rssi;
     outTelem->lqi        = lqi;
     outTelem->valid      = true;

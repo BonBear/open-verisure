@@ -40,6 +40,8 @@ def test_all_under_prefix(package):
     "VerisureDoorSensor/main.c", "VerisureDoorSensor/config.h.example",
     "VerisureDoorSensor/build_and_flash.py", "MD_CAM/build_and_flash_md_cam.py",
     "MD_CAM/firmware/config.h.example",
+    "SIREN/firmware/platformio.ini", "SIREN/firmware/src/main.c",
+    "tools/esp32_msp430_bsl/bsl_flash.py",
 ])
 def test_expected_files(package, path):
     _, name, names = package
@@ -56,8 +58,8 @@ def test_expected_dirs(package, d):
 
 
 @pytest.mark.parametrize("path", [
-    "TODO.md", "AGENTS.md", "SIREN/", "MD_CAM/docs/", "VerisureDoorSensor/docs/", ".github/",
-    "tests/", "release/",
+    "TODO.md", "AGENTS.md", "SIREN/re_worksheet.md",
+    "MD_CAM/docs/", "VerisureDoorSensor/docs/", ".github/", "tests/", "release/",
 ])
 def test_left_out(package, path):
     _, name, names = package

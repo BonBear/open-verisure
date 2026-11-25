@@ -35,6 +35,9 @@
  *  IMG_MAX_CAMERAS (picture slots) must equal it. */
 #define DOWNLINK_MAX_CAMERAS  4
 
+/** Total concurrent devices (cameras + sirens) with a downlink slot. */
+#define DOWNLINK_MAX_DEVICES  8
+
 /** Battery voltage under load from a poll's state byte, in mV (0 = unknown). */
 static inline uint16_t downlinkLoadMv(uint8_t state) {
     uint8_t v = state >> DOWNLINK_STATE_LOAD_SHIFT;

@@ -309,3 +309,34 @@ TEST(downlink_siren_tone_queueing_and_out9_encoding) {
     CHECK_EQ(plain[8], 60);
     CHECK_EQ(plain[9], 0);
 }
+
+TEST(downlink_supports_eight_concurrent_devices) {
+    downlinkInit();
+    const char* ids[DOWNLINK_MAX_DEVICES] = {
+        "2NCE0001", "2NCE0002", "2NCE0003", "2NCE0004",
+        "2S5F0001", "2S5F0002", "2S5F0003", "2S5F0004",
+    };
+    for (int i = 0; i < 4; i++) {
+        REQUIRE(downlinkRequestPicture(ids[i], 0xD1));
+    }
+    for (int i = 4; i < DOWNLINK_MAX_DEVICES; i++) {
+        REQUIRE(downlinkRequestSiren(ids[i], true, (uint8_t)(10 + i), (uint8_t)(i - 3)));
+    }
+    // 9th distinct device is rejected while all 8 slots are occupied
+    CHECK(!downlinkRequestSiren("2S5F0005", true, 30, 0));
+
+    uint16_t first = 0;
+    uint32_t map = 0;
+    for (int i = 0; i < 4; i++) {
+        CHECK_EQ(downlinkCommandForPoll(ids[i], 0, &first, &map), 0xD1);
+        CHECK_EQ(downlinkCommandForPoll(ids[i], DOWNLINK_STATE_ACK, &first, &map), 0);
+    }
+    for (int i = 4; i < DOWNLINK_MAX_DEVICES; i++) {
+        CHECK_EQ(downlinkCommandForPoll(ids[i], 0, &first, &map), DOWNLINK_CMD_SIREN_ON);
+        CHECK_EQ((uint8_t)(first & 0xFFU), (uint8_t)(10 + i));
+        CHECK_EQ((uint8_t)(first >> 8), (uint8_t)(i - 3));
+        CHECK_EQ(downlinkCommandForPoll(ids[i], DOWNLINK_STATE_ACK, &first, &map), 0);
+    }
+    // Slots freed after ACK
+    CHECK(downlinkRequestSiren("2S5F0005", true, 30, 0));
+}

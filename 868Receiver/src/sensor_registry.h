@@ -24,6 +24,8 @@ struct SensorRecord {
     unsigned long firstSeenMs;   /**< Uptime millis when first packet was received */
     unsigned long lastSeenMs;    /**< Uptime millis when last packet arrived */
     uint32_t packetCount;        /**< Cumulative packet counter for this device */
+    bool hasTemp;                /**< True when tempC holds a valid decoded temperature */
+    float tempC;                 /**< Most recent temperature in deg C (from 0xB6 packet) */
 };
 
 /**

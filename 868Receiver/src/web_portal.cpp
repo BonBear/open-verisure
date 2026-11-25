@@ -167,13 +167,14 @@ button.danger:hover { background: #b91c1c; }
             <th>Shock</th>
             <th>Tamper</th>
             <th>Battery</th>
+            <th>Temp</th>
             <th>Signal</th>
             <th>Sequence</th>
             <th>Last Seen</th>
           </tr>
         </thead>
         <tbody id="sensors-table-body">
-          <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">Waiting for radio signal from sensors...</td></tr>
+          <tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 20px;">Waiting for radio signal from sensors...</td></tr>
         </tbody>
       </table>
     </div>
@@ -191,6 +192,37 @@ button.danger:hover { background: #b91c1c; }
     <button type="button" onclick="takePicture('D1')">Take picture</button>
     <button type="button" class="secondary" onclick="takePicture('D4')">Flash picture</button>
     <div style="color:var(--text-muted); font-size:12px; margin-top:6px;">The camera picks the request up with its next poll (every ~30 s armed, ~2 min disarmed).</div>
+  </div>
+
+  <!-- Sirens (shown once one or more sirens have been heard) -->
+  <div id="siren-card" class="card" style="display:none;">
+    <h2>&#128266; Siren Control</h2>
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div class="form-group">
+        <label for="siren-select">Siren Device</label>
+        <select id="siren-select" onchange="updateSirenInfo()"></select>
+      </div>
+      <div class="form-group">
+        <label for="siren-tone">Tone</label>
+        <select id="siren-tone">
+          <option value="alarm">alarm (continuous 2 s burst)</option>
+          <option value="ding_dong">ding_dong (bell)</option>
+          <option value="chime">chime (2-tone)</option>
+          <option value="double_beep">double_beep</option>
+          <option value="beep">beep</option>
+          <option value="tone">tone (2.1 kHz)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="siren-dur">Duration (s, optional for chimes)</label>
+        <input type="number" id="siren-dur" min="0" max="180" placeholder="Auto (60s alarm / 1-shot chime)">
+      </div>
+    </div>
+    <div id="siren-info" style="color:var(--text-muted); font-size:13px; margin-bottom:8px;"></div>
+    <div id="siren-msg" style="font-size:13px; margin-bottom:8px;"></div>
+    <button type="button" class="danger" onclick="controlSiren('ON')">Trigger</button>
+    <button type="button" class="secondary" onclick="controlSiren('OFF')">Stop</button>
+    <div style="color:var(--text-muted); font-size:12px; margin-top:6px;">The siren picks the command up on its next poll (5 s while sounding, 30 s armed, 2 min disarmed).</div>
   </div>
 
   <!-- Gateway Configuration -->
@@ -459,23 +491,27 @@ async function fetchStatus() {
     // Render sensor table
     const tbody = document.getElementById('sensors-table-body');
     if (data.sensors.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 20px;">Waiting for radio signal from sensors...</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 20px;">Waiting for radio signal from sensors...</td></tr>';
     } else {
       let rows = '';
       data.sensors.forEach(s => {
         const magBadge = s.camera
           ? (s.magnet ? '<span class="badge badge-alarm">MOTION</span>' : '<span class="badge badge-ok">No motion</span>')
-          : (s.magnet ? '<span class="badge badge-alarm">OPEN (ALARM)</span>' : '<span class="badge badge-ok">CLOSED</span>');
-        const shockBadge = s.camera ? '&mdash;'
+          : (s.siren
+              ? (s.magnet ? '<span class="badge badge-alarm">SOUNDING</span>' : '<span class="badge badge-ok">Idle</span>')
+              : (s.magnet ? '<span class="badge badge-alarm">OPEN (ALARM)</span>' : '<span class="badge badge-ok">CLOSED</span>'));
+        const shockBadge = (s.camera || s.siren) ? '&mdash;'
           : (s.shock ? '<span class="badge badge-alarm">SHOCK!</span>' : '<span class="badge badge-ok">Clear</span>');
         const btnBadge = s.button ? '<span class="badge badge-alarm">TAMPER</span>' : (s.power_on ? '<span class="badge badge-ap">Power-On</span>' : 'Normal');
         const battBadge = s.low_battery ? '<span style="color:var(--danger)">' + s.battery_mv + ' mV (' + s.battery_pct + '%)</span>' : s.battery_mv + ' mV (' + s.battery_pct + '%)';
+        const tempCell = (s.temperature_c !== undefined) ? (Number(s.temperature_c).toFixed(1) + ' &deg;C') : '&mdash;';
         rows += `<tr>
           <td><strong>${s.id}</strong></td>
           <td>${magBadge}</td>
           <td>${shockBadge}</td>
           <td>${btnBadge}</td>
           <td>${battBadge}</td>
+          <td>${tempCell}</td>
           <td>${s.rssi} dBm (LQI ${s.lqi})</td>
           <td>#${s.seq}</td>
           <td>${s.last_seen_sec}s ago</td>
@@ -484,6 +520,7 @@ async function fetchStatus() {
       tbody.innerHTML = rows;
     }
     updateCamera(data);
+    updateSirens(data);
   } catch (err) {
     console.error(err);
   }
@@ -513,6 +550,66 @@ async function takePicture(cmd) {
     if (res.ok) camLoaded = Date.now() - 5000;   // look again in ~10 s
   } catch (err) {
     info.textContent = 'Request failed.';
+  }
+}
+
+let sirenList = [];
+function updateSirens(data) {
+  sirenList = data.sensors.filter(s => s.siren || (s.id && s.id.startsWith('2S5F')));
+  const card = document.getElementById('siren-card');
+  card.style.display = sirenList.length ? 'block' : 'none';
+  if (!sirenList.length) return;
+  const sel = document.getElementById('siren-select');
+  const prev = sel.value;
+  const existing = Array.from(sel.options).map(o => o.value).join(',');
+  const next = sirenList.map(s => s.id).join(',');
+  if (existing !== next) {
+    sel.innerHTML = '';
+    sirenList.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.id;
+      sel.appendChild(opt);
+    });
+    if (prev && sirenList.some(s => s.id === prev)) sel.value = prev;
+  }
+  updateSirenInfo();
+}
+
+function updateSirenInfo() {
+  const sel = document.getElementById('siren-select');
+  const s = sirenList.find(x => x.id === sel.value);
+  const info = document.getElementById('siren-info');
+  if (!s) { info.textContent = ''; return; }
+  const temp = (s.temperature_c !== undefined) ? (' | temp ' + Number(s.temperature_c).toFixed(1) + ' \u00B0C') : '';
+  info.textContent = s.id + ': ' + (s.magnet ? 'SOUNDING' : 'Idle') + temp + ' | last poll ' + s.last_seen_sec + ' s ago';
+}
+
+async function controlSiren(state) {
+  const id = document.getElementById('siren-select').value;
+  if (!id) return;
+  const tone = document.getElementById('siren-tone').value;
+  const dur = document.getElementById('siren-dur').value.trim();
+  const msg = document.getElementById('siren-msg');
+  let url = '/api/siren?id=' + encodeURIComponent(id) + '&state=' + encodeURIComponent(state);
+  if (state === 'ON') {
+    url += '&tone=' + encodeURIComponent(tone);
+    if (dur !== '') url += '&duration=' + encodeURIComponent(dur);
+  }
+  try {
+    const res = await post(url);
+    let reply = {};
+    try { reply = await res.json(); } catch (e) {}
+    if (res.ok && reply.ok) {
+      msg.style.color = 'var(--success)';
+      msg.textContent = (state === 'ON' ? ('Queued ' + tone + (dur !== '' ? (' (' + dur + ' s)') : '')) : 'Queued STOP') + ' for ' + id + '.';
+    } else {
+      msg.style.color = 'var(--danger)';
+      msg.textContent = reply.error || 'Siren request failed.';
+    }
+  } catch (err) {
+    msg.style.color = 'var(--danger)';
+    msg.textContent = 'Siren request failed.';
   }
 }
 
@@ -957,6 +1054,12 @@ static void handleApiStatus() {
         json += "{";
         json += "\"id\":\"" + String(rec->lastTelem.deviceId) + "\",";
         json += "\"camera\":" + String(haIsMotionCameraSensor(rec->lastTelem.deviceId) ? "true" : "false") + ",";
+        json += "\"siren\":" + String(haIsSirenSensor(rec->lastTelem.deviceId) ? "true" : "false") + ",";
+        if (rec->hasTemp) {
+            char tbuf[12];
+            snprintf(tbuf, sizeof(tbuf), "%.1f", rec->tempC);
+            json += "\"temperature_c\":" + String(tbuf) + ",";
+        }
         json += "\"seq\":" + String(rec->lastTelem.counter) + ",";
         json += "\"magnet\":" + String(rec->lastTelem.isOpen ? "true" : "false") + ",";
         json += "\"shock\":" + String(rec->lastTelem.isShock ? "true" : "false") + ",";
@@ -1202,6 +1305,65 @@ static void handleApiPicture() {
     s_server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// POST /api/siren?id=<siren>&state=ON|OFF[&tone=alarm|ding_dong|chime|double_beep|beep|tone][&duration=0..180]
+static void handleApiSiren() {
+    if (!authorize(ACCESS_WRITE)) return;
+    String devId = s_server.arg("id");
+    String state = s_server.arg("state");
+    bool ok = devId.length() == 8 && haIsSirenSensor(devId.c_str());
+    for (unsigned i = 0; ok && i < devId.length(); i++) ok = isalnum((unsigned char)devId[i]);
+    if (!ok || (state != "ON" && state != "OFF")) {
+        s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Need id=<siren ID> and state=ON|OFF\"}");
+        return;
+    }
+
+    bool isOn = (state == "ON");
+    uint8_t toneId = 0;
+    if (s_server.hasArg("tone") && s_server.arg("tone").length() > 0) {
+        String tone = s_server.arg("tone");
+        static const char* const kTones[] = {
+            "alarm", "ding_dong", "chime", "double_beep", "beep", "tone"
+        };
+        bool matched = false;
+        for (uint8_t i = 0; i < (uint8_t)(sizeof(kTones) / sizeof(kTones[0])); i++) {
+            if (tone == kTones[i]) {
+                toneId = i;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid tone\"}");
+            return;
+        }
+    }
+
+    uint8_t dur = (toneId == 0) ? 60 : 0;
+    if (s_server.hasArg("duration") && s_server.arg("duration").length() > 0) {
+        String durStr = s_server.arg("duration");
+        for (unsigned i = 0; i < durStr.length(); i++) {
+            if (!isdigit((unsigned char)durStr[i])) {
+                s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid duration\"}");
+                return;
+            }
+        }
+        long rawDur = durStr.toInt();
+        if (rawDur < 0 || rawDur > DOWNLINK_SIREN_MAX_SEC) {
+            s_server.send(400, "application/json", "{\"ok\":false,\"error\":\"Duration must be 0..180\"}");
+            return;
+        }
+        dur = (uint8_t)rawDur;
+    }
+
+    if (!downlinkRequestSiren(devId.c_str(), isOn, dur, toneId)) {
+        s_server.send(503, "application/json", "{\"ok\":false,\"error\":\"Request table full\"}");
+        return;
+    }
+    Serial.printf("[WebPortal] Siren %s (%u s, tone %u) requested for %s\n",
+                  isOn ? "ON" : "OFF", (unsigned)dur, (unsigned)toneId, devId.c_str());
+    s_server.send(200, "application/json", "{\"ok\":true}");
+}
+
 /* POST /api/ota: firmware update. The image is the raw request body (Content-Type
  * application/octet-stream, Content-Length required), optional header X-OTA-MD5: <32 hex>.
  * The GuardedWebServer hands the body over in ~1.4 kB pieces (handleApiOtaBody) and calls
@@ -1350,6 +1512,7 @@ void webPortalInit() {
     s_server.on("/api/camera_large.jpg", HTTP_GET, handleApiCameraLargeJpg);
     s_server.on("/api/camera_test", HTTP_POST, handleApiCameraTest);
     s_server.on("/api/picture", HTTP_POST, handleApiPicture);
+    s_server.on("/api/siren", HTTP_POST, handleApiSiren);
     s_server.onRawUpload("/api/ota", HTTP_POST, handleApiOta, handleApiOtaBody);   // the only route exempt from the 3 s request deadline
 
     // Captive portal probes

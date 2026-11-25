@@ -71,6 +71,8 @@ struct VerisureTelemetry {
     uint8_t rawRst;         /**< Diagnostic: Microcontroller reset reason from SLEEP register */
     uint32_t counter;       /**< 32-bit persistent counter (flag 0x20), else the 16-bit seq */
     bool hasCounter;        /**< The packet carried the persistent counter (flag 0x20) */
+    float tempC;            /**< Decoded temperature in deg C (from 0xB6 packet or cached) */
+    bool hasTemp;           /**< True when tempC holds a valid temperature reading */
     bool valid;             /**< True if packet passed authentication, decryption and replay check */
 };
 

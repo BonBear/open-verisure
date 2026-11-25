@@ -10,7 +10,9 @@ static SensorRecord s_sensors[MAX_SENSORS];
 static int s_count = 0;
 
 void sensorRegistryInit() {
-    memset(s_sensors, 0, sizeof(s_sensors));
+    for (int i = 0; i < MAX_SENSORS; i++) {
+        s_sensors[i] = SensorRecord{};
+    }
     s_count = 0;
 }
 
@@ -23,6 +25,10 @@ void sensorRegistryUpdate(const VerisureTelemetry& telem) {
             s_sensors[i].lastTelem = telem;
             s_sensors[i].lastSeenMs = millis();
             s_sensors[i].packetCount++;
+            if (telem.hasTemp) {
+                s_sensors[i].hasTemp = true;
+                s_sensors[i].tempC = telem.tempC;
+            }
             return;
         }
     }
@@ -35,6 +41,8 @@ void sensorRegistryUpdate(const VerisureTelemetry& telem) {
         s_sensors[idx].firstSeenMs = millis();
         s_sensors[idx].lastSeenMs = millis();
         s_sensors[idx].packetCount = 1;
+        s_sensors[idx].hasTemp = telem.hasTemp;
+        s_sensors[idx].tempC = telem.tempC;
         Serial.printf("[Registry] Registered new sensor: %s (Total: %d)\n", telem.deviceId, s_count);
     } else {
         Serial.printf("[Registry] Warning: Registry full (%d sensors), ignoring new node %s\n",
