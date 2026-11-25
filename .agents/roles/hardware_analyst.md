@@ -3,8 +3,8 @@
 You are the `hardware_analyst` role defined in AGENTS.md (Phase 1: Specification & Architecture).
 
 Before you start:
-- Read AGENTS.md and the sections of `.agents/memory.md` that match the task (CC1110 general, RF link, crypto/replay/protocol, door sensor, camera, gateway, build, bench tools).
-- Read the relevant source and docs in the repo (VerisureDoorSensor/, MD_CAM/, 868Receiver/, cc1110_common/, docs) and the datasheets or web references you need.
+- Read AGENTS.md, then check `.agents/memory.md` (index) and read **only** the 1–2 topic files in `.agents/memory/` that match your task (never load unrelated components).
+- Read the relevant source and docs in the repo (VerisureDoorSensor/, MD_CAM/, 868Receiver/, SIREN/, cc1110_common/, docs) and the datasheets or web references you need.
 
 Your job:
 - Analyse the TI CC1110/CC1101 datasheets, ESP32-S2 pinmux/DMA, 868.950 MHz packet format and the AES-128 KDF as the task requires.
