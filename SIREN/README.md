@@ -11,28 +11,26 @@ still to be taken go in [re_worksheet.md](re_worksheet.md); the cross-device ove
 | :--- | :--- | :--- | :--- |
 | IC1 | `TI 44C1PCWG4 M430F149 REV S` (LQFP-64) | **TI MSP430F149** (60 KB flash, 2 KB RAM) | Confirmed |
 | IC3 | QFN-20 | **TI CC1101** sub-GHz transceiver | Confirmed (close-up) |
-| XT1 | not readable | CC1101 crystal: 27.000 MHz like the door sensor, or 26 MHz | To measure |
+| XT1 | `26.000` | **26.000 MHz** CC1101 crystal (same as gateway; use `--xtal-mhz 26`) | Confirmed |
 | IC2 | `L22901-707 OKI JAPAN 3285F01J` (SSOP-30) | **OKI ML22 family speech-synthesis LSI** (assumed); plays the stored siren tones / voice | Marking confirmed, function assumed |
-| XT2 | not readable | Clock for IC2 | To measure |
-| IC5 | `2115 E58 JRC` (MSOP-8) | NJM2115 dual op-amp (assumed) | Assumption |
-| IC9 | MSOP/TSSOP-8 next to a 100 µH inductor and 2x 47 µF | Boost converter for the horn supply (assumed) | Assumption |
-| Q15–Q19 | `4F`, `4A` SOT-89 | Horn driver transistors (H-bridge?) | Assumption |
+| XT2 | `400W` | Clock for IC2 (~4.00 MHz ceramic resonator) | Marking confirmed |
+| IC5 | `2115 E58 JRC` (MSOP-8) | NJM2115 dual op-amp (`V+` pin 8 tied to `TP2` = `IC9` pins 3/5/6 & `Q3`) | Confirmed power link |
+| IC9 | Analog Devices MSOP-8 next to `100` (`10 µH`) inductor and 2x `4.7 µF / 50 V` | High-voltage boost converter for the piezo horn; enable = **`IC1` pin 19 (`P1.7`)** | Confirmed (DMM) |
+| Q15–Q19 | 2x `4F` + 2x `4A` SOT-89 + `LG` pre-drivers | Complementary H-bridge piezo horn driver -> `D1`/`D2` -> `CN2` | Confirmed |
 | CN4 + FIL1 | U.FL + SAW filter | RF test point in the antenna path | Confirmed parts |
 | Antenna | straight wire from the back, top left | 868 MHz whip | Confirmed |
-| CN5 / CN6 / CN7 | 3x 3-pin JST, each with a fuse (F11–F13) | Horn / external connections | Unknown |
-| CN2 (back) | 2-pin, `アカ` (red) / `クロ` (black) | Battery | Confirmed silkscreen |
+| CN5 / CN6 / CN7 | 3x 3-pin JST, each with a fuse (`F11`–`F13`) -> `TP1A`/`TP1B`/`TP1C` | **3x parallel `CR-2/3AZ` (`SH384552520`) 3 V DC batteries** | Confirmed (DMM) |
+| CN2 (back) | 2-pin, `アカ` (red -> `D2`) / `クロ` (black -> `D1`) | **Piezo horn** (`OL` resistance; H-bridge output, **NOT battery!**) | Confirmed (DMM) |
 | CN1 (back) | castellated pads + TP84–TP87 | Unknown (factory connector?) | Unknown |
-| SW1 (back) | push switch | Tamper switch (assumed) | Assumption |
-| TH1 (back) | leaded thermistor | Temperature sensing | Confirmed part |
+| SW1 (back) | push switch (`IC1` pin 18 `P1.6` to `GND`) | **Tamper switch** (active-low) | Confirmed (DMM) |
+| TH1 (back) | leaded thermistor (`IC1` pin 6 `P6.7/A7`, `TP19`, to `BAT+`) | **Temperature sensing** (ADC A7) | Confirmed (DMM) |
+| LED1 | SMD LED (`IC1` pin 43 `P4.7` -> `Q1` to `GND`) | **Status LED** (active-high) | Confirmed (DMM) |
 | IC4, IC7, XT3 | not fitted | Option footprints | Confirmed empty |
-| PCB | `M1765-1` | Board number; the katakana silkscreen suggests a Japanese maker (Panasonic, like the voicebox) | Confirmed |
+| PCB | `M1765-1` | Board number; rating label confirms **Panasonic Corporation, Japan** (`GW-SI`, Part No `131155`, HW `8.0` / SW `4.00`, `2014-11-17`) | Confirmed |
 
-## Debug / programming candidates
+## Debug / programming pads (confirmed by DMM)
 
-TP61–TP64 (a 4-pad group next to IC1), TP70–TP72, TP31/TP32, TP81/TP82, TP84–TP88 (back, next to
-CN1), TP91/TP92 (back). The MSP430F149 has 4-wire JTAG (needs a TI FET) and a ROM BSL (P1.1 TX /
-P2.2 RX). The BSL is not a read path: a wrong password mass-erases the flash. See the worksheet and
-[documentation/bench_recipes.md](../documentation/bench_recipes.md).
+4-wire JTAG on `MSP430F149` (`IC1` pins 54–58): **`TP61`** (`TDO`), **`TP62`** (`TDI`), **`TP63`** (`TMS`), **`TP64`** (`TCK`), **`TP5`** (`RST/NMI`), **`TP68`** (`GND`), **`TP1A`/`TP1B`/`TP1C`** (`VCC`). **Factory JTAG security fuse is blown** (`ERR FUSE_BLOWN` / `0x5555`). ROM BSL uses **`TP28`** (`P1.1` TXD), **`IC1` pin 22** (`P2.2` RXD — no TP pad, direct wire required), **`TP5`** (`RST/NMI`), **`TP64`** (`TCK`), and **`TP68`** (`GND`). The ROM BSL is not a read path (a wrong password mass-erases the flash), so it is used to flash custom OpenVerisure firmware. CC1101 boot SPI was captured on 2026-11-24 (`26 MHz` crystal, GFSK `38.38 kbps`, sync `0xD391`, PATABLE `20 03 0D 34 57 8E 85 C4`). See [re_worksheet.md](re_worksheet.md) and [documentation/bench_recipes.md](../documentation/bench_recipes.md).
 
 ## Photo requests
 
@@ -40,9 +38,8 @@ New photos that would identify the parts the current ones cannot. How to take th
 [documentation/device_survey.md](../documentation/device_survey.md#photo-requests). Tick an item when
 the photo is in the folder.
 
-- [ ] The **rating label** (model, device ID, part number, HW/SW, battery).
-- [ ] **XT1** next to the CC1101 and **XT2** next to the OKI chip: straight on, the frequency marking
-      must be readable (26 or 27 MHz matters for the radio settings).
+- [x] The **rating label** (`GW-SI`, `2S5F 554X`, Part No `131155`, HW `8.0` / SW `4.00`, `2014-11-17`, 3x `CR-2/3AZ` 3 V DC, Panasonic).
+- [x] **XT1** next to the CC1101 (`26.000` MHz) and **XT2** next to the OKI chip (`400W`).
 - [ ] **IC9** (next to the 100 µH inductor) and the **`EADH`** part next to the MCU, readable.
 - [ ] The transistors **Q15–Q19** and **Q3, Q6–Q9**: markings readable.
 - [ ] **CN1** on the back (castellated pads, TP84–TP87) and **SW1** close up.
