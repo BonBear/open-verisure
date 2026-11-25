@@ -7,7 +7,7 @@ and voicebox remain research-only. Each device has a README and a bench workshee
 | | Smoke detector GW-SD3 | Voicebox GW-AUD-VB | Siren GW-SI |
 | :--- | :--- | :--- | :--- |
 | Folder | [SMOKE_DETECTOR](../SMOKE_DETECTOR/README.md) | [VOICEBOX](../VOICEBOX/README.md) | [SIREN](../SIREN/README.md) |
-| Worksheet | [re_worksheet.md](../SMOKE_DETECTOR/re_worksheet.md) | [re_worksheet.md](../VOICEBOX/re_worksheet.md) | [re_worksheet.md](../SIREN/re_worksheet.md) |
+| Worksheet / notes | [re_worksheet.md](../SMOKE_DETECTOR/re_worksheet.md) | [re_worksheet.md](../VOICEBOX/re_worksheet.md) | [hardware_pinout_and_measurements.md](../SIREN/docs/hardware_pinout_and_measurements.md) |
 | Maker | Made in Japan (PCB K2226) | Panasonic, Japan (PCB K1969-1) | Panasonic, Japan (PCB M1765-1) |
 | MCU | Silicon Labs EFR32FG14P231 (Cortex-M4) | TI MSP430F5435A | TI MSP430F149 Rev S |
 | Sub-GHz radio | integrated in the EFR32 | Silicon Labs Si4460 (assumed) | TI CC1101 (26 MHz XT1) |
@@ -47,8 +47,8 @@ and voicebox remain research-only. Each device has a README and a bench workshee
 ## Photo requests
 
 Parts that cannot be identified from the current photos are listed as a checklist in each README
-under "Photo requests": [smoke detector](../SMOKE_DETECTOR/README.md#photo-requests),
-[voicebox](../VOICEBOX/README.md#photo-requests), [siren](../SIREN/README.md#photo-requests).
+under "Photo requests": [smoke detector](../SMOKE_DETECTOR/README.md#photo-requests) and
+[voicebox](../VOICEBOX/README.md#photo-requests).
 Take the new photos, put them in the device's folder, tick the item and the survey is updated from
 them.
 

@@ -5,8 +5,8 @@ Open-source firmware, hardware documentation, and board photos for the Verisure 
 
 - **Firmware:** [SIREN/firmware/README.md](firmware/README.md) (PlatformIO `timsp430`, AES-128-ECB telemetry & downlink `0xA0`/`0xA1`, OKI `L22901-707` 6-tone Home Assistant audio driver, live end-to-end verified on `2S5F 554X`)
 - **Flashing (ROM BSL):** [tools/esp32_msp430_bsl/README.md](../tools/esp32_msp430_bsl/README.md)
-- **Bench measurements & worksheet:** [re_worksheet.md](re_worksheet.md)
-- **Technical briefing & cross-device overview:** [Verisure_technical_briefing.md](Verisure_technical_briefing.md), [documentation/device_survey.md](../documentation/device_survey.md)
+- **Hardware pinout & measurements:** [docs/hardware_pinout_and_measurements.md](docs/hardware_pinout_and_measurements.md)
+- **Cross-device overview:** [documentation/device_survey.md](../documentation/device_survey.md)
 
 ## Main parts (from the photos)
 
@@ -54,32 +54,16 @@ Bench-verified parallel interface between IC1 (`MSP430F149`) and IC2 (`OKI L2290
 
 ## Debug / programming pads (confirmed by DMM)
 
-4-wire JTAG on `MSP430F149` (`IC1` pins 54–58): **`TP61`** (`TDO`), **`TP62`** (`TDI`), **`TP63`** (`TMS`), **`TP64`** (`TCK`), **`TP5`** (`RST/NMI`), **`TP68`** (`GND`), **`TP1A`/`TP1B`/`TP1C`** (`VCC`). **Factory JTAG security fuse is blown** (`ERR FUSE_BLOWN` / `0x5555`). ROM BSL uses **`TP28`** (`P1.1` TXD), **`IC1` pin 22** (`P2.2` RXD — no TP pad, direct wire required), **`TP5`** (`RST/NMI`), **`TP64`** (`TCK`), and **`TP68`** (`GND`). The ROM BSL is not a read path (a wrong password mass-erases the flash), so it is used to flash custom OpenVerisure firmware. CC1101 boot SPI was captured on 2026-11-24 (`26 MHz` crystal, GFSK `38.38 kbps`, sync `0xD391`, PATABLE `20 03 0D 34 57 8E 85 C4`). See [re_worksheet.md](re_worksheet.md) and [documentation/bench_recipes.md](../documentation/bench_recipes.md).
-
-## Photo requests
-
-New photos that would identify the parts the current ones cannot. How to take them is in
-[documentation/device_survey.md](../documentation/device_survey.md#photo-requests). Tick an item when
-the photo is in the folder.
-
-- [x] The **rating label** (`GW-SI`, `2S5F 554X`, Part No `131155`, HW `8.0` / SW `4.00`, `2014-11-17`, 3x `CR-2/3AZ` 3 V DC, Panasonic).
-- [x] **XT1** next to the CC1101 (`26.000` MHz) and **XT2** next to the OKI chip (`400W`).
-- [ ] **IC9** (next to the 100 µH inductor) and the **`EADH`** part next to the MCU, readable.
-- [ ] The transistors **Q15–Q19** and **Q3, Q6–Q9**: markings readable.
-- [ ] **CN1** on the back (castellated pads, TP84–TP87) and **SW1** close up.
-- [ ] The **TP61–TP64** group next to IC1 together with the MCU pins, so the traces can be followed.
-- [ ] The **horn** and the **battery** (type, voltage) and where CN5/CN6/CN7 lead.
+4-wire JTAG on `MSP430F149` (`IC1` pins 54–58): **`TP61`** (`TDO`), **`TP62`** (`TDI`), **`TP63`** (`TMS`), **`TP64`** (`TCK`), **`TP5`** (`RST/NMI`), **`TP68`** (`GND`), **`TP1A`/`TP1B`/`TP1C`** (`VCC`). **Factory JTAG security fuse is blown** (`ERR FUSE_BLOWN` / `0x5555`). ROM BSL uses **`TP28`** (`P1.1` TXD), **`IC1` pin 22** (`P2.2` RXD — no TP pad, direct wire required), **`TP5`** (`RST/NMI`), **`TP64`** (`TCK`), and **`TP68`** (`GND`). The ROM BSL is not a read path (a wrong password mass-erases the flash), so it is used to flash custom OpenVerisure firmware. CC1101 boot SPI was captured on 2026-11-24 (`26 MHz` crystal, GFSK `38.38 kbps`, sync `0xD391`, PATABLE `20 03 0D 34 57 8E 85 C4`). See [docs/hardware_pinout_and_measurements.md](docs/hardware_pinout_and_measurements.md) and [documentation/bench_recipes.md](../documentation/bench_recipes.md).
 
 ## Photos
 
-* [siren_board_overview.jpg](siren_board_overview.jpg): the whole board.
-* [siren_board_front_left.jpg](siren_board_front_left.jpg): front side, left half.
-* [siren_board_front_right.jpg](siren_board_front_right.jpg): front side, right half.
-* [siren_board_front_connectors.jpg](siren_board_front_connectors.jpg): front side, the connectors.
-* [siren_board_back_1.jpg](siren_board_back_1.jpg): back side, first view.
-* [siren_board_back_2.jpg](siren_board_back_2.jpg): back side, second view.
-* [siren_msp430f149.jpeg](siren_msp430f149.jpeg): close-up of the MCU, marked MSP430F149.
-* [siren_oki_l22901.jpeg](siren_oki_l22901.jpeg): close-up of the chip marked OKI L22901.
-* [siren_cc1101.jpeg](siren_cc1101.jpeg): close-up of the CC1101 radio.
-
-Missing: a photo of the siren's rating label (model, device ID, HW/SW).
+* [siren_board_overview.jpg](docs/images/siren_board_overview.jpg): the whole board.
+* [siren_board_front_left.jpg](docs/images/siren_board_front_left.jpg): front side, left half.
+* [siren_board_front_right.jpg](docs/images/siren_board_front_right.jpg): front side, right half.
+* [siren_board_front_connectors.jpg](docs/images/siren_board_front_connectors.jpg): front side, the connectors.
+* [siren_board_back_1.jpg](docs/images/siren_board_back_1.jpg): back side, first view.
+* [siren_board_back_2.jpg](docs/images/siren_board_back_2.jpg): back side, second view.
+* [siren_msp430f149.jpeg](docs/images/siren_msp430f149.jpeg): close-up of the MCU, marked MSP430F149.
+* [siren_oki_l22901.jpeg](docs/images/siren_oki_l22901.jpeg): close-up of the chip marked OKI L22901.
+* [siren_cc1101.jpeg](docs/images/siren_cc1101.jpeg): close-up of the CC1101 radio.

@@ -1,10 +1,10 @@
-# Siren: bench worksheet
+# Siren (`GW-SI`): hardware pinout and measurements
 
-Fill in on the bench. Leave a cell empty when it has not been measured; write `n/a` when it does
-not apply. Background and part list: [README.md](README.md). Procedures, pinouts (MSP430F149 JTAG
+Bench measurements, test-point mapping, and SPI/audio capture notes for the Verisure Siren (`GW-SI`).
+Background and part list: [SIREN/README.md](../README.md). Procedures, pinouts (MSP430F149 JTAG
 pins 54–58, CC1101) and the list of actions that can erase the unit:
-[documentation/bench_recipes.md](../documentation/bench_recipes.md). Decode an SPI capture with
-`python tools/cc1101_spi_decode.py capture.csv --xtal-mhz 27`.
+[documentation/bench_recipes.md](../../documentation/bench_recipes.md). Decode an SPI capture with
+`python tools/cc1101_spi_decode.py capture.csv --xtal-mhz 26`.
 
 Unit / device ID: `2S5F 554X`  Date: `2026-11-22`  Tools: DMM, USB microscope
 
@@ -173,4 +173,4 @@ Sniffed on 2026-11-24 (Saleae Logic 4 @ 12 MS/s, Ch0=`SCLK`, Ch1=`MOSI`, Ch3=`CS
 - [x] Wake-on-radio or continuous RX? → Timed `4000.0 ms` wake ticks (`6.66 µA` floor, `20.5 ms` @ `1.93 mA` idle ticks; 5x `320 ms` @ `27.5 mA` CCA+TX boot bursts).
 - [x] Is the F149 JTAG fuse blown? → **Yes** (confirmed 2026-11-24 via ESP32-C3 SLAU320 reader: `ERR FUSE_BLOWN` / `0x5555`).
 - [x] Which pads are JTAG / BSL? → **JTAG:** `TP61` (`TDO`), `TP62` (`TDI`), `TP63` (`TMS`), `TP64` (`TCK`), `TP5` (`RST`), `TP68` (`GND`). **BSL:** `TP28` (`P1.1` TXD), `IC1` pin 22 (`P2.2` RXD — no TP pad, direct wire), `TP5` (`RST`), `TP64` (`TCK`), `TP68` (`GND`).
-- [ ] Which `IC1` pins drive `IC2` / H-bridge audio? (To be probed once custom ROM BSL test firmware runs.)
+- [x] Which `IC1` pins drive `IC2` / H-bridge audio? → Confirmed (`P6.0..P6.5` -> `IC2` pins `13..18` with falling-edge strobe on `P6.4`, `P1.4` active-LOW audio rail, `P1.7` active-HIGH `IC9` HV boost; see Section 6).

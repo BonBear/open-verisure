@@ -8,7 +8,7 @@ The package holds the gateway firmware sources, both CC1110 firmwares with their
 flash scripts, the siren MSP430 firmware and its ESP32-C3 ROM BSL flasher, the key and flash
 tools, the Blackfin program and JTAG scripts for converting a camera, and the user
 documentation. It leaves out the research notes and logs (MD_CAM/docs, VerisureDoorSensor/docs,
-SIREN/re_worksheet.md, SIREN photos), the agent files and TODO.
+SIREN/docs), the agent files and TODO.
 
 Only files tracked by git are packed (git archive), so secrets.h and config.h, which are
 generated on the user's machine and git-ignored, can never end up in it. Nothing is prebuilt:

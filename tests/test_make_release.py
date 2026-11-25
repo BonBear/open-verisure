@@ -58,7 +58,7 @@ def test_expected_dirs(package, d):
 
 
 @pytest.mark.parametrize("path", [
-    "TODO.md", "AGENTS.md", "SIREN/re_worksheet.md",
+    "TODO.md", "AGENTS.md", "SIREN/docs/",
     "MD_CAM/docs/", "VerisureDoorSensor/docs/", ".github/", "tests/", "release/",
 ])
 def test_left_out(package, path):
