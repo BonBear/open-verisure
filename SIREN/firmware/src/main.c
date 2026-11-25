@@ -116,12 +116,14 @@ typedef struct {
 } th1_lut_t;
 
 static uint8_t encode_th1_temp(uint16_t adc) {
-    /* 10 kOhm B=3950 NTC to BAT+ with 10 kOhm pull-down to GND (12-bit ratiometric). */
+    /* 10 kOhm B=3950 NTC to BAT+ with ~68 kOhm pull-down to GND (12-bit ratiometric).
+     * Calibrated from bench measurement (adc ~3503 at ~22 C room temperature).
+     */
     static const th1_lut_t lut[] = {
-        {   99U, -400 }, {  195U, -300 }, {  355U, -200 }, {  600U, -100 },
-        {  939U,    0 }, { 1357U,  100 }, { 1817U,  200 }, { 2048U,  250 },
-        { 2270U,  300 }, { 2676U,  400 }, { 3014U,  500 }, { 3280U,  600 },
-        { 3482U,  700 }, { 3694U,  850 }
+        {  593U, -400 }, { 1038U, -300 }, { 1606U, -200 }, { 2206U, -100 },
+        { 2740U,    0 }, { 3158U,  100 }, { 3458U,  200 }, { 3570U,  250 },
+        { 3662U,  300 }, { 3799U,  400 }, { 3890U,  500 }, { 3951U,  600 },
+        { 3992U,  700 }, { 4031U,  850 }
     };
     uint8_t i;
     int16_t t_c10;
