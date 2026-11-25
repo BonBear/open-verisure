@@ -17,19 +17,22 @@ from typing import Protocol
 
 import serial
 
-# 80-byte position-independent MSP430 RAM flash-writer stub (loaded at 0x0300) for BSL v1.10:
+# 80-byte position-independent MSP430 RAM flash-writer stub (loaded at 0x0700) for BSL v1.10:
 #   SP = 0x09FE, WDTCTL = 0x5A80 (stop WDT), FCTL2 = 0xA542 (MCLK/3),
 #   FCTL3 = 0xA500 (unlock flash), FCTL1 = 0xA540 (WRT).
-#   Copies *(uint16_t *)0x03F2 words from BSL_V110_BUF (0x0600) to *(uint16_t *)0x03F0,
+#   Copies *(uint16_t *)0x07E2 words from BSL_V110_BUF (0x0600) to *(uint16_t *)0x07E0,
 #   polling (FCTL3 & BUSY) after each word write; locks flash (FCTL1 = 0xA500,
-#   FCTL3 = 0xA510), writes 0xCAFE to 0x03F4, and loops forever (jmp $).
-# The data buffer is at 0x0600: on bench (MSP430F149 Rev S, BSL v1.10) RAM 0x0400..0x05FF
-# corrupted written bytes deterministically, and flash cannot be rewritten without an erase.
+#   FCTL3 = 0xA510), writes 0xCAFE to 0x07E4, and loops forever (jmp $).
+# Keep all stub/header/buffer RAM >= 0x0600: on bench (MSP430F149 Rev S, BSL v1.10),
+# 0x031A..0x031B was clobbered by 96-byte RX_DATA_BLOCK frames and 0x0400..0x05FF
+# corrupted written bytes deterministically.
 BSL_V110_BUF = 0x0600
+BSL_V110_STUB = 0x0700
+BSL_V110_HDR = 0x07E0
 BSL_V110_RAM_STUB = bytes.fromhex(
     "3140FE09B240805A2001B24042A52A01B24000A52C01B24040A52801"
-    "1C42F0031D42F2033E4000060D930824BC4E000092B32C01FD232C53"
-    "1D83F63FB24000A52801B24010A52C01B240FECAF403FF3F"
+    "1C42E0071D42E2073E4000060D930824BC4E000092B32C01FD232C53"
+    "1D83F63FB24000A52801B24010A52C01B240FECAE407FF3F"
 )
 
 
@@ -472,15 +475,34 @@ def run_flash(
 
         if bsl_ver < 0x0160:
             if ordered_chunks:
-                bridge.rx_data_block(0x0300, BSL_V110_RAM_STUB)
+                bridge.rx_data_block(BSL_V110_STUB, BSL_V110_RAM_STUB)
             cur_pw_map = {a: 0xFF for a in range(0xFFE0, 0x10000)}
             for addr, data in ordered_chunks:
                 hdr = struct.pack("<HHH", addr, len(data) // 2, 0x0000)
                 last_err: BslError | None = None
                 for attempt in range(3):
-                    if attempt > 0 or bridge.tx_data_block(0x0300, 2) != b"\x31\x40":
-                        bridge.rx_data_block(0x0300, BSL_V110_RAM_STUB)
-                    bridge.rx_data_block(0x03F0, hdr)
+                    for _stub_try in range(3):
+                        if (
+                            attempt == 0
+                            and _stub_try == 0
+                            and bridge.tx_data_block(BSL_V110_STUB, len(BSL_V110_RAM_STUB))
+                            == BSL_V110_RAM_STUB
+                        ):
+                            break
+                        bridge.rx_data_block(BSL_V110_STUB, BSL_V110_RAM_STUB)
+                        if (
+                            bridge.tx_data_block(BSL_V110_STUB, len(BSL_V110_RAM_STUB))
+                            == BSL_V110_RAM_STUB
+                        ):
+                            break
+                    else:
+                        raise BslError(f"RAM stub corrupted at 0x{addr:04X}")
+                    for _hdr_try in range(3):
+                        bridge.rx_data_block(BSL_V110_HDR, hdr)
+                        if bridge.tx_data_block(BSL_V110_HDR, 6) == hdr:
+                            break
+                    else:
+                        raise BslError(f"RAM header corrupted at 0x{addr:04X}")
                     # Check the buffer in RAM before running the stub: RAM is rewritable,
                     # flash is not (a bad word cannot be fixed without a mass erase).
                     for _ram_try in range(3):
@@ -489,7 +511,7 @@ def run_flash(
                             break
                     else:
                         raise BslError(f"RAM buffer corrupted at 0x{addr:04X}")
-                    bridge.load_pc(0x0300)
+                    bridge.load_pc(BSL_V110_STUB)
                     time.sleep(max(0.05, len(data) * 0.00015))
                     cand_pw_map = dict(cur_pw_map)
                     for i, b in enumerate(data):
@@ -501,7 +523,7 @@ def run_flash(
                     if verify:
                         readback = bridge.tx_data_block(addr, len(data))
                         if readback != data:
-                            status_bytes = bridge.tx_data_block(0x03F4, 2)
+                            status_bytes = bridge.tx_data_block(BSL_V110_HDR + 4, 2)
                             (status,) = struct.unpack("<H", status_bytes)
                             if status != 0xCAFE:
                                 last_err = BslError(
@@ -511,7 +533,7 @@ def run_flash(
                                 last_err = BslError(f"Verification mismatch at 0x{addr:04X}")
                             continue
                     else:
-                        status_bytes = bridge.tx_data_block(0x03F4, 2)
+                        status_bytes = bridge.tx_data_block(BSL_V110_HDR + 4, 2)
                         (status,) = struct.unpack("<H", status_bytes)
                         if status != 0xCAFE:
                             last_err = BslError(

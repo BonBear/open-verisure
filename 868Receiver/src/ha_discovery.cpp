@@ -242,7 +242,7 @@ static const HaEntityDef S_SIREN_ENTITIES[] = {
         "temperature",
         "measurement",
         "°C",
-        "{{ value_json.temperature_c }}",
+        "{{ value_json.temperature_c if value_json.temperature_c is defined else None }}",
         nullptr,
         nullptr,
         nullptr

@@ -141,6 +141,12 @@ bool cryptoProcessBigPacket(const uint8_t* rxBuf56, const uint8_t masterKey[16],
 void cryptoRetirePicTag(const char* devId, uint32_t tag);
 
 /**
+ * @brief Mark the active picture tag as resend-only (0x83 accepted, 0x82 rejected) once its
+ *        first pass has finished with holes and resend is running. Cleared on retire or a newer tag.
+ */
+void cryptoSetPicTagResendOnly(const char* devId);
+
+/**
  * @brief Forget a device's replay state (RAM and NVS), e.g. after reflashing erased its flash,
  *        which restarts its persistent counter. Afterwards only a boot packet of blocks 1..maxBlock
  *        (default 8, an unseeded flash) is taken; the state survives a gateway restart (NVS).

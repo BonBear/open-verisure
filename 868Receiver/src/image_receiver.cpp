@@ -462,7 +462,9 @@ static void jpegFinishBody(CamPic* c, size_t len, bool endSeen);
 
 static void jpegFinish(CamPic* c, size_t len, bool endSeen) {
     jpegFinishBody(c, len, endSeen);
-    if (!c->rsActive && c->hasPicTag) {
+    if (c->rsActive) {
+        cryptoSetPicTagResendOnly(c->deviceId);
+    } else if (c->hasPicTag) {
         cryptoRetirePicTag(c->deviceId, c->picTag);
         c->hasPicTag = false;
     }
@@ -637,6 +639,7 @@ void imageReceiverProcessChunk(const char* deviceId, uint16_t chunkIdx, uint8_t 
     unsigned long now = millis();
     CamPic* c = assignCam(deviceId, now);
     if (!c) return;
+    if (c->rsActive && c->hasPicTag && c->picTag == picTag) return;
     c->lastUse = now;
     rsCancel(c);                          // a new picture of this camera: the stored one may change (deltas)
     if (s_dropEvery && ++s_dropCount % s_dropEvery == 0) return;   // test

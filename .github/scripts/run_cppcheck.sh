@@ -2,7 +2,7 @@
 # cppcheck over the firmware sources (CI job "cppcheck"; also runs locally with cppcheck on PATH).
 # No config files are needed: both CC1110 main.c fall back to config.h.example and the gateway
 # builds without secrets.h. Never copy the *.example files over the real config files on a dev
-# machine. Runs all three groups and exits non-zero if any of them reported a finding.
+# machine. Runs all five groups and exits non-zero if any of them reported a finding.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -25,5 +25,14 @@ cppcheck "${common[@]}" --platform=unix32 --language=c --std=c99 -I MD_CAM/black
 echo "== Gateway (ESP32-S2)"
 cppcheck "${common[@]}" --platform=unix32 --language=c++ --std=c++17 -I 868Receiver/src \
     -I 868Receiver/test_host/stubs 868Receiver/src/*.cpp || rc=1
+
+echo "== Siren (MSP430F149)"
+cppcheck "${common[@]}" --platform=avr8 --language=c --std=c99 \
+    -DSIREN_USE_EXAMPLE_CONFIG -D__MSP430F149__ -DCTR_SEED=1UL \
+    -I SIREN/firmware/include -I SIREN/firmware/src SIREN/firmware/src/*.c || rc=1
+
+echo "== BSL flasher (ESP32-C3)"
+cppcheck "${common[@]}" --platform=unix32 --language=c++ --std=c++17 \
+    -I 868Receiver/test_host/stubs tools/esp32_msp430_bsl/src/main.cpp || rc=1
 
 exit "$rc"

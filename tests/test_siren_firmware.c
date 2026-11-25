@@ -65,7 +65,7 @@ static void test_aes_fips197_appendix_b(void) {
     aes128_ecb_encrypt(key, pt, ct);
     ASSERT_TRUE(memcmp(ct, expected_ct, 16) == 0);
 
-    aes128_ecb_decrypt(key, ct, dec);
+    aes128_ecb_decrypt(key, expected_ct, dec);
     ASSERT_TRUE(memcmp(dec, pt, 16) == 0);
 
     /* In-place encrypt and decrypt */

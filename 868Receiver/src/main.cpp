@@ -475,17 +475,19 @@ static void handleRadioFrame(const RadioFrame& item) {
                     const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
                     if (prev) telem.batteryLoadMv = prev->lastTelem.batteryLoadMv;
                 }
-            } else if (haIsSirenSensor(telem.deviceId) && telem.rawP0 == DOWNLINK_POLL_MARKER) {
-                answerSirenPoll(telem, item.startUs);
-            }
-            if (telem.rawP0 == 0xB6 && telem.rawP1 != 0xFF) {
-                telem.hasTemp = true;
-                telem.tempC = (telem.rawP1 * 0.5f) - 40.0f;
-            } else {
-                const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
-                if (prev && prev->hasTemp) {
+            } else if (haIsSirenSensor(telem.deviceId)) {
+                if (telem.rawP0 == DOWNLINK_POLL_MARKER) {
+                    answerSirenPoll(telem, item.startUs);
+                }
+                if (telem.rawP0 == 0xB6 && telem.rawP1 != 0xFF) {
                     telem.hasTemp = true;
-                    telem.tempC = prev->tempC;
+                    telem.tempC = (telem.rawP1 * 0.5f) - 40.0f;
+                } else {
+                    const SensorRecord* prev = sensorRegistryFind(telem.deviceId);
+                    if (prev && prev->hasTemp) {
+                        telem.hasTemp = true;
+                        telem.tempC = prev->tempC;
+                    }
                 }
             }
             packetCount++;

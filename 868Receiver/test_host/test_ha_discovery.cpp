@@ -305,7 +305,8 @@ TEST(ha_siren_discovery_and_state_payload) {
             CHECK_STR(j.get("device_class"), "temperature");
             CHECK_STR(j.get("state_class"), "measurement");
             CHECK_STR(j.get("unit_of_measurement"), "°C");
-            CHECK_STR(j.get("value_template"), "{{ value_json.temperature_c }}");
+            CHECK_STR(j.get("value_template"),
+                      "{{ value_json.temperature_c if value_json.temperature_c is defined else None }}");
         }
     }
     CHECK(sawTempEntity);

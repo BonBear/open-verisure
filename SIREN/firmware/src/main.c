@@ -282,6 +282,9 @@ static void siren_handle_downlink_cmd(uint8_t cmd, uint8_t arg, uint8_t tone) {
             dur = (arg == 0U) ? ((t == 1U) ? 2U : 1U) : (uint16_t)arg;
             s_sound_repeat = (dur > SIREN_IC2_RETRIG_S) ? 1U : 0U;
         }
+        if (s_sound_repeat == 0U) {
+            dur++;
+        }
         if (dur > SIREN_MAX_SOUND_S) {
             dur = SIREN_MAX_SOUND_S;
         }
@@ -379,8 +382,16 @@ static int send_packet(uint8_t pkt_type, uint8_t pkt_arg, uint8_t listen_dl) {
     tx_ok = cc1101_tx(frame);
     if (tx_ok == 0 && listen_dl != 0U) {
         uint8_t rx_frame[24];
-        if (cc1101_rx(rx_frame, RX_WINDOW_MS) > 0) {
-            (void)validate_downlink(rx_frame, ctr);
+        uint16_t rx_budget = RX_WINDOW_MS;
+        uint8_t rx_try;
+        for (rx_try = 0U; rx_try < 3U && rx_budget > 0U; rx_try++) {
+            if (cc1101_rx(rx_frame, rx_budget) <= 0) {
+                break;
+            }
+            if (validate_downlink(rx_frame, ctr) != 0U) {
+                break;
+            }
+            rx_budget >>= 1;
         }
     }
     cc1101_sleep();
@@ -440,6 +451,7 @@ int main(void) {
         sleep_seconds(BOOT_RECHECK_S);
     }
 
+    boot_battery_guard();
     ctr_boot(CTR_SEED);
 
     for (i = 0U; i < 3U; i++) {

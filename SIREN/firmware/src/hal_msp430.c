@@ -294,6 +294,9 @@ uint16_t hal_read_th1_adc(void) {
     uint16_t raw;
     uint16_t to = 5000U;
 
+    /* Keep SHT0_4: bench-calibrated with encode_th1_temp() (~21.5 C at room temp);
+     * SHT0_8 saturates the reading to >= 4031 (85.0 C) on the GW-SI PCB.
+     */
     ADC12CTL0 = SHT0_4 | ADC12ON;
     ADC12CTL1 = SHP;
     ADC12MCTL0 = SREF_0 | INCH_7;
@@ -320,8 +323,9 @@ void hal_delay_ms(uint16_t ms) {
 }
 
 void hal_delay_us(uint16_t us) {
+    /* Compensate ~8 cycles/iter loop overhead at 1.048576 MHz (~1.05 cycles/us). */
     while (us >= 10U) {
-        __delay_cycles(10UL);
+        __delay_cycles(2UL);
         us -= 10U;
     }
     while (us != 0U) {
@@ -375,6 +379,10 @@ uint8_t hal_reset_cause(void) {
     return s_reset_cause;
 }
 
+uint8_t hal_xtal_fault(void) {
+    return g_xtal_fault;
+}
+
 __attribute__((interrupt(TIMERA0_VECTOR)))
 void timera0_isr(void) {
     if (g_xtal_fault != 0U) {
@@ -390,6 +398,7 @@ void timera0_isr(void) {
 
 __attribute__((interrupt(PORT1_VECTOR)))
 void port1_isr(void) {
+    P1IE &= (uint8_t)~BIT6;
     P1IFG = 0x00U;
     g_tamper_irq = 1U;
     __bic_SR_register_on_exit(LPM3_bits);

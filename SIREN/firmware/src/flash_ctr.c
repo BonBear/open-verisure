@@ -8,6 +8,7 @@
 
 #ifndef HOST_TEST
 #include <msp430.h>
+#include "hal_msp430.h"
 #endif
 
 #define CTR_SEG0_ADDR     0x1000U
@@ -153,7 +154,7 @@ static void flash_erase_seg(uint8_t seg) {
     uint16_t saved_wdt = WDTCTL;
 
     WDTCTL = WDTPW | WDTHOLD;
-    FCTL2 = FWKEY | FSSEL_1 | 2U; /* MCLK / 3 = ~349.5 kHz at 1.048576 MHz */
+    FCTL2 = FWKEY | FSSEL_1 | (hal_xtal_fault() ? 3U : 2U); /* MCLK / 4 on xtal fault, else / 3 */
     flash_wait_not_busy();
     FCTL3 = FWKEY;
     FCTL1 = FWKEY | ERASE;
@@ -176,7 +177,7 @@ static void flash_write_entry(uint8_t seg, uint8_t slot, const uint8_t e[4]) {
     uint16_t saved_wdt = WDTCTL;
 
     WDTCTL = WDTPW | WDTHOLD;
-    FCTL2 = FWKEY | FSSEL_1 | 2U; /* MCLK / 3 = ~349.5 kHz at 1.048576 MHz */
+    FCTL2 = FWKEY | FSSEL_1 | (hal_xtal_fault() ? 3U : 2U); /* MCLK / 4 on xtal fault, else / 3 */
     flash_wait_not_busy();
     FCTL3 = FWKEY;
     FCTL1 = FWKEY | WRT;

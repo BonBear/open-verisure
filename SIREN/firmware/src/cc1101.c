@@ -229,6 +229,9 @@ int cc1101_init(void) {
     (void)hal_spi_xfer(CC_SRES);
     to = 2000U;
     while (hal_spi_so_read() != 0U && --to != 0U) {
+        if ((to & 0x3FU) == 0U) {
+            hal_wdt_feed();
+        }
         hal_delay_us(10U);
     }
     hal_spi_cs_high();
@@ -317,82 +320,103 @@ int cc1101_tx(const uint8_t frame[24]) {
 }
 
 int cc1101_rx(uint8_t frame[24], uint16_t timeout_ms) {
-    uint16_t ms;
-    uint8_t sub;
-    uint8_t saw_high = 0U;
-    uint8_t rxbytes = 0U;
+    uint16_t rem_ms = timeout_ms;
+    uint8_t frame_tries;
     uint8_t buf[CC_FRAME_LEN + 2U];
-    uint8_t i;
 
-    if (cc_enter_idle() != 0 ||
-        cc_strobe(CC_SFRX) != 0 ||
-        cc_strobe(CC_SRX) != 0) {
-        return 0;
-    }
+    for (frame_tries = 0U; frame_tries < 6U && rem_ms > 0U; frame_tries++) {
+        uint16_t ms;
+        uint8_t sub;
+        uint8_t saw_high = 0U;
+        uint8_t gdo0_fell = 0U;
+        uint8_t rxbytes = 0U;
+        uint8_t i;
 
-    for (ms = 0U; ms < timeout_ms; ms++) {
-        for (sub = 0U; sub < 10U; sub++) {
-            if (hal_gdo0_read() != 0U) {
-                saw_high = 1U;
+        if (cc_enter_idle() != 0 ||
+            cc_strobe(CC_SFRX) != 0 ||
+            cc_strobe(CC_SRX) != 0) {
+            return 0;
+        }
+
+        while (rem_ms > 0U) {
+            rem_ms--;
+            for (sub = 0U; sub < 10U; sub++) {
+                if (hal_gdo0_read() != 0U) {
+                    saw_high = 1U;
+                    break;
+                }
+                hal_delay_us(100U);
+            }
+            hal_wdt_feed();
+            if (saw_high != 0U) {
                 break;
             }
-            hal_delay_us(100U);
         }
-        hal_wdt_feed();
-        if (saw_high != 0U) {
-            break;
-        }
-    }
 
-    if (saw_high == 0U) {
+        if (saw_high == 0U) {
+            (void)cc_enter_idle();
+            (void)cc_strobe(CC_SFRX);
+            return 0;
+        }
+
+        /* Extend up to +15 ms while GDO0 stays HIGH to let an in-flight frame finish. */
+        for (ms = 0U; ms < 15U; ms++) {
+            for (sub = 0U; sub < 10U; sub++) {
+                if (hal_gdo0_read() == 0U) {
+                    gdo0_fell = 1U;
+                    break;
+                }
+                hal_delay_us(100U);
+            }
+            hal_wdt_feed();
+            if (gdo0_fell != 0U) {
+                break;
+            }
+        }
+        if (rem_ms > ms) {
+            rem_ms = (uint16_t)(rem_ms - ms);
+        } else {
+            rem_ms = 0U;
+        }
+
+        if (gdo0_fell == 0U) {
+            (void)cc_enter_idle();
+            (void)cc_strobe(CC_SFRX);
+            continue;
+        }
+
+        if (cc_read_status_safe(CC_RXBYTES, &rxbytes) != 0) {
+            (void)cc_enter_idle();
+            (void)cc_strobe(CC_SFRX);
+            return 0;
+        }
+        if ((rxbytes & 0x80U) != 0U || (rxbytes & 0x7FU) != (CC_FRAME_LEN + 2U)) {
+            (void)cc_enter_idle();
+            (void)cc_strobe(CC_SFRX);
+            continue;
+        }
+
+        if (cc_read_burst(CC_RXFIFO, buf, (uint8_t)(CC_FRAME_LEN + 2U)) != 0) {
+            (void)cc_enter_idle();
+            (void)cc_strobe(CC_SFRX);
+            return 0;
+        }
         (void)cc_enter_idle();
         (void)cc_strobe(CC_SFRX);
-        return 0;
-    }
 
-    /* Extend up to +15 ms while GDO0 stays HIGH to let an in-flight frame finish. */
-    for (ms = 0U; ms < 15U; ms++) {
-        for (sub = 0U; sub < 10U; sub++) {
-            if (hal_gdo0_read() == 0U) {
-                goto rx_done;
-            }
-            hal_delay_us(100U);
+        if ((buf[CC_FRAME_LEN + 1U] & 0x80U) == 0U) {
+            continue;
         }
-        hal_wdt_feed();
+
+        for (i = 0U; i < CC_FRAME_LEN; i++) {
+            frame[i] = buf[i];
+        }
+        return 1;
     }
 
     (void)cc_enter_idle();
     (void)cc_strobe(CC_SFRX);
     return 0;
-
-rx_done:
-    if (cc_read_status_safe(CC_RXBYTES, &rxbytes) != 0) {
-        (void)cc_enter_idle();
-        (void)cc_strobe(CC_SFRX);
-        return 0;
-    }
-    if ((rxbytes & 0x80U) != 0U || (rxbytes & 0x7FU) != (CC_FRAME_LEN + 2U)) {
-        (void)cc_enter_idle();
-        (void)cc_strobe(CC_SFRX);
-        return 0;
-    }
-
-    if (cc_read_burst(CC_RXFIFO, buf, (uint8_t)(CC_FRAME_LEN + 2U)) != 0) {
-        (void)cc_enter_idle();
-        (void)cc_strobe(CC_SFRX);
-        return 0;
-    }
-    (void)cc_enter_idle();
-    (void)cc_strobe(CC_SFRX);
-
-    if ((buf[CC_FRAME_LEN + 1U] & 0x80U) == 0U) {
-        return 0;
-    }
-
-    for (i = 0U; i < CC_FRAME_LEN; i++) {
-        frame[i] = buf[i];
-    }
-    return 1;
 }
 
 void cc1101_sleep(void) {

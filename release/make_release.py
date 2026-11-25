@@ -159,6 +159,7 @@ def check(zip_path, name):
             ("camera", [sys.executable, "MD_CAM/build_and_flash_md_cam.py", "--compile-only"]),
             ("gateway", ["pio", "run", "-d", "868Receiver"]),
             ("siren", ["pio", "run", "-d", "SIREN/firmware", "-e", "siren_f149_ci"]),
+            ("bsl flasher", ["pio", "run", "-d", "tools/esp32_msp430_bsl"]),
         ]
         for what, cmd in steps:
             if cmd[0] == "pio" and not shutil.which("pio"):

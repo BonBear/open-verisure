@@ -8,6 +8,7 @@
 #include "sensor_registry.h"
 #include "ha_discovery.h"
 #include "downlink.h"
+#include "portal_util.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <GuardedSocket.h>   // gwsWriteBounded (lib/GuardedWebServer)
@@ -310,52 +311,52 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
             on = false;
             valid = true;
         } else if (s[0] == '{') {
-            const char* sp = strstr(s, "\"state\"");
-            const char* search = sp ? sp : s;
-            if (strstr(search, "\"ON\"") != nullptr || strstr(search, "\"on\"") != nullptr) {
+            String stateStr = jsonGetString(v, "state");
+            if (stateStr == "ON" || stateStr == "on") {
                 on = true;
                 valid = true;
-            } else if (strstr(search, "\"OFF\"") != nullptr || strstr(search, "\"off\"") != nullptr) {
+            } else if (stateStr == "OFF" || stateStr == "off") {
                 on = false;
                 valid = true;
+            } else {
+                return;
             }
-            const char* tp = strstr(s, "\"tone\"");
-            if (tp) {
-                const char* p = strchr(tp + 6, ':');
-                if (p) {
-                    p++;
-                    while (*p == ' ' || *p == '\t') p++;
-                    if (*p == '"') {
-                        p++;
-                        const char* q2 = strchr(p, '"');
-                        if (q2) {
-                            size_t tlen = (size_t)(q2 - p);
-                            static const char* const kTones[] = {
-                                "alarm", "ding_dong", "chime", "double_beep", "beep", "tone"
-                            };
-                            for (uint8_t i = 0; i < (uint8_t)(sizeof(kTones) / sizeof(kTones[0])); i++) {
-                                if (strlen(kTones[i]) == tlen && strncmp(p, kTones[i], tlen) == 0) {
-                                    tone = i;
-                                    break;
-                                }
-                            }
-                        }
+            String toneStr = jsonGetString(v, "tone");
+            if (toneStr.length() > 0) {
+                static const char* const kTones[] = {
+                    "alarm", "ding_dong", "chime", "double_beep", "beep", "tone"
+                };
+                for (uint8_t i = 0; i < (uint8_t)(sizeof(kTones) / sizeof(kTones[0])); i++) {
+                    if (toneStr == kTones[i]) {
+                        tone = i;
+                        break;
                     }
                 }
             }
-            const char* dp = strstr(s, "\"duration\"");
-            if (dp) {
-                const char* colon = strchr(dp + 10, ':');
-                if (colon) {
-                    const char* p = colon + 1;
-                    while (*p == ' ' || *p == '\t') p++;
-                    if (isdigit((unsigned char)*p)) {
-                        hasDuration = true;
-                        unsigned long rawDur = strtoul(p, nullptr, 10);
-                        if (rawDur == 0) dur = (tone == 0) ? 60 : 0;
-                        else if (rawDur > DOWNLINK_SIREN_MAX_SEC) dur = DOWNLINK_SIREN_MAX_SEC;
-                        else dur = (uint8_t)rawDur;
+            if (v.indexOf("\"duration\"") >= 0) {
+                int dp = jsonValueStart(v, "duration");
+                if (dp < 0 || dp >= (int)v.length()) return;
+                const char* p = s + dp;
+                if (strncmp(p, "null", 4) == 0) {
+                    p += 4;
+                    while (*p && isspace((unsigned char)*p)) p++;
+                    if (*p != ',' && *p != '}' && *p != '\0') return;
+                } else if (isdigit((unsigned char)*p)) {
+                    hasDuration = true;
+                    unsigned int rawDur = 0;
+                    while (isdigit((unsigned char)*p)) {
+                        if (rawDur <= DOWNLINK_SIREN_MAX_SEC) {
+                            rawDur = rawDur * 10U + (unsigned int)(*p - '0');
+                        }
+                        p++;
                     }
+                    while (*p && isspace((unsigned char)*p)) p++;
+                    if (*p != ',' && *p != '}' && *p != '\0') return;
+                    if (rawDur == 0) dur = (tone == 0) ? 60 : 0;
+                    else if (rawDur > DOWNLINK_SIREN_MAX_SEC) dur = DOWNLINK_SIREN_MAX_SEC;
+                    else dur = (uint8_t)rawDur;
+                } else {
+                    return;
                 }
             }
             if (!hasDuration && tone != 0) {
