@@ -23,7 +23,7 @@ it into **Home Assistant** through an **ESP32-S2 + CC1101 gateway**: local, no c
 | **Gateway** | [`868Receiver/`](868Receiver/README.md) | LOLIN S2 Mini (ESP32-S2) + CC1101 868 MHz | ✅ Working: decrypts sensors, MQTT auto-discovery, camera & siren downlink, picture reassembly |
 | **Door / window sensor** | [`VerisureDoorSensor/`](VerisureDoorSensor/README.md) | Verisure `GW-MC-SHOCK`, TI CC1110F32 | ✅ Working: contact, shock, tamper, battery; PM2 sleep (~26 µA idle), events verified |
 | **Motion camera** | [`MD_CAM/`](MD_CAM/README.md) | Verisure `GW MD CAM2`: CC1110F32 + Blackfin BF512 + OV7955 + IR flash + PIR | ✅ Working: alarm pictures, deltas, IR flash in the dark, PM2 sleep; bench tests pending |
-| **Siren** | [`SIREN/`](SIREN/README.md) | Verisure `GW-SI`: TI MSP430F149 + CC1101 (26 MHz) + OKI L22901-707 | ✅ Working: RF telemetry, downlink `0xA0`/`0xA1`, 6 HA tones (`alarm`, `ding_dong`, `chime`, `double_beep`, `beep`, `tone`), optional CC1101 WOR ~1 s "Fast Wake (Doorbell)" mode (`~21 µA` WOR / `7.6 µA` SPWD), live E2E verified; full-volume HV horn test pending |
+| **Siren** | [`SIREN/`](SIREN/README.md) | Verisure `GW-SI`: TI MSP430F149 + CC1101 (26 MHz) + OKI L22901-707 | ✅ Working: RF telemetry, downlink `0xA0`/`0xA1`, 6 HA tones (`alarm`, `ding_dong`, `chime`, `double_beep`, `beep`, `tone`), optional CC1101 WOR ~1 s "Fast Wake (Doorbell)" mode (`~21 µA` WOR / `7.6 µA` SPWD), full-volume `CN2` piezo horn + `P1.7` HV boost bench-verified |
 
 ---
 

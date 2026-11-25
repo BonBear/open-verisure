@@ -141,6 +141,9 @@ Sniffed on 2026-11-24 (Saleae Logic 4 @ 12 MS/s, Ch0=`SCLK`, Ch1=`MOSI`, Ch3=`CS
 | `0x18` | `110` | Ding-dong bell 2007 Hz -> 1514 Hz (~1.8 s, auto-stops) |
 | `0x1C` | `111` | 1-beep chime (~200 ms, auto-stops) |
 
+**Full-volume piezo horn (`CN2`) + `P1.7` HV boost bench measurement (`3.0 V` Otii Arc 4 kHz, `-DSIREN_ENABLE_HV_BOOST`):**
+- All 6 Home Assistant tones (`beep`, `double_beep`, `chime`, `ding_dong`, `tone`, `alarm` 4 s) verified end-to-end with `CN2` connected: peak current `110.8–133.8 mA` (`beep` `110.8 mA`, `double_beep` `132.9 mA`, `chime` `122.0 mA`, `ding_dong` `116.5 mA`, `tone` `116.2 mA`, `alarm` `133.8 mA` peak / `81.04 mA` mean), zero brownout (`2946–2949 mV` reported), and `P1.7` returns cleanly to Hi-Z `INPUT` on stop with no `12 mA` leak.
+
 ## 7. Connectors, switches and sensors
 
 | Item | Pins | Measured / traced | Function |
