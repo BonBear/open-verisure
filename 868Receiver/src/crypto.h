@@ -74,6 +74,7 @@ struct VerisureTelemetry {
     float tempC;            /**< Decoded temperature in deg C (from 0xB6 packet or cached) */
     bool hasTemp;           /**< True when tempC holds a valid temperature reading */
     bool valid;             /**< True if packet passed authentication, decryption and replay check */
+    uint8_t fastWakeState;  /**< Siren fast-wake state: 0 = unknown, 1 = OFF, 2 = ON */
 };
 
 /**

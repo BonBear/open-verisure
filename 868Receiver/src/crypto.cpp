@@ -457,8 +457,9 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     outTelem->tempC      = 0.0f;
     outTelem->hasTemp    = false;
     outTelem->rssi       = rssi;
-    outTelem->lqi        = lqi;
-    outTelem->valid      = true;
+    outTelem->lqi           = lqi;
+    outTelem->valid         = true;
+    outTelem->fastWakeState = 0;
 
     return true;
 }

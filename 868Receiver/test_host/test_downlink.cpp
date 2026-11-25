@@ -9,6 +9,7 @@
 
 #include "test.h"
 #include "downlink.h"
+#include "radio_task.h"
 
 namespace {
 
@@ -346,4 +347,111 @@ TEST(downlink_supports_eight_concurrent_devices) {
     }
     // Slots freed after ACK
     CHECK(downlinkRequestSiren("2S5F0005", true, 30, 0));
+}
+
+TEST(downlink_build_plain_siren_fast_wake_flags) {
+    uint8_t plain[16];
+
+    // Siren idle poll (cmd == 0): out[10] carries fast_wake flags, out[11..13] == 0
+    downlinkBuildPlain(0x11223344UL, false, 0, 0, 0, plain, 0, 0,
+                       DL_SFLAG_FAST_WAKE_VALID | DL_SFLAG_FAST_WAKE_ON);
+    CHECK_EQ(plain[7], 0);
+    CHECK_EQ(plain[8], 0);
+    CHECK_EQ(plain[9], 0);
+    CHECK_EQ(plain[10], DL_SFLAG_FAST_WAKE_VALID | DL_SFLAG_FAST_WAKE_ON);
+    for (int i = 11; i <= 13; i++) CHECK_EQ(plain[i], 0);
+
+    // Siren ON (0xA1): out[8]=dur, out[9]=tone, out[10]=sirenFlags
+    downlinkBuildPlain(0x11223345UL, true, DOWNLINK_CMD_SIREN_ON, 15, 0, plain, 0, 2,
+                       DL_SFLAG_FAST_WAKE_VALID);
+    CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_ON);
+    CHECK_EQ(plain[8], 15);
+    CHECK_EQ(plain[9], 2);
+    CHECK_EQ(plain[10], DL_SFLAG_FAST_WAKE_VALID);
+    for (int i = 11; i <= 13; i++) CHECK_EQ(plain[i], 0);
+
+    // Siren OFF (0xA0): out[10]=sirenFlags
+    downlinkBuildPlain(0x11223346UL, false, DOWNLINK_CMD_SIREN_OFF, 0, 0, plain, 0, 0,
+                       DL_SFLAG_FAST_WAKE_VALID | DL_SFLAG_FAST_WAKE_ON);
+    CHECK_EQ(plain[7], DOWNLINK_CMD_SIREN_OFF);
+    CHECK_EQ(plain[10], DL_SFLAG_FAST_WAKE_VALID | DL_SFLAG_FAST_WAKE_ON);
+
+    // Camera poll (default sirenFlags=0) keeps out[10] == 0
+    downlinkBuildPlain(0x11223347UL, true, 0xD2, 0, 0, plain, DL_FLAG_TOKEN | DL_FLAG_PCH, 0);
+    CHECK_EQ(plain[10], 0);
+
+    // Resend (0xF0): bitmap in out[10..13] is NOT overwritten by sirenFlags
+    downlinkBuildPlain(0x11223348UL, true, DOWNLINK_CMD_RESEND, 0x0040, 0xAABBCCDDUL, plain,
+                       DL_FLAG_PCH, 0, DL_SFLAG_FAST_WAKE_VALID | DL_SFLAG_FAST_WAKE_ON);
+    CHECK_EQ(plain[10], 0xDD);
+    CHECK_EQ(plain[11], 0xCC);
+    CHECK_EQ(plain[12], 0xBB);
+    CHECK_EQ(plain[13], 0xAA);
+}
+
+TEST(downlink_siren_fast_wake_nvs_persistence) {
+    downlinkInit();
+
+    // Default is false; invalid IDs stay false safely
+    CHECK(!downlinkGetSirenFastWake("2S5F554X"));
+    CHECK(!downlinkGetSirenFastWake(nullptr));
+    CHECK(!downlinkGetSirenFastWake(""));
+    CHECK(!downlinkGetSirenFastWake("SHORT"));
+    downlinkSetSirenFastWake(nullptr, true);
+    downlinkSetSirenFastWake("SHORT", true);
+
+    // Persist ON and survive simulated gateway reboot (downlinkInit without wiping NVS)
+    downlinkSetSirenFastWake("2S5F554X", true);
+    CHECK(downlinkGetSirenFastWake("2S5F554X"));
+    downlinkInit();
+    CHECK(downlinkGetSirenFastWake("2S5F554X"));
+
+    // Persist OFF and survive simulated reboot
+    downlinkSetSirenFastWake("2S5F554X", false);
+    CHECK(!downlinkGetSirenFastWake("2S5F554X"));
+    downlinkInit();
+    CHECK(!downlinkGetSirenFastWake("2S5F554X"));
+
+    // Multiple sirens (up to 8 cached)
+    const char* ids[8] = {
+        "2S5F0001", "2S5F0002", "2S5F0003", "2S5F0004",
+        "2S5F0005", "2S5F0006", "2S5F0007", "2S5F0008",
+    };
+    for (int i = 0; i < 8; i++) {
+        downlinkSetSirenFastWake(ids[i], (i % 2) == 0);
+    }
+    downlinkInit();
+    for (int i = 0; i < 8; i++) {
+        CHECK_EQ(downlinkGetSirenFastWake(ids[i]), (i % 2) == 0);
+    }
+}
+
+TEST(radio_wor_id_hash_parity) {
+    // Exact FNV-1a 32-bit parity check for "2S5F554X"
+    const char* id = "2S5F554X";
+    uint32_t h = 2166136261UL;
+    for (uint8_t i = 0; i < 8; i++) {
+        h ^= (uint8_t)id[i];
+        h *= 16777619UL;
+    }
+    uint8_t expectAddr = (uint8_t)((h ^ (h >> 8)) & 0xFFU);
+    if (expectAddr == 0U || expectAddr == 0xFFU) expectAddr ^= 0x5AU;
+    const uint16_t expectTag = (uint16_t)(h >> 16);
+
+    uint8_t addr8 = 0;
+    uint16_t tag16 = 0;
+    radioWorIdHash(id, &addr8, &tag16);
+    CHECK_EQ(addr8, expectAddr);
+    CHECK_EQ(tag16, expectTag);
+    CHECK(addr8 != 0x00U && addr8 != 0xFFU);
+
+    uint8_t addr2 = 0;
+    uint16_t tag2 = 0;
+    radioWorIdHash("2S5F554Y", &addr2, &tag2);
+    CHECK(addr2 != 0x00U && addr2 != 0xFFU);
+    CHECK(addr2 != addr8 || tag2 != tag16);
+
+    // Null-safe
+    radioWorIdHash(nullptr, &addr2, &tag2);
+    CHECK(addr2 != 0x00U && addr2 != 0xFFU);
 }

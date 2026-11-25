@@ -70,11 +70,15 @@ bool downlinkRequestPicture(const char* deviceId, uint8_t cmd);
  *  Returns false for an invalid ID or a full table. */
 bool downlinkRequestSiren(const char* deviceId, bool on, uint8_t durationSec = 60, uint8_t tone = 0);
 
-#define DL_FLAG_PCH           0x01
-#define DL_FLAG_GRANT         0x02
-#define DL_FLAG_HOLD          0x04
-#define DL_FLAG_TOKEN         0x08
-#define DL_PCH_CH_869525      0
+#define DL_FLAG_PCH              0x01
+#define DL_FLAG_GRANT            0x02
+#define DL_FLAG_HOLD             0x04
+#define DL_FLAG_TOKEN            0x08
+#define DL_PCH_CH_869525         0
+
+#define DL_SFLAG_FAST_WAKE_VALID 0x80
+#define DL_SFLAG_FAST_WAKE_ON    0x01
+#define SIREN_STATE_FAST_WAKE    0x08
 
 /** Ask a camera to resend the picture chunks first + i for every bit i set in map (32 chunks
  *  at most per request) with its next poll answer (sent once; it goes before a picture command,
@@ -96,6 +100,13 @@ bool downlinkResendPending(const char* deviceId);
  *  acknowledgement of the open picture); the ACK check of a sent command still runs first. */
 uint8_t downlinkCommandForPoll(const char* deviceId, uint8_t cameraState, uint16_t* first, uint32_t* map);
 
+/** Persist per-siren fast_wake (CC1101 WOR) preference in NVS ("downlink" / "fw_<id>"). */
+void downlinkSetSirenFastWake(const char* deviceId, bool enabled);
+
+/** Return persisted per-siren fast_wake preference (false by default). */
+bool downlinkGetSirenFastWake(const char* deviceId);
+
 /** Build the 16-byte plaintext of a poll answer (see the format above). */
 void downlinkBuildPlain(uint32_t pollCounter, bool armed, uint8_t cmd, uint16_t first, uint32_t map,
-                        uint8_t out[16], uint8_t flags = 0, uint8_t channel = 0);
+                        uint8_t out[16], uint8_t flags = 0, uint8_t channel = 0,
+                        uint8_t sirenFlags = 0);

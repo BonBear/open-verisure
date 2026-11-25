@@ -8,6 +8,8 @@
 #include "sensor_registry.h"
 #include "ha_discovery.h"
 #include "downlink.h"
+#include "duty_cycle.h"
+#include "radio_task.h"
 #include "portal_util.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
@@ -293,6 +295,28 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
         Serial.printf("[Downlink] Picture 0x%02X for %s %s\n", cmd, dev.c_str(), ok ? "queued" : "NOT queued");
         return;
     }
+    const String sirenFwSuffix = "/siren/fast_wake/set";
+    if (rest.endsWith(sirenFwSuffix)) {
+        String dev = rest.substring(0, rest.length() - sirenFwSuffix.length());
+        if (!isDeviceIdText(dev) || !haIsSirenSensor(dev.c_str())) return;
+        bool fwOn = false;
+        if (v == "ON" || v == "1") {
+            fwOn = true;
+        } else if (v == "OFF" || v == "0") {
+            fwOn = false;
+        } else {
+            return;
+        }
+        const SensorRecord* rec = sensorRegistryFind(dev.c_str());
+        downlinkSetSirenFastWake(dev.c_str(), fwOn);
+        Serial.printf("[Downlink] Siren %s fast_wake=%s (MQTT)\n",
+                      dev.c_str(), fwOn ? "ON" : "OFF");
+        if (!fwOn && rec && rec->lastTelem.fastWakeState == 2 &&
+            dutyCycleAllowGwWake((uint32_t)millis())) {
+            radioRequestWake(dev.c_str());
+        }
+        return;
+    }
     const String sirenSuffix = "/siren/set";
     if (rest.endsWith(sirenSuffix)) {
         String dev = rest.substring(0, rest.length() - sirenSuffix.length());
@@ -365,6 +389,10 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
         }
         if (!valid) return;
         bool ok = downlinkRequestSiren(dev.c_str(), on, dur, tone);
+        if (ok && downlinkGetSirenFastWake(dev.c_str()) &&
+            dutyCycleAllowGwWake((uint32_t)millis())) {
+            radioRequestWake(dev.c_str());
+        }
         Serial.printf("[Downlink] Siren %s (%u s, tone %u) for %s %s\n",
                       on ? "ON" : "OFF", (unsigned)dur, (unsigned)tone, dev.c_str(), ok ? "queued" : "NOT queued");
     }
@@ -416,8 +444,12 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
         String sirenPayload = haDiscoveryBuildSirenPayload(deviceId, baseTopic);
         s_mqttClient.publish(sirenTopic.c_str(), sirenPayload.c_str(), true);
 
+        String fwTopic = haDiscoveryBuildSirenFastWakeTopic(deviceId);
+        String fwPayload = haDiscoveryBuildSirenFastWakePayload(deviceId, baseTopic);
+        s_mqttClient.publish(fwTopic.c_str(), fwPayload.c_str(), true);
+
         markDeviceDiscovered(deviceId);
-        Serial.printf("[MQTT] Published Home Assistant Discovery for Siren \"%s\" (%d sensor entities + 1 siren retained)\n", deviceId, count);
+        Serial.printf("[MQTT] Published Home Assistant Discovery for Siren \"%s\" (%d sensor entities + 1 siren + 1 switch retained)\n", deviceId, count);
     } else {
         int count = haDiscoveryGetSensorEntityCount();
         for (int i = 0; i < count; i++) {
@@ -547,9 +579,11 @@ static void checkMqttConnection() {
         String alarmSet = String(cfg.mqttTopic) + "/alarm/set";
         String pictureSet = String(cfg.mqttTopic) + "/+/picture/set";
         String sirenSet = String(cfg.mqttTopic) + "/+/siren/set";
+        String sirenFwSet = String(cfg.mqttTopic) + "/+/siren/fast_wake/set";
         s_mqttClient.subscribe(alarmSet.c_str());
         s_mqttClient.subscribe(pictureSet.c_str());
         s_mqttClient.subscribe(sirenSet.c_str());
+        s_mqttClient.subscribe(sirenFwSet.c_str());
 
         int count = sensorRegistryGetCount();
         for (int i = 0; i < count; i++) {

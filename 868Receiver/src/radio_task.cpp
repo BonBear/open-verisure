@@ -76,10 +76,11 @@
 #define CC1101_FREQEST   0x32
 #define CC1101_RSSI      0x34
 #define CC1101_MARCSTATE 0x35
+#define CC1101_TXBYTES   0x3A
 #define CC1101_RXBYTES   0x3B
 
-RadioStatus   g_radioStatus   = { false, 0, 0, 0x01, -100, 0, 0 };
-RadioStatus   g_radioStatus2  = { false, 0, 0, 0x01, -100, 0, 0 };
+RadioStatus   g_radioStatus   = { false, 0, 0, 0x01, -100, 0, 0, 0 };
+RadioStatus   g_radioStatus2  = { false, 0, 0, 0x01, -100, 0, 0, 0 };
 RadioDiag     g_radioDiag     = {};
 RadioDiag     g_radioDiag2    = {};
 RadioLoopDiag g_radioLoopDiag = {};
@@ -140,6 +141,49 @@ static bool     s_txActive = false;
 static bool     s_hasLastTx = false;
 static uint32_t s_txBeginUs = 0;
 static uint32_t s_lastTxEndUs = 0;
+
+// ---- CC1101 Wake-on-Radio (WOR) burst state machine (module 0) ----
+#define WAKE_MAX_TARGETS      4
+#define WAKE_MAX_ACTIVE       2
+#define WAKE_MAX_SLICES       28
+#define WAKE_INITIAL_PKTS     10
+#define WAKE_REFILL_PKTS      7
+#define WAKE_TOTAL_SLICE_PKTS (WAKE_INITIAL_PKTS + WAKE_REFILL_PKTS)
+#define WAKE_PKT_LEN          6
+#define WAKE_SLICE_MS         74UL
+#define WAKE_BURST_MS         (WAKE_MAX_SLICES * WAKE_SLICE_MS)   // 2072 ms
+#define WAKE_TX_TIMEOUT_US    65000UL
+#define WAKE_RX_SLICE_US      14000UL
+#define WAKE_RX_EXTEND_US     20000UL
+#define WAKE_RX_REPLY_WAIT_US 40000UL
+
+enum WakePhase : uint8_t { WAKE_IDLE = 0, WAKE_TX, WAKE_RX };
+
+struct WakeTarget {
+    uint8_t  addr8;
+    uint8_t  used;
+    uint16_t tag16;
+    uint32_t endMs;
+};
+
+struct WakeState {
+    WakePhase  phase;
+    uint8_t    sliceIdx;
+    bool       refilled;
+    bool       isFinalSlice;
+    bool       rxExtended;
+    bool       rxGotFrame;
+    uint8_t    activeCount;
+    uint8_t    rotateIdx;
+    WakeTarget activePair[WAKE_MAX_ACTIVE];
+    uint32_t   sliceStartUs;
+    uint32_t   txStartUs;
+    uint32_t   rxStartUs;
+    uint32_t   rxFrameDoneUs;
+};
+
+static WakeTarget s_wakeTargets[WAKE_MAX_TARGETS];
+static WakeState  s_wake;
 
 /** Feed the task WDT, only from the radio task (radioInit() runs in loopTask before enableLoopWDT()). */
 static inline void wdtFeed() {
@@ -643,6 +687,284 @@ static void radioSampleStatus(RadioModule& m) {
     }
 }
 
+// ---- WOR wake-burst helpers (module 0 only) ----
+
+static void wakePruneExpired(uint32_t nowMs) {
+    for (int i = 0; i < WAKE_MAX_TARGETS; i++) {
+        if (s_wakeTargets[i].used && (int32_t)(nowMs - s_wakeTargets[i].endMs) >= 0) {
+            s_wakeTargets[i].used = 0;
+        }
+    }
+}
+
+static bool wakeHasAnyTarget(uint32_t atMs) {
+    for (int i = 0; i < WAKE_MAX_TARGETS; i++) {
+        if (s_wakeTargets[i].used && (int32_t)(atMs - s_wakeTargets[i].endMs) < 0) return true;
+    }
+    return false;
+}
+
+static void wakeAbort() {
+    memset(s_wakeTargets, 0, sizeof(s_wakeTargets));
+    s_wake.phase = WAKE_IDLE;
+    s_wake.activeCount = 0;
+    if (s_txActive) {
+        s_lastTxEndUs = radioNowUs();
+        s_txActive = false;
+        s_hasLastTx = true;
+    }
+}
+
+static void wakeRestoreNormalRegs(RadioModule& m0) {
+    enterIdle(m0.csPin);
+    ccWriteReg(m0.csPin, CC1101_FREQ2, 0x21);
+    ccWriteReg(m0.csPin, CC1101_FREQ1, 0x6B);
+    ccWriteReg(m0.csPin, CC1101_FREQ0, 0xD1);
+    ccWriteReg(m0.csPin, CC1101_SYNC1, 0xD3);
+    ccWriteReg(m0.csPin, CC1101_SYNC0, 0x91);
+    ccWriteReg(m0.csPin, CC1101_PKTLEN, RX_PKT_LEN);
+    ccWriteReg(m0.csPin, CC1101_PKTCTRL0, 0x00);
+    ccWriteReg(m0.csPin, CC1101_MCSM1, 0x3C);
+}
+
+static void wakeEnterRxSlice(RadioModule& m0) {
+    s_lastTxEndUs = radioNowUs();
+    s_txActive = false;
+    s_hasLastTx = true;
+    wakeRestoreNormalRegs(m0);
+    enterRxMode(m0);
+    m0.gapValid = false;
+    s_wake.phase = WAKE_RX;
+    s_wake.rxStartUs = radioNowUs();
+    s_wake.rxExtended = false;
+    s_wake.rxGotFrame = false;
+}
+
+static void wakeBuildPacket(uint8_t k, bool isFinalSlice, uint8_t out[WAKE_PKT_LEN]) {
+    const WakeTarget& tgt = (s_wake.activeCount == 2 && (k & 1U))
+                          ? s_wake.activePair[1] : s_wake.activePair[0];
+    // Aim +2.5 ms into the next RX window (59.2 + 74 = 133.2 ms), or current RX window on final slice
+    const int32_t targetUs = isFinalSlice
+                           ? (60000L - (int32_t)(k + 1U) * 3335L)
+                           : (133200L - (int32_t)(k + 1U) * 3335L);
+    const uint8_t rxInMs = (targetUs <= 0) ? 0 : (uint8_t)((targetUs + 500L) / 1000L);
+    out[0] = tgt.addr8;
+    out[1] = 0x57;   // 'W'
+    out[2] = 0x4F;   // 'O'
+    out[3] = (uint8_t)(tgt.tag16 >> 8);
+    out[4] = (uint8_t)(tgt.tag16 & 0xFFU);
+    out[5] = rxInMs;
+}
+
+static bool wakeStartTxSlice(uint32_t nowMs) {
+    RadioModule& m0 = s_mod[0];
+    wakePruneExpired(nowMs);
+    if (!m0.online || !m0.canTx) {
+        wakeAbort();
+        return false;
+    }
+
+    s_wake.activeCount = 0;
+    for (int step = 0; step < WAKE_MAX_TARGETS && s_wake.activeCount < WAKE_MAX_ACTIVE; step++) {
+        const int idx = (s_wake.rotateIdx + step) % WAKE_MAX_TARGETS;
+        if (s_wakeTargets[idx].used) {
+            s_wake.activePair[s_wake.activeCount++] = s_wakeTargets[idx];
+        }
+    }
+    if (s_wake.activeCount == 0) {
+        if (s_wake.phase != WAKE_IDLE) {
+            wakeRestoreNormalRegs(m0);
+            enterRxMode(m0);
+            m0.gapValid = false;
+        }
+        s_wake.phase = WAKE_IDLE;
+        return false;
+    }
+
+    const bool isFinalSlice = (s_wake.sliceIdx + 1 >= WAKE_MAX_SLICES) ||
+                              !wakeHasAnyTarget(nowMs + WAKE_SLICE_MS);
+    if (m0.frameLen > 0) {
+        bump(m0.diag->txAbortedRx);
+        assemblerReset(m0);
+    }
+
+    enterIdle(m0.csPin);
+    ccStrobe(m0.csPin, CC1101_SFTX);
+    ccWriteReg(m0.csPin, CC1101_FSCTRL0, (uint8_t)ConfigManager::get().freqOffset);
+    ccWriteReg(m0.csPin, CC1101_FREQ2, 0x21);
+    ccWriteReg(m0.csPin, CC1101_FREQ1, 0x71);
+    ccWriteReg(m0.csPin, CC1101_FREQ0, 0x7A);
+    ccWriteReg(m0.csPin, CC1101_SYNC1, 0x2D);
+    ccWriteReg(m0.csPin, CC1101_SYNC0, 0xD4);
+    ccWriteReg(m0.csPin, CC1101_PKTLEN, WAKE_PKT_LEN);
+    ccWriteReg(m0.csPin, CC1101_PKTCTRL0, 0x04);
+    ccWriteReg(m0.csPin, CC1101_MCSM1, 0x32);   // TXOFF_MODE = 10 (stay in TX)
+
+    uint8_t buf[WAKE_INITIAL_PKTS * WAKE_PKT_LEN];
+    for (uint8_t k = 0; k < WAKE_INITIAL_PKTS; k++) {
+        wakeBuildPacket(k, isFinalSlice, buf + k * WAKE_PKT_LEN);
+    }
+    ccWriteBurst(m0.csPin, CC1101_TXFIFO, buf, sizeof(buf));
+    ccStrobe(m0.csPin, CC1101_STX);
+    m0.status->txWakeCount = m0.status->txWakeCount + WAKE_INITIAL_PKTS;
+
+    const uint32_t nowUs = radioNowUs();
+    s_txActive = true;
+    s_txBeginUs = nowUs;
+    s_wake.phase = WAKE_TX;
+    s_wake.refilled = false;
+    s_wake.isFinalSlice = isFinalSlice;
+    s_wake.sliceStartUs = nowUs;
+    s_wake.txStartUs = nowUs;
+    return true;
+}
+
+static void wakeAddTarget(uint8_t addr8, uint16_t tag16, uint32_t nowMs) {
+    if (!s_mod[0].online || !s_mod[0].canTx) return;
+    wakePruneExpired(nowMs);
+    const uint32_t endMs = nowMs + WAKE_BURST_MS;
+
+    int freeIdx = -1;
+    int oldestIdx = 0;
+    int32_t minRem = 0x7FFFFFFFL;
+    for (int i = 0; i < WAKE_MAX_TARGETS; i++) {
+        if (s_wakeTargets[i].used) {
+            if (s_wakeTargets[i].addr8 == addr8 && s_wakeTargets[i].tag16 == tag16) {
+                s_wakeTargets[i].endMs = endMs;
+                s_wake.sliceIdx = 0;
+                if (s_wake.phase == WAKE_IDLE) wakeStartTxSlice(nowMs);
+                return;
+            }
+            const int32_t rem = (int32_t)(s_wakeTargets[i].endMs - nowMs);
+            if (rem < minRem) {
+                minRem = rem;
+                oldestIdx = i;
+            }
+        } else if (freeIdx < 0) {
+            freeIdx = i;
+        }
+    }
+    const int dst = (freeIdx >= 0) ? freeIdx : oldestIdx;
+    s_wakeTargets[dst].addr8 = addr8;
+    s_wakeTargets[dst].used = 1;
+    s_wakeTargets[dst].tag16 = tag16;
+    s_wakeTargets[dst].endMs = endMs;
+    s_wake.sliceIdx = 0;
+    if (s_wake.phase == WAKE_IDLE) {
+        wakeStartTxSlice(nowMs);
+    }
+}
+
+static void wakeCancelTarget(uint8_t addr8, uint16_t tag16, uint32_t nowMs) {
+    for (int i = 0; i < WAKE_MAX_TARGETS; i++) {
+        if (s_wakeTargets[i].used && s_wakeTargets[i].addr8 == addr8 && s_wakeTargets[i].tag16 == tag16) {
+            s_wakeTargets[i].used = 0;
+        }
+    }
+    wakePruneExpired(nowMs);
+    if (s_wake.phase != WAKE_IDLE && !wakeHasAnyTarget(nowMs)) {
+        RadioModule& m0 = s_mod[0];
+        if (s_wake.phase == WAKE_TX) {
+            enterIdle(m0.csPin);
+            ccStrobe(m0.csPin, CC1101_SFTX);
+            s_lastTxEndUs = radioNowUs();
+            s_txActive = false;
+            s_hasLastTx = true;
+            wakeRestoreNormalRegs(m0);
+            enterRxMode(m0);
+            m0.gapValid = false;
+        }
+        s_wake.phase = WAKE_IDLE;
+        s_wake.activeCount = 0;
+    }
+}
+
+static void wakeTick(uint32_t nowMs, bool m0FrameDone) {
+    if (s_wake.phase == WAKE_IDLE) return;
+    RadioModule& m0 = s_mod[0];
+    if (!m0.online) {
+        wakeAbort();
+        return;
+    }
+
+    if (s_wake.phase == WAKE_TX) {
+        const uint8_t marc = readStatusSafe(m0, CC1101_MARCSTATE) & 0x1F;
+        const uint8_t txBytes = readStatusSafe(m0, CC1101_TXBYTES);
+        if (m0.stallSuspect) return;
+
+        if (!s_wake.refilled) {
+            if ((txBytes & 0x80U) != 0U || marc == 0x16 || marc == 0x01) {
+                enterIdle(m0.csPin);
+                ccStrobe(m0.csPin, CC1101_SFTX);
+                wakeEnterRxSlice(m0);
+            } else if ((txBytes & 0x7FU) <= 22U) {
+                uint8_t buf[WAKE_REFILL_PKTS * WAKE_PKT_LEN];
+                for (uint8_t k = 0; k < WAKE_REFILL_PKTS; k++) {
+                    wakeBuildPacket((uint8_t)(WAKE_INITIAL_PKTS + k), s_wake.isFinalSlice,
+                                    buf + k * WAKE_PKT_LEN);
+                }
+                ccWriteBurst(m0.csPin, CC1101_TXFIFO, buf, sizeof(buf));
+                ccWriteReg(m0.csPin, CC1101_MCSM1, 0x30);   // TXOFF_MODE = 00 (return cleanly to IDLE)
+                s_wake.refilled = true;
+                m0.status->txWakeCount = m0.status->txWakeCount + WAKE_REFILL_PKTS;
+            } else if ((uint32_t)(radioNowUs() - s_wake.txStartUs) >= WAKE_TX_TIMEOUT_US) {
+                enterIdle(m0.csPin);
+                ccStrobe(m0.csPin, CC1101_SFTX);
+                wakeEnterRxSlice(m0);
+            }
+        } else {
+            if (marc == 0x01 || (uint32_t)(radioNowUs() - s_wake.txStartUs) >= WAKE_TX_TIMEOUT_US) {
+                if (marc != 0x01) {
+                    enterIdle(m0.csPin);
+                    ccStrobe(m0.csPin, CC1101_SFTX);
+                }
+                wakeEnterRxSlice(m0);
+            }
+        }
+        return;
+    }
+
+    // WAKE_RX on 868.950 MHz
+    if (m0FrameDone) {
+        s_wake.rxGotFrame = true;
+        s_wake.rxFrameDoneUs = radioNowUs();
+    }
+
+    bool sliceDone = false;
+    const uint32_t nowUs = radioNowUs();
+    if (s_wake.rxGotFrame) {
+        if ((uint32_t)(nowUs - s_wake.rxFrameDoneUs) >= WAKE_RX_REPLY_WAIT_US) {
+            sliceDone = true;
+        }
+    } else {
+        const uint32_t rxElapsedUs = (uint32_t)(nowUs - s_wake.rxStartUs);
+        if (!s_wake.rxExtended) {
+            if (rxElapsedUs >= WAKE_RX_SLICE_US) {
+                if (m0.frameLen > 0 || (readStatusSafe(m0, CC1101_RXBYTES) & 0x7FU) > 0U) {
+                    s_wake.rxExtended = true;
+                } else if ((uint32_t)(nowUs - s_wake.sliceStartUs) >= WAKE_SLICE_MS * 1000UL) {
+                    sliceDone = true;
+                }
+            }
+        } else if (rxElapsedUs >= WAKE_RX_SLICE_US + WAKE_RX_EXTEND_US) {
+            sliceDone = true;
+        }
+    }
+
+    if (sliceDone) {
+        s_wake.sliceIdx++;
+        s_wake.rotateIdx = (uint8_t)((s_wake.rotateIdx + 1U) % WAKE_MAX_TARGETS);
+        wakePruneExpired(nowMs);
+        if (s_wake.sliceIdx >= WAKE_MAX_SLICES || !wakeHasAnyTarget(nowMs)) {
+            memset(s_wakeTargets, 0, sizeof(s_wakeTargets));
+            s_wake.phase = WAKE_IDLE;
+            s_wake.activeCount = 0;
+        } else {
+            wakeStartTxSlice(nowMs);
+        }
+    }
+}
+
 // ---- commands ----
 
 /**
@@ -663,7 +985,21 @@ static void radioDoTx(RadioCmd& c) {
         bump(m0.diag->txAbortedRx);
         assemblerReset(m0);
     }
-    enterIdle(m0.csPin);
+    if (s_wake.phase == WAKE_TX) {
+        enterIdle(m0.csPin);
+        ccStrobe(m0.csPin, CC1101_SFTX);
+        s_lastTxEndUs = radioNowUs();
+        s_txActive = false;
+        s_hasLastTx = true;
+        ccWriteReg(m0.csPin, CC1101_FREQ2, 0x21);
+        ccWriteReg(m0.csPin, CC1101_FREQ1, 0x6B);
+        ccWriteReg(m0.csPin, CC1101_FREQ0, 0xD1);
+        ccWriteReg(m0.csPin, CC1101_SYNC1, 0xD3);
+        ccWriteReg(m0.csPin, CC1101_SYNC0, 0x91);
+        ccWriteReg(m0.csPin, CC1101_MCSM1, 0x3C);
+    } else {
+        enterIdle(m0.csPin);
+    }
     ccWriteReg(m0.csPin, CC1101_PKTLEN, VERISURE_PACKET_LEN);
     ccWriteReg(m0.csPin, CC1101_PKTCTRL0, 0x04);
     ccStrobe(m0.csPin, CC1101_SFTX);
@@ -696,6 +1032,19 @@ static void radioDoTx(RadioCmd& c) {
     ccWriteReg(m0.csPin, CC1101_PKTCTRL0, 0x00);
     enterRxMode(m0);
     m0.gapValid = false;
+    if (s_wake.phase != WAKE_IDLE) {
+        const uint32_t nowMs = millis();
+        wakePruneExpired(nowMs);
+        if (!wakeHasAnyTarget(nowMs)) {
+            s_wake.phase = WAKE_IDLE;
+            s_wake.activeCount = 0;
+        } else {
+            s_wake.phase = WAKE_RX;
+            s_wake.rxStartUs = radioNowUs();
+            s_wake.rxExtended = false;
+            s_wake.rxGotFrame = false;
+        }
+    }
 }
 
 /** CLI testspi for module 0 or 1: keeps the other module's CS HIGH throughout. */
@@ -785,6 +1134,11 @@ static void radioDoCommand(RadioCmd& c) {
         case RADIO_CMD_REINIT: {
             uint8_t idx = c.module < RADIO_NUM_MODULES ? c.module : 0;
             RadioModule& m = s_mod[idx];
+            if (idx == 0 && s_wake.phase != WAKE_IDLE) {
+                enterIdle(m.csPin);
+                ccStrobe(m.csPin, CC1101_SFTX);
+                wakeAbort();
+            }
             if (m.online) {
                 if (versionOk(ccReadStatus(m.csPin, CC1101_VERSION))) {
                     initModuleRegisters(m);
@@ -799,6 +1153,11 @@ static void radioDoCommand(RadioCmd& c) {
             break;
         }
         case RADIO_CMD_TESTSPI:
+            if (c.module == 0 && s_wake.phase != WAKE_IDLE) {
+                enterIdle(s_mod[0].csPin);
+                ccStrobe(s_mod[0].csPin, CC1101_SFTX);
+                wakeAbort();
+            }
             radioDoTestSpi(c.module);
             s_doneSeq = c.seq;
             xSemaphoreGive(s_done);
@@ -819,6 +1178,16 @@ static void radioDoCommand(RadioCmd& c) {
             }
             s_doneSeq = c.seq;
             xSemaphoreGive(s_done);
+            break;
+        }
+        case RADIO_CMD_WAKE: {
+            uint16_t tag16 = (uint16_t)(((uint16_t)c.pkt[0] << 8) | c.pkt[1]);
+            wakeAddTarget(c.arg, tag16, millis());
+            break;
+        }
+        case RADIO_CMD_WAKE_CANCEL: {
+            uint16_t tag16 = (uint16_t)(((uint16_t)c.pkt[0] << 8) | c.pkt[1]);
+            wakeCancelTarget(c.arg, tag16, millis());
             break;
         }
         default:
@@ -857,6 +1226,7 @@ static void radioTaskMain(void*) {
         RadioFrame completed[RADIO_NUM_MODULES];
         bool hasFrame[RADIO_NUM_MODULES] = { false, false };
         for (int i = 0; i < RADIO_NUM_MODULES; i++) {
+            if (i == 0 && s_wake.phase == WAKE_TX) continue;
             if (s_mod[i].online) radioServiceFifo(s_mod[i], &completed[i], &hasFrame[i]);
         }
         if (hasFrame[0] && hasFrame[1]) {
@@ -879,17 +1249,24 @@ static void radioTaskMain(void*) {
             if (!m.online) continue;
             if (m.stallSuspect) {
                 m.stallSuspect = false;
-                if (!versionOk(ccReadStatus(m.csPin, CC1101_VERSION))) goOffline(m);
-            } else if (m.frameLen == 0 && m.lastRxBytes == 0 &&
+                if (!versionOk(ccReadStatus(m.csPin, CC1101_VERSION))) {
+                    if (i == 0) wakeAbort();
+                    goOffline(m);
+                }
+            } else if (!(i == 0 && s_wake.phase != WAKE_IDLE) &&
+                       m.frameLen == 0 && m.lastRxBytes == 0 &&
                        (uint32_t)(nowMs - m.lastStatusMs) >= RADIO_STATUS_INTERVAL_MS) {
                 m.lastStatusMs = nowMs;
                 radioSampleStatus(m);
             }
         }
 
-        // 2. Commands (TX / REINIT / TESTSPI / SETMODE)
+        // 2. Commands (TX / REINIT / TESTSPI / SETMODE / WAKE / WAKE_CANCEL)
         RadioCmd c;
         while (xQueueReceive(s_cmdQ, &c, 0) == pdTRUE) radioDoCommand(c);
+
+        // 2b. Advance non-blocking WOR wake-burst slice state machine
+        wakeTick(millis(), hasFrame[0]);
 
         // 3. Independent offline probing every 2 s per module (200 us timeout if absent)
         for (int i = 0; i < RADIO_NUM_MODULES; i++) {
@@ -994,6 +1371,32 @@ bool radioRequestTx(const uint8_t pkt[VERISURE_PACKET_LEN], uint32_t frameStartU
     memcpy(c.pkt, pkt, VERISURE_PACKET_LEN);
     c.frameStartUs = frameStartUs;
     return sendCmd(c);
+}
+
+static bool sendWakeCmd(uint8_t type, const char* deviceId) {
+    if (!deviceId) return false;
+    for (int i = 0; i < 8; i++) {
+        if (!deviceId[i]) return false;
+    }
+    uint8_t addr8 = 0;
+    uint16_t tag16 = 0;
+    radioWorIdHash(deviceId, &addr8, &tag16);
+    RadioCmd c;
+    memset(&c, 0, sizeof(c));
+    c.type = type;
+    c.module = 0;
+    c.arg = addr8;
+    c.pkt[0] = (uint8_t)(tag16 >> 8);
+    c.pkt[1] = (uint8_t)(tag16 & 0xFFU);
+    return sendCmd(c);
+}
+
+bool radioRequestWake(const char* deviceId) {
+    return sendWakeCmd(RADIO_CMD_WAKE, deviceId);
+}
+
+void radioCancelWake(const char* deviceId) {
+    sendWakeCmd(RADIO_CMD_WAKE_CANCEL, deviceId);
 }
 
 static bool sendAndWait(uint8_t type, uint8_t module, uint8_t arg, uint32_t waitMs) {

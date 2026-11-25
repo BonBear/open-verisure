@@ -14,6 +14,7 @@
 
 #include "aes128.h"
 #include "flash_ctr.h"
+#include "cc1101.h"
 
 static int g_failures = 0;
 
@@ -302,6 +303,128 @@ static void test_flash_ctr_low_batt_and_ceiling(void) {
     ASSERT_EQ_INT(ctr_next(3000U, &c), -1);
 }
 
+static void test_wor_id_derivation(void) {
+    uint8_t addr8 = 0U;
+    uint16_t tag16 = 0U;
+    uint8_t wake[6];
+    char id_buf[9];
+    uint16_t i;
+
+    /* Known FNV-1a 32-bit vector for "2S5F554X": h = 0x4697FE37 */
+    cc1101_wor_derive_id("2S5F554X", &addr8, &tag16);
+    ASSERT_EQ_INT(addr8, 0xC9);
+    ASSERT_EQ_U32(tag16, 0x4697UL);
+
+    /* Verify 6-byte WOR wake frame packing for "2S5F554X" */
+    wake[0] = addr8;
+    wake[1] = (uint8_t)'W';
+    wake[2] = (uint8_t)'O';
+    wake[3] = (uint8_t)(tag16 >> 8);
+    wake[4] = (uint8_t)(tag16 & 0xFFU);
+    wake[5] = 100U;
+    ASSERT_EQ_INT(wake[0], 0xC9);
+    ASSERT_EQ_INT(wake[1], 0x57);
+    ASSERT_EQ_INT(wake[2], 0x4F);
+    ASSERT_EQ_INT(wake[3], 0x46);
+    ASSERT_EQ_INT(wake[4], 0x97);
+    ASSERT_EQ_INT(wake[5], 100);
+
+    /* Hardware address must never be 0x00 (broadcast) or 0xFF (broadcast) */
+    for (i = 0U; i < 512U; i++) {
+        uint8_t a = 0U;
+        uint16_t t = 0U;
+        snprintf(id_buf, sizeof(id_buf), "SR%06u", (unsigned)i);
+        cc1101_wor_derive_id(id_buf, &a, &t);
+        ASSERT_TRUE(a != 0x00U && a != 0xFFU);
+    }
+}
+
+static uint8_t sim_apply_dl_fast_wake(uint8_t dl10, uint8_t *fast_wake, uint8_t *ack_flush) {
+    if ((dl10 & 0x80U) != 0U) {
+        uint8_t new_fw = (dl10 & 0x01U) ? 1U : 0U;
+        if (new_fw != *fast_wake) {
+            *fast_wake = new_fw;
+            *ack_flush = 1U;
+            return 1U;
+        }
+    }
+    return 0U;
+}
+
+static uint8_t sim_siren_poll_state(uint8_t armed, uint8_t sounding, uint8_t cmd_ack, uint8_t fast_wake) {
+    uint8_t st = 0U;
+    if (armed != 0U) {
+        st |= 0x01U;
+    }
+    if (sounding != 0U) {
+        st |= 0x02U;
+    }
+    if (cmd_ack != 0U) {
+        st |= 0x04U;
+    }
+    if (fast_wake != 0U) {
+        st |= 0x08U; /* SIREN_STATE_FAST_WAKE */
+    }
+    return st;
+}
+
+static void test_wor_downlink_and_poll_state(void) {
+    static const uint8_t dev_key[16] = {
+        0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
+        0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C
+    };
+    uint8_t dl_plain[16];
+    uint8_t dl_enc[16];
+    uint8_t dl_dec[16];
+    uint8_t fast_wake = 0U;
+    uint8_t ack_flush = 0U;
+
+    /* 0x00 legacy downlink (valid bit 0x80 clear) must leave fast_wake unchanged */
+    memset(dl_plain, 0, sizeof(dl_plain));
+    dl_plain[0] = 'D';
+    dl_plain[1] = 'L';
+    dl_plain[10] = 0x00U;
+    dl_plain[14] = 'V';
+    dl_plain[15] = 'S';
+    aes128_ecb_encrypt(dev_key, dl_plain, dl_enc);
+    aes128_ecb_decrypt(dev_key, dl_enc, dl_dec);
+    ASSERT_EQ_INT(sim_apply_dl_fast_wake(dl_dec[10], &fast_wake, &ack_flush), 0);
+    ASSERT_EQ_INT(fast_wake, 0);
+    ASSERT_EQ_INT(ack_flush, 0);
+    ASSERT_EQ_INT(sim_siren_poll_state(1U, 0U, 0U, fast_wake), 0x01);
+
+    /* 0x81 enables fast_wake and triggers confirmation ack flush */
+    dl_plain[10] = 0x81U;
+    aes128_ecb_encrypt(dev_key, dl_plain, dl_enc);
+    aes128_ecb_decrypt(dev_key, dl_enc, dl_dec);
+    ASSERT_EQ_INT(sim_apply_dl_fast_wake(dl_dec[10], &fast_wake, &ack_flush), 1);
+    ASSERT_EQ_INT(fast_wake, 1);
+    ASSERT_EQ_INT(ack_flush, 1);
+    ASSERT_EQ_INT(sim_siren_poll_state(0U, 0U, 0U, fast_wake), 0x08);
+    ASSERT_EQ_INT(sim_siren_poll_state(1U, 1U, 1U, fast_wake), 0x0F);
+
+    /* Repeated 0x81 and legacy 0x00 when enabled must not alter fast_wake or re-flush */
+    ack_flush = 0U;
+    ASSERT_EQ_INT(sim_apply_dl_fast_wake(0x81U, &fast_wake, &ack_flush), 0);
+    ASSERT_EQ_INT(sim_apply_dl_fast_wake(0x00U, &fast_wake, &ack_flush), 0);
+    ASSERT_EQ_INT(fast_wake, 1);
+    ASSERT_EQ_INT(ack_flush, 0);
+
+    /* 0x80 disables fast_wake and triggers confirmation ack flush */
+    dl_plain[10] = 0x80U;
+    aes128_ecb_encrypt(dev_key, dl_plain, dl_enc);
+    aes128_ecb_decrypt(dev_key, dl_enc, dl_dec);
+    ASSERT_EQ_INT(sim_apply_dl_fast_wake(dl_dec[10], &fast_wake, &ack_flush), 1);
+    ASSERT_EQ_INT(fast_wake, 0);
+    ASSERT_EQ_INT(ack_flush, 1);
+    ASSERT_EQ_INT(sim_siren_poll_state(1U, 0U, 0U, fast_wake), 0x01);
+
+    /* Repeated 0x80 when disabled must not re-trigger ack flush */
+    ack_flush = 0U;
+    ASSERT_EQ_INT(sim_apply_dl_fast_wake(0x80U, &fast_wake, &ack_flush), 0);
+    ASSERT_EQ_INT(ack_flush, 0);
+}
+
 int main(void) {
     test_aes_fips197_appendix_b();
     test_aes_fips197_appendix_c1();
@@ -310,6 +433,8 @@ int main(void) {
     test_flash_ctr_ping_pong_rollover();
     test_flash_ctr_cut_write_and_skip();
     test_flash_ctr_low_batt_and_ceiling();
+    test_wor_id_derivation();
+    test_wor_downlink_and_poll_state();
 
     if (g_failures == 0) {
         printf("All SIREN firmware host tests passed.\n");

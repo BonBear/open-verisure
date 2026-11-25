@@ -996,6 +996,9 @@ static void handleApiStatus() {
     json += "\"gw_tx_over_budget\":" + String(duty.gwTxOverBudget ? "true" : "false") + ",";
     json += "\"gw_tx_packets\":" + String((unsigned long)duty.gwTxPackets) + ",";
     json += "\"gw_tx_total_ms\":" + String((unsigned long)duty.gwTxTotalMs) + ",";
+    json += "\"gw_b54_1h_ms\":" + String((unsigned long)duty.gwB54_1hMs) + ",";
+    json += "\"gw_b54_pct_tenths\":" + String((unsigned long)duty.gwB54PctTenths) + ",";
+    json += "\"gw_b54_packets\":" + String((unsigned long)duty.gwB54Packets) + ",";
     json += "\"fallback_pictures\":" + String((unsigned long)duty.totalFallbackPictures) + ",";
     json += "\"fallback_chunks\":" + String((unsigned long)duty.totalFallbackChunks) + ",";
     json += "\"fallback_airtime_ms\":" + String((unsigned long)duty.totalFallbackAirtimeMs) + ",";
@@ -1365,6 +1368,9 @@ static void handleApiSiren() {
     if (!downlinkRequestSiren(devId.c_str(), isOn, effDur, toneId)) {
         s_server.send(503, "application/json", "{\"ok\":false,\"error\":\"Request table full\"}");
         return;
+    }
+    if (downlinkGetSirenFastWake(devId.c_str()) && dutyCycleAllowGwWake((uint32_t)millis())) {
+        radioRequestWake(devId.c_str());
     }
     Serial.printf("[WebPortal] Siren %s (%u s, tone %u) requested for %s\n",
                   isOn ? "ON" : "OFF", (unsigned)effDur, (unsigned)toneId, devId.c_str());

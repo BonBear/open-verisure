@@ -361,3 +361,50 @@ TEST(ha_siren_discovery_and_state_payload) {
     REQUIRE(stCam.ok);
     CHECK(!stCam.has("siren"));
 }
+
+TEST(ha_siren_fast_wake_discovery_and_state) {
+    String fwTopic = haDiscoveryBuildSirenFastWakeTopic("2S5F554X");
+    CHECK_STR(fwTopic.c_str(), "homeassistant/switch/verisure_2S5F554X_fast_wake/config");
+
+    String fwPayload = haDiscoveryBuildSirenFastWakePayload("2S5F554X", "verisure");
+    Json j(fwPayload.c_str());
+    REQUIRE(j.ok);
+    CHECK(fwTopic.length() + fwPayload.length() + 10 < MQTT_BUFFER);
+    CHECK_STR(j.get("name"), "Fast Wake (Doorbell)");
+    CHECK_STR(j.get("unique_id"), "verisure_2S5F554X_fast_wake");
+    CHECK_STR(j.get("entity_category"), "config");
+    CHECK_STR(j.get("icon"), "mdi:bell-ring-outline");
+    CHECK_STR(j.get("command_topic"), "verisure/2S5F554X/siren/fast_wake/set");
+    CHECK_STR(j.get("state_topic"), "verisure/2S5F554X/state");
+    CHECK_STR(j.get("payload_on"), "ON");
+    CHECK_STR(j.get("payload_off"), "OFF");
+    CHECK(strstr(fwPayload.c_str(), "Verisure Siren (GW-SI)") != nullptr);
+
+    VerisureTelemetry t = {};
+    strcpy(t.deviceId, "2S5F554X");
+    t.valid = true;
+
+    // 0 = unknown -> omitted from state JSON
+    t.fastWakeState = 0;
+    Json stUnk(haStateBuildPayload(t).c_str());
+    REQUIRE(stUnk.ok);
+    CHECK(!stUnk.has("fast_wake"));
+
+    // 1 = OFF -> "fast_wake":"OFF"
+    t.fastWakeState = 1;
+    Json stOff(haStateBuildPayload(t).c_str());
+    REQUIRE(stOff.ok);
+    CHECK_STR(stOff.get("fast_wake"), "OFF");
+
+    // 2 = ON -> "fast_wake":"ON"
+    t.fastWakeState = 2;
+    Json stOn(haStateBuildPayload(t).c_str());
+    REQUIRE(stOn.ok);
+    CHECK_STR(stOn.get("fast_wake"), "ON");
+
+    // Non-sirens never emit fast_wake
+    strcpy(t.deviceId, "2JHL2MVN");
+    Json stDoor(haStateBuildPayload(t).c_str());
+    REQUIRE(stDoor.ok);
+    CHECK(!stDoor.has("fast_wake"));
+}
