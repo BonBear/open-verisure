@@ -41,6 +41,7 @@ verisure/
     state                    <-- JSON telemetry, published on each packet
     image                    <-- JPEG picture (camera only)
     picture/set              <-- picture command to a camera (D1..D6, HOLD)
+    siren/set                <-- siren ON/OFF JSON command (siren only: state, duration, tone)
   alarm/
     set                      <-- alarm on/off for the cameras
     state                    <-- current alarm state
@@ -51,6 +52,7 @@ homeassistant/
   sensor/verisure_<deviceId>_<key>/config          <-- battery, voltage, rssi
   camera/verisure_<deviceId>_camera/config         <-- camera picture (camera only)
   button/verisure_<deviceId>_picture*/config       <-- picture buttons (camera only)
+  siren/verisure_<deviceId>_siren/config           <-- HA siren entity with duration & available_tones (siren only)
   switch/verisure_gateway_alarm/config             <-- "Alarm (cameras)" switch
   sensor/verisure_gateway_<key>/config             <-- gateway diagnostics
 ```
@@ -60,7 +62,7 @@ homeassistant/
 ## 🎯 Entity Configuration in Home Assistant
 
 The gateway picks the entity set from the device ID: IDs starting with `2NCE` are motion cameras,
-all others are door/window sensors.
+IDs starting with `2S5F` are sirens (`GW-SI`), and all others are door/window sensors.
 
 ### Door/window sensor (7 entities)
 
@@ -90,6 +92,21 @@ all others are door/window sensors.
 The camera's sensor entities have `expire_after` 600 s: without a packet for 10 minutes (it polls
 every ~30 s, every ~2 minutes when disarmed) they turn unavailable instead of keeping old values.
 The door sensor's entities have `expire_after` 9000 s (2.5 h; it sends a heartbeat about every hour).
+
+### Siren (`2S5F*`, 5 entities)
+
+| Entity | Platform | Device Class / Topic | Description |
+| :--- | :---: | :---: | :--- |
+| **Siren** | `siren` | `verisure/<id>/siren/set` | Supports `duration` (1–180 s, default 60 s for `alarm`) and `available_tones`: `alarm`, `ding_dong`, `chime`, `double_beep`, `beep`, `tone`. State read from `{{ value_json.siren }}` (`ON` / `OFF`). |
+| **Tamper** | `binary_sensor` | `tamper` | Cover tamper switch `SW1` (`button` field: `ON` = cover removed) |
+| **Battery**, **Battery Voltage**, **Signal Strength** | `sensor` | as for the door sensor | Battery `%`, `mV`, and RF `rssi` (`expire_after` 600 s) |
+
+Example `verisure/2S5F554X/siren/set` payloads:
+```json
+{"state":"ON","tone":"alarm","duration":30}
+{"state":"ON","tone":"ding_dong"}
+{"state":"OFF"}
+```
 
 ### Gateway
 

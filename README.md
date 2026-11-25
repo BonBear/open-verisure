@@ -20,10 +20,10 @@ it into **Home Assistant** through an **ESP32-S2 + CC1101 gateway**: local, no c
 
 | Component | Folder | Hardware | Status |
 | :--- | :--- | :--- | :--- |
-| **Gateway** | [`868Receiver/`](868Receiver/README.md) | LOLIN S2 Mini (ESP32-S2) + CC1101 868 MHz | ✅ Working: decrypts sensors, MQTT auto-discovery, camera downlink, picture reassembly |
+| **Gateway** | [`868Receiver/`](868Receiver/README.md) | LOLIN S2 Mini (ESP32-S2) + CC1101 868 MHz | ✅ Working: decrypts sensors, MQTT auto-discovery, camera & siren downlink, picture reassembly |
 | **Door / window sensor** | [`VerisureDoorSensor/`](VerisureDoorSensor/README.md) | Verisure `GW-MC-SHOCK`, TI CC1110F32 | ✅ Working: contact, shock, tamper, battery; PM2 sleep (~26 µA idle), events verified |
 | **Motion camera** | [`MD_CAM/`](MD_CAM/README.md) | Verisure `GW MD CAM2`: CC1110F32 + Blackfin BF512 + OV7955 + IR flash + PIR | ✅ Working: alarm pictures, deltas, IR flash in the dark, PM2 sleep; bench tests pending |
-| Siren | [`SIREN/`](SIREN/README.md) | Verisure siren | 🔍 Research photos only |
+| **Siren** | [`SIREN/`](SIREN/README.md) | Verisure `GW-SI`: TI MSP430F149 + CC1101 (26 MHz) + OKI L22901-707 | ✅ Working: RF telemetry, downlink `0xA0`/`0xA1`, 6 HA tones (`alarm`, `ding_dong`, `chime`, `double_beep`, `beep`, `tone`), live E2E verified; full-volume HV horn test pending |
 
 ---
 
@@ -38,16 +38,21 @@ flowchart LR
         PIR["PIR"] --> CC["CC1110\n(radio, power, alarm logic)"]
         BF["Blackfin BF512\nOV7955 sensor, JPEG,\ndeltas, IR flash"] <-->|"software SPI"| CC
     end
+    subgraph SIREN["Siren (MSP430F149 + CC1101)"]
+        SR["Tamper / battery\nOKI L22901-707 audio"] --> SA["AES-128\n(device key)"]
+    end
     subgraph GW["Gateway (ESP32-S2 + CC1101)"]
         RX["58-byte RX frames\nsoftware CRC"] --> DEC["AES-128, replay filter"]
         DEC --> IMG["Picture reassembly\n(deltas spliced)"]
         DEC --> MQ["MQTT + HA discovery"]
         IMG --> MQ
-        MQ --> DL["Downlink:\nalarm state, picture commands"]
+        MQ --> DL["Downlink:\nalarm state, picture & siren commands"]
     end
     DA -.->|"24-byte packets"| RX
     CC -.->|"24-byte telemetry/poll\n56-byte picture packets"| RX
+    SA -.->|"24-byte telemetry/poll"| RX
     DL -.->|"24-byte answer to each poll"| CC
+    DL -.->|"24-byte answer to each poll"| SA
     MQ <-->|"MQTT"| HA["Home Assistant"]
 ```
 
@@ -65,7 +70,10 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 ├── MD_CAM/               Motion camera: CC1110 firmware, Blackfin program,
 │                         JTAG tools, e2e test, docs                       → MD_CAM/README.md
 ├── cc1110_common/        CC1110 code shared by both firmwares (AES, clocks, sleep timer, counter log)
-├── SIREN/                Siren research photos                            → SIREN/README.md
+├── SIREN/                Siren firmware (PlatformIO, MSP430F149),
+│                         hardware docs, photos                            → SIREN/README.md
+├── tools/                Host & bench tools (CC1101 SPI decoder,
+│                         ESP32-C3 MSP430 ROM BSL flasher, photo prep)     → tools/esp32_msp430_bsl/README.md
 ├── documentation/        Shared docs: protocol & crypto, CC flasher, gateway hardware, HA/MQTT
 ├── derive_key.py         Master key generation and per-device key derivation (KDF)
 ├── cc1110_tools.py       Shared by the CC1110 flash scripts: config.h, counter seed, serial flashing
@@ -84,10 +92,10 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 | :--- | :--- | :--- |
 | WEMOS LOLIN S2 Mini (ESP32-S2) | Gateway | USB-C, native USB serial |
 | CC1101 868 MHz module | Gateway radio | Wired to GPIO 3/5/7/9 ([868Receiver/README.md](868Receiver/README.md)); a straight ~8 cm wire antenna works much better than the helical spring |
-| ESP32 DevKit (or ESP32-C3 Super Mini) | ESP_CC_Flasher: programs the CC1110 in every sensor | Needed once per sensor; jumper wires or pogo pins for the debug header |
+| ESP32 DevKit (or ESP32-C3 Super Mini) | ESP_CC_Flasher (CC1110 sensors) or `tools/esp32_msp430_bsl/` (MSP430F149 siren) | Needed once per sensor; jumper wires or pogo pins for the debug header / BSL pads |
 | FT232H USB board | Camera only: the Blackfin's boot flash over JTAG (header J5) | Needed once per camera |
 | Home Assistant with an MQTT broker (Mosquitto) | Entities, automations | MQTT discovery, no YAML |
-| Verisure GW-MC-SHOCK / GW MD CAM2 | The devices | Their 8-character ID is on the label |
+| Verisure GW-MC-SHOCK / GW MD CAM2 / GW-SI | The devices | Their 8-character ID is on the label |
 
 Software: Python 3.8+ (`pip install -r requirements.txt`, which includes
 [PlatformIO](https://platformio.org/)), [SDCC](https://sdcc.sourceforge.net/) 4.5 or newer for the

@@ -1,8 +1,9 @@
 # Gateway (ESP32-S2 + CC1101)
 
 PlatformIO firmware for a **WEMOS LOLIN S2 Mini** with a **CC1101 868 MHz** module. It receives
-and decrypts the Verisure devices' packets, publishes them to Home Assistant over MQTT with
-auto-discovery, answers the camera's polls with the alarm state and picture commands, and
+and decrypts the Verisure devices' packets (door/window sensors, motion cameras, and `2S5F` sirens),
+publishes them to Home Assistant over MQTT with auto-discovery (including the HA `siren` entity with
+`duration` and `available_tones`), answers camera and siren polls with downlink commands, and
 reassembles camera pictures.
 
 ## Hardware

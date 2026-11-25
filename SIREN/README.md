@@ -1,9 +1,12 @@
-# Verisure siren (research)
+# Verisure siren (`GW-SI`)
 
-Photos of the Verisure siren's boards (CC1101 radio and others) and a general technical briefing
-([Verisure_technical_briefing.md](Verisure_technical_briefing.md)). No firmware yet. Measurements
-still to be taken go in [re_worksheet.md](re_worksheet.md); the cross-device overview is in
-[documentation/device_survey.md](../documentation/device_survey.md).
+Open-source firmware, hardware documentation, and board photos for the Verisure Siren (`GW-SI`,
+`MSP430F149` + `CC1101` 26 MHz + `OKI L22901-707`).
+
+- **Firmware:** [SIREN/firmware/README.md](firmware/README.md) (PlatformIO `timsp430`, AES-128-ECB telemetry & downlink `0xA0`/`0xA1`, OKI `L22901-707` 6-tone Home Assistant audio driver, live end-to-end verified on `2S5F 554X`)
+- **Flashing (ROM BSL):** [tools/esp32_msp430_bsl/README.md](../tools/esp32_msp430_bsl/README.md)
+- **Bench measurements & worksheet:** [re_worksheet.md](re_worksheet.md)
+- **Technical briefing & cross-device overview:** [Verisure_technical_briefing.md](Verisure_technical_briefing.md), [documentation/device_survey.md](../documentation/device_survey.md)
 
 ## Main parts (from the photos)
 
