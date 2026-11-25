@@ -22,5 +22,5 @@ The system overview, the parts list and the setup steps are in the main
 [README](../README.md#setup-step-by-step); each device has its own README
 ([gateway](../868Receiver/README.md), [door sensor](../VerisureDoorSensor/README.md),
 [camera](../MD_CAM/README.md)). The documents above are the reference behind them.
-Open work and bench notes are in [TODO.md](../TODO.md); `SIREN/` and the historical logs in
-`MD_CAM/docs/` are research notes, not setup instructions.
+`SIREN/`, `SMOKE_DETECTOR/`, `VOICEBOX/` and the historical logs in `MD_CAM/docs/` are device
+research notes, not setup instructions.

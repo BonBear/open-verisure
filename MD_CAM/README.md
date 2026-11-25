@@ -172,5 +172,3 @@ python MD_CAM/test_resend.py 7 D1 D2           # gateway drops every 7th chunk; 
 Photos are in [docs/images/](docs/images/): the main board is in `camera_board_front.jpg`,
 `camera_board_back.jpg` and `camera_board_front_marked.jpg`; picture samples from the camera are
 `camera_*_320x240.*`.
-
-Open work, including what needs someone at the bench, is listed in [TODO.md](../TODO.md).
