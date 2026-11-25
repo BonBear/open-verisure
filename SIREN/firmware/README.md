@@ -12,7 +12,7 @@ Phase 2 OpenVerisure firmware for the Verisure Siren (`M1765-1`, **TI MSP430F149
   - `0xBA` periodic polls (`120 s` disarmed, `30 s` armed, `5 s` sounding) with `120 ms` downlink RX window (`DL...VS`, `0xA0` OFF / `0xA1` ON with duration in `dl_plain[8]` and tone ID `0..5` in `dl_plain[9]`)
 - `LPM3` deep sleep (`Timer_A` 1.000 s tick + `Port 1` tamper interrupt; `LPM0` fallback if `LFXT1` faults).
 - **OKI L22901-707 (`IC2`) parallel audio driver:** `P6.0..P6.5` (`P6DIR = 0x3F`, `P6.4` falling-edge strobe) with active-LOW audio/op-amp rail `P1.4` (`1` = OFF idle, `0` = ON while sounding). Supports tone IDs `0..5` (`alarm`, `ding_dong`, `chime`, `double_beep`, `beep`, `tone`), auto-retriggering every `2 s` for `alarm` or durations `> 2 s`.
-- **Safety:** High-voltage horn boost converter (`P1.7` / `IC9`, active-HIGH) remains strictly **LOW (OFF)** by default and is only driven HIGH while sounding if `SIREN_ENABLE_HV_BOOST` is explicitly defined at compile time.
+- **Safety:** High-voltage horn boost converter (`P1.7` / `IC9`, active-HIGH) stays **INPUT (Hi-Z)** by default (`7.6 uA` LPM3 idle; driving `P1.7` `OUTPUT LOW` sinks `12.05 mA`) and is only driven `OUTPUT HIGH` while sounding if `SIREN_ENABLE_HV_BOOST` is explicitly defined at compile time.
 
 ## Configuration
 
@@ -49,7 +49,7 @@ python tools/esp32_msp430_bsl/bsl_flash.py flash --port COMx SIREN/firmware/.pio
 | :--- | :--- | :--- | :--- |
 | `P1.4` | `TP2` / `Q3` audio power rail (active-LOW) | Output | `1` (OFF) idle, `0` (ON) while sounding |
 | `P1.6` | `SW1` tamper switch | Input (no `PxREN`) | `P1IE` dynamic edge IRQ |
-| `P1.7` | `IC9` horn boost enable (active-HIGH) | Output | `0` (OFF); `1` while sounding only with `SIREN_ENABLE_HV_BOOST` |
+| `P1.7` | `IC9` horn boost enable (active-HIGH) | Input (Hi-Z) idle / Output if enabled | `INPUT` Hi-Z (`7.6 uA` LPM3); `OUTPUT HIGH` while sounding only with `SIREN_ENABLE_HV_BOOST` |
 | `P2.6` | CC1101 `GDO0` | Input | Sync / packet status |
 | `P2.7` | CC1101 `GDO2` | Input | High-Z input |
 | `P4.7` | `LED1` (active-high via `Q1`) | Output | `0` idle, brief blink on TX/boot/sounding |

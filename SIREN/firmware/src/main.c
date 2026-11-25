@@ -5,7 +5,7 @@
  * Phase 2 scope: persistent counter, AES-128-ECB uplink telemetry (boot 0x00,
  * tamper 0xB5, poll 0xBA), 120 ms downlink RX validation (DL...VS), LPM3
  * low-power sleep, and OKI L22901-707 (IC2) parallel audio driver on P6.0..P6.5
- * with audio rail (P1.4). HV horn boost (P1.7) remains strictly OFF unless
+ * with audio rail (P1.4). HV horn boost (P1.7) remains Hi-Z INPUT (OFF) unless
  * SIREN_ENABLE_HV_BOOST is explicitly defined at compile time.
  */
 
@@ -193,13 +193,16 @@ static void siren_audio_set(uint8_t on) {
         P1OUT &= (uint8_t)~BIT4;
 #ifdef SIREN_ENABLE_HV_BOOST
         P1OUT |= BIT7;
+        P1DIR |= BIT7;
 #else
+        P1DIR &= (uint8_t)~BIT7;
         P1OUT &= (uint8_t)~BIT7;
 #endif
         hal_delay_ms(20U);
         siren_ic2_strobe(s_sound_cmd);
         s_ic2_retrig_s = 0U;
     } else {
+        P1DIR &= (uint8_t)~BIT7;
         P1OUT &= (uint8_t)~BIT7;
         s_ic2_retrig_s = 0U;
         if ((P1OUT & BIT4) == 0U) {

@@ -229,7 +229,7 @@ def load_image(path: Path) -> dict[int, int]:
 def prepare_flash_chunks(
     mem: dict[int, int],
     allow_info: bool = False,
-    max_chunk: int = 240,
+    max_chunk: int = 96,
     allow_no_reset_vec: bool = False,
 ) -> list[tuple[int, bytes]]:
     """Validate addresses, align spans to even boundaries, and split into BSL chunks."""
@@ -473,22 +473,38 @@ def run_flash(
             cur_pw_map = {a: 0xFF for a in range(0xFFE0, 0x10000)}
             for addr, data in ordered_chunks:
                 hdr = struct.pack("<HHH", addr, len(data) // 2, 0x0000)
-                bridge.rx_data_block(0x03F0, hdr)
-                bridge.rx_data_block(0x0400, data)
-                bridge.load_pc(0x0300)
-                time.sleep(max(0.025, len(data) * 0.00015))
-                for i, b in enumerate(data):
-                    if 0xFFE0 <= addr + i <= 0xFFFF:
-                        cur_pw_map[addr + i] = b
-                next_pw = bytes(cur_pw_map[a] for a in range(0xFFE0, 0x10000))
-                bridge.enter()
-                bridge.rx_password(next_pw)
-                status_bytes = bridge.tx_data_block(0x03F4, 2)
-                (status,) = struct.unpack("<H", status_bytes)
-                if status != 0xCAFE:
-                    raise BslError(
-                        f"BSL v1.10 RAM stub failed at 0x{addr:04X}: status=0x{status:04X}"
-                    )
+                last_err: BslError | None = None
+                for attempt in range(3):
+                    if attempt > 0 or bridge.tx_data_block(0x0300, 2) != b"\x31\x40":
+                        bridge.rx_data_block(0x0300, BSL_V110_RAM_STUB)
+                    bridge.rx_data_block(0x03F0, hdr)
+                    bridge.rx_data_block(0x0400, data)
+                    bridge.load_pc(0x0300)
+                    time.sleep(max(0.05, len(data) * 0.00015))
+                    cand_pw_map = dict(cur_pw_map)
+                    for i, b in enumerate(data):
+                        if 0xFFE0 <= addr + i <= 0xFFFF:
+                            cand_pw_map[addr + i] = b
+                    next_pw = bytes(cand_pw_map[a] for a in range(0xFFE0, 0x10000))
+                    bridge.enter()
+                    bridge.rx_password(next_pw)
+                    status_bytes = bridge.tx_data_block(0x03F4, 2)
+                    (status,) = struct.unpack("<H", status_bytes)
+                    if status != 0xCAFE:
+                        last_err = BslError(
+                            f"BSL v1.10 RAM stub failed at 0x{addr:04X}: status=0x{status:04X}"
+                        )
+                        continue
+                    if verify:
+                        readback = bridge.tx_data_block(addr, len(data))
+                        if readback != data:
+                            last_err = BslError(f"Verification mismatch at 0x{addr:04X}")
+                            continue
+                    cur_pw_map = cand_pw_map
+                    break
+                else:
+                    assert last_err is not None
+                    raise last_err
         else:
             for addr, data in ordered_chunks:
                 bridge.rx_data_block(addr, data)

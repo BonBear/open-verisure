@@ -119,6 +119,28 @@ jobs:
             exit 1
           fi
 
+  siren:
+    name: Siren (MSP430F149, PlatformIO & host tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.platformio
+          key: pio-siren-${{ hashFiles('SIREN/firmware/platformio.ini') }}
+      - name: Fewer mmap random bits for AddressSanitizer
+        # ASan of GCC 13 can crash at start-up with the kernel's 32 bits (Ubuntu 24.04 runners)
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Host tests (AES-128 & flash counter log)
+        run: gcc -Wall -Wextra -Werror -fsanitize=address,undefined -DHOST_TEST -I SIREN/firmware/src tests/test_siren_firmware.c SIREN/firmware/src/aes128.c SIREN/firmware/src/flash_ctr.c -o /tmp/test_siren && /tmp/test_siren
+      - name: Install PlatformIO
+        run: pip install "platformio>=6.1"
+      - name: Build firmware (example config)
+        run: pio run -d SIREN/firmware -e siren_f149_ci
+
   secrets:
     name: Key guard (no real keys in the repository)
     runs-on: ubuntu-24.04
