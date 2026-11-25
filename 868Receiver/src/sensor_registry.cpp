@@ -10,7 +10,9 @@ static SensorRecord s_sensors[MAX_SENSORS];
 static int s_count = 0;
 
 void sensorRegistryInit() {
-    memset(s_sensors, 0, sizeof(s_sensors));
+    for (int i = 0; i < MAX_SENSORS; i++) {
+        s_sensors[i] = SensorRecord{};
+    }
     s_count = 0;
 }
 
