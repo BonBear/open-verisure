@@ -147,13 +147,13 @@ static uint32_t s_lastTxEndUs = 0;
 #define WAKE_MAX_ACTIVE       2
 #define WAKE_MAX_SLICES       28
 #define WAKE_INITIAL_PKTS     10
-#define WAKE_REFILL_PKTS      7
+#define WAKE_REFILL_PKTS      4
 #define WAKE_TOTAL_SLICE_PKTS (WAKE_INITIAL_PKTS + WAKE_REFILL_PKTS)
 #define WAKE_PKT_LEN          6
 #define WAKE_SLICE_MS         74UL
 #define WAKE_BURST_MS         (WAKE_MAX_SLICES * WAKE_SLICE_MS)   // 2072 ms
-#define WAKE_TX_TIMEOUT_US    65000UL
-#define WAKE_RX_SLICE_US      14000UL
+#define WAKE_TX_TIMEOUT_US    55000UL
+#define WAKE_RX_SLICE_US      22000UL
 #define WAKE_RX_EXTEND_US     20000UL
 #define WAKE_RX_REPLY_WAIT_US 40000UL
 
@@ -170,6 +170,7 @@ struct WakeState {
     WakePhase  phase;
     uint8_t    sliceIdx;
     bool       refilled;
+    bool       txFinalArmed;
     bool       isFinalSlice;
     bool       rxExtended;
     bool       rxGotFrame;
@@ -179,6 +180,7 @@ struct WakeState {
     uint32_t   sliceStartUs;
     uint32_t   txStartUs;
     uint32_t   rxStartUs;
+    uint32_t   rxExtendStartUs;
     uint32_t   rxFrameDoneUs;
 };
 
@@ -743,10 +745,11 @@ static void wakeEnterRxSlice(RadioModule& m0) {
 static void wakeBuildPacket(uint8_t k, bool isFinalSlice, uint8_t out[WAKE_PKT_LEN]) {
     const WakeTarget& tgt = (s_wake.activeCount == 2 && (k & 1U))
                           ? s_wake.activePair[1] : s_wake.activePair[0];
-    // Aim +2.5 ms into the next RX window (59.2 + 74 = 133.2 ms), or current RX window on final slice
+    // 14 pkts = 46.7 ms TX -> RX opens at ~49.5 ms and runs to 74.0 ms (24.5 ms wide).
+    // Aim +7.5 ms into the next slice's RX window (74 + 49.5 + 7.5 = 131.0 ms), or +6.5 ms on final slice.
     const int32_t targetUs = isFinalSlice
-                           ? (60000L - (int32_t)(k + 1U) * 3335L)
-                           : (133200L - (int32_t)(k + 1U) * 3335L);
+                           ? (56000L - (int32_t)(k + 1U) * 3335L)
+                           : (131000L - (int32_t)(k + 1U) * 3335L);
     const uint8_t rxInMs = (targetUs <= 0) ? 0 : (uint8_t)((targetUs + 500L) / 1000L);
     out[0] = tgt.addr8;
     out[1] = 0x57;   // 'W'
@@ -813,6 +816,7 @@ static bool wakeStartTxSlice(uint32_t nowMs) {
     s_txBeginUs = nowUs;
     s_wake.phase = WAKE_TX;
     s_wake.refilled = false;
+    s_wake.txFinalArmed = false;
     s_wake.isFinalSlice = isFinalSlice;
     s_wake.sliceStartUs = nowUs;
     s_wake.txStartUs = nowUs;
@@ -904,7 +908,6 @@ static void wakeTick(uint32_t nowMs, bool m0FrameDone) {
                                     buf + k * WAKE_PKT_LEN);
                 }
                 ccWriteBurst(m0.csPin, CC1101_TXFIFO, buf, sizeof(buf));
-                ccWriteReg(m0.csPin, CC1101_MCSM1, 0x30);   // TXOFF_MODE = 00 (return cleanly to IDLE)
                 s_wake.refilled = true;
                 m0.status->txWakeCount = m0.status->txWakeCount + WAKE_REFILL_PKTS;
             } else if ((uint32_t)(radioNowUs() - s_wake.txStartUs) >= WAKE_TX_TIMEOUT_US) {
@@ -913,7 +916,13 @@ static void wakeTick(uint32_t nowMs, bool m0FrameDone) {
                 wakeEnterRxSlice(m0);
             }
         } else {
-            if (marc == 0x01 || (uint32_t)(radioNowUs() - s_wake.txStartUs) >= WAKE_TX_TIMEOUT_US) {
+            if (!s_wake.txFinalArmed && (txBytes & 0x7FU) < WAKE_PKT_LEN) {
+                // Final packet is now transmitting; switch TXOFF_MODE = 00 so CC1101 returns cleanly to IDLE
+                ccWriteReg(m0.csPin, CC1101_MCSM1, 0x30);
+                s_wake.txFinalArmed = true;
+            }
+            if (marc == 0x01 || (txBytes & 0x80U) != 0U || marc == 0x16 ||
+                (uint32_t)(radioNowUs() - s_wake.txStartUs) >= WAKE_TX_TIMEOUT_US) {
                 if (marc != 0x01) {
                     enterIdle(m0.csPin);
                     ccStrobe(m0.csPin, CC1101_SFTX);
@@ -942,11 +951,12 @@ static void wakeTick(uint32_t nowMs, bool m0FrameDone) {
             if (rxElapsedUs >= WAKE_RX_SLICE_US) {
                 if (m0.frameLen > 0 || (readStatusSafe(m0, CC1101_RXBYTES) & 0x7FU) > 0U) {
                     s_wake.rxExtended = true;
+                    s_wake.rxExtendStartUs = nowUs;
                 } else if ((uint32_t)(nowUs - s_wake.sliceStartUs) >= WAKE_SLICE_MS * 1000UL) {
                     sliceDone = true;
                 }
             }
-        } else if (rxElapsedUs >= WAKE_RX_SLICE_US + WAKE_RX_EXTEND_US) {
+        } else if ((uint32_t)(nowUs - s_wake.rxExtendStartUs) >= WAKE_RX_EXTEND_US) {
             sliceDone = true;
         }
     }
