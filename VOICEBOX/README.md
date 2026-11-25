@@ -1,12 +1,13 @@
 # Verisure voicebox GW-AUD-VB (research)
 
-Photo-based hardware survey of the Verisure voicebox **GW-AUD-VB**, made before any bench work.
-No firmware or protocol work yet. Measurements still to be taken go in
-[re_worksheet.md](re_worksheet.md); the cross-device overview is in
+Photo-based hardware survey and reverse-engineering plan for the Verisure voicebox **GW-AUD-VB**
+(before DMM/bench measurements). Bench measurements go in
+[docs/re_worksheet.md](docs/re_worksheet.md); the cross-device overview is in
 [documentation/device_survey.md](../documentation/device_survey.md).
 
-Everything below comes from the photos. "Confirmed" means the marking or the silkscreen text can be
-read in a photo; everything else is marked as an assumption to verify.
+Everything below comes from the photos and visual PCB inspection. "Confirmed" means the marking,
+silkscreen, or physical part can be read directly; everything else is marked as an assumption to
+verify on the bench.
 
 ## Unit data (from the label)
 
@@ -18,88 +19,109 @@ read in a photo; everything else is marked as an assumption to verify.
 | HW / SW | 6.0 / 18.00 |
 | Date (YYMMDD) | 160521 |
 | Maker | Panasonic Corporation for Securitas Direct AB, Made in Japan, CE 0682 |
-| Battery | 3 lithium batteries, 3 V d.c. (`SH384552520`), three separate bays in the back cover |
+| Battery | 3× `CR-2/3AZ` (3.0 V Li-MnO2, Panasonic `SH384552520`), three separate bays in the back cover |
 
 ## Main parts
 
 | Ref | Marking | Identification | Status |
 | :--- | :--- | :--- | :--- |
-| MCU | `TI 61A47XTG4 M430F5435A REV H` (LQFP-80) | **TI MSP430F5435A** (MSP430F5xx, 192 KB flash, 16 KB RAM) | Confirmed |
-| Sub-GHz radio | `44601B BCL01Z 1534` (QFN-20, 4x4) | **Silicon Labs Si4460** rev B1 sub-GHz transceiver (assumed from the `4460 1B` marking) | Very likely; confirm on the bench |
-| Crystal next to the Si4460 | not readable | Silicon Labs AN785 recommends 26 MHz for 868 MHz designs (family default 30 MHz) | To measure |
-| `WLAG` (SOT-23-5) | `WLAG` | LDO or RF switch next to the radio | Unknown |
-| DSP | `DSP Group DCX81ACPCFAE4FNC-PB ©2010 DSPG P3XT74.0G.A` (LQFP ~100) | **DSP Group DCX81**, DECT/ULE voice SoC (audio codec, speakerphone DSP, DECT radio) | Confirmed marking; role here (voice codec only, or DECT link to the hub) to find out |
-| Flash next to the DCX81 | `winbond 25Q16DWSIG 1602` (SOIC-8) | Winbond **W25Q16DW**, 16 Mbit **1.8 V** SPI NOR flash: probably the DCX81 firmware and voice prompts | Confirmed marking |
-| SOIC/MSOP-8 on the back, top | not readable | Near the microphone: microphone preamp or EEPROM | Unknown |
-| Large MSOP-8 on the back (right of top) | not readable | Unknown | Unknown |
-| `SP1` 4/6-pin parts on the back | `SP1 6E9`, `SP1 51C` | Unknown (load switches?) | Unknown |
-| Microphone | gold MEMS can with port hole, top of the back side | MEMS microphone | Confirmed part type |
-| PIR | white dome lens + small board `M1821` with 3 leads and R/W/B wires | Passive infrared motion sensor | Assumption from the shape |
-| Speakers | 2x `M36BN20-A 8Ω 0.5W` | 36 mm 8 Ω speakers in the front cover | Confirmed |
-| Output capacitor | `p3 330 6V` (330 µF/6.3 V) | Audio amplifier / boost reservoir | Confirmed |
-| U.FL connectors | two (top of the back, bottom right of the back) | RF test points for the two radios | Confirmed parts |
-| Wire antennas | two bent wires along the long edges | Probably one for 868 MHz and one for 1.9 GHz DECT | Assumption |
-| FPC connector | ~24-pin ZIF on the front | To the front panel (buttons/LEDs) | Assumption |
-| Tact switch | next to the FPC connector | Pairing / reset button? | Unknown |
-| PCB | `K1969-1` | Board number | Confirmed |
+| MCU | `TI 61A47XTG4 M430F5435A REV H` (LQFP-80 PN) | **TI MSP430F5435A** (MSP430F5xx, 192 KB flash, 16 KB RAM). Pin 1 at bottom-left (white PCB dot in `voicebox_closeup_msp430.jpg`); pins 11–12 (`XIN`/`XOUT`) route directly to `DA609C`; pins 71–76 (JTAG/SBW/RST) sit directly opposite the front pogo pad cluster | Confirmed |
+| MCU 32 kHz crystal | `DA609C` (2-pad metal can) | 32.768 kHz XT1 crystal routed to MSP430 pins 11–12 (`P7.0/XIN`, `P7.1/XOUT`) | Visually traced |
+| Sub-GHz radio | `44601B BCL01Z 1534` (QFN-20, 4×4 mm) | **Silicon Labs Si4460** rev B1 sub-GHz transceiver. Pin 1 dot at bottom-right (`voicebox_board_front.jpg`); pins 11–15 (`nIRQ`, `SCLK`, `SDO`, `SDI`, `nSEL`) on left edge; pins 16–17 (`XOUT`/`XIN`) route directly down to the metal crystal | Very likely; confirm on the bench |
+| Si4460 crystal | faint (`26...`?) 4-pad metal can | Silicon Labs AN785 recommends 26 MHz for 868 MHz designs (family default 30 MHz) | To measure |
+| `WLAG` (SOT-23-5) | `WLAG` | Next to Si4460 RF network; `WLA` matches ABLIC/SII `S-1315` LDO, or could be an RF switch | Measure voltage & continuity |
+| DSP / DECT SoC | `DSP Group DCX81ACPCFAE4FNC-PB ©2010 DSPG P3XT74.0G.A` (LQFP) | **DSP Group DCX81**, DECT/ULE voice SoC (audio codec, speakerphone DSP, DECT radio), surrounded by an unpopulated RF shield frame | Confirmed marking; confirm DECT RF role with SDR |
+| DCX81 crystal | `D138` (4-pad metal can, left of DCX81) | **13.824 MHz** DECT reference crystal (12 × 1.152 MHz DECT bit clock) | Visually read; verify on bench |
+| Flash next to DCX81 | `winbond 25Q16DWSIG 1602` (SOIC-8) | Winbond **W25Q16DW**, 16 Mbit (2 MiB) **1.8 V ONLY** SPI NOR flash (1.65–1.95 V, abs max 2.4 V): likely DCX81 firmware and voice prompts | Confirmed marking (**do not apply 3.3 V!**) |
+| Mic preamp (back, top) | `2732 / 613 / JRC` (MSOP-8 / VSP8) | **NJM2732** (Nisshinbo/JRC) dual rail-to-rail low-noise 1.8–6.0 V op-amp directly below the MEMS mic | Visually read; confirm by continuity |
+| MSOP-8 on back (right of top) | `4G34 / 54663` (tentative) | Next to DECT U.FL `F1` and `SP1 539` — possible audio amplifier or regulator | Unknown; trace on bench |
+| Battery switches (back, ×3) | `SP1 539` (×3, 4/6-pin DFN along right edge) | Three identical parts paired with SMD fuses `F1`/`F2`/`F3` (marked `N`) and diodes (`M`) — almost certainly per-bay OR-ing / load-switch / reverse-polarity protection for the 3× `CR-2/3AZ` cells | Assumption; confirm by continuity |
+| SOT-23 transistors (×5) | `64` (3 right of MSP430, 2 near top battery, 1 near Si4460) | Digital transistors or MOSFETs (Panasonic/Rohm `64` family) | Unknown |
+| 6-pin parts near MSP430 (×2) | `21` (SOT-363 / SC-70-6) | Dual transistor / level shifter / logic gate near MSP430 & PIR connector | Unknown |
+| Microphone | gold MEMS can with acoustic port, top of back side | Analog MEMS microphone (feeds `NJM2732`) | Confirmed part type |
+| PIR | white Fresnel dome + daughterboard `M1821` (3 leads, R/W/B wires to back 4-pin header) | Passive infrared motion sensor | Confirmed assembly |
+| Speakers | 2× `M36BN20-A 8Ω 0.5W` | 36 mm 8 Ω speakers in front cover, wired to the two 2-pin `W B` JST headers (pads `45` and `28`) | Confirmed |
+| Output capacitor | `p3 330 6V` (330 µF / 6.3 V) | Reservoir capacitor next to `F3`/`F4` and `+` pad `44` | Confirmed |
+| Battery connectors (×3) | three identical 2-pin white JST headers along front right edge (`01`, `03`, `04`) | Match the three `CR-2/3AZ` (`SH384552520`) bays in the back cover | Confirmed layout; confirm parallel vs split rails |
+| U.FL connectors | two: `F1` (back top, DCX81/DECT) and `2` (back bottom, Si4460/868 MHz) | Inline RF test points for the two radios | Confirmed |
+| Wire antennas | long wire (top-front / bottom-back, Si4460) + short L-wire (bottom-front / top-back, DCX81) | Long ≈ 868 MHz (λ/4 ≈ 86 mm); short ≈ 1.9 GHz DECT (λ/4 ≈ 39 mm) | Visually traced; measure exact lengths |
+| FPC connector | 24-pin ZIF on front | Connects to front panel (buttons / LEDs) | Assumption |
+| Tact switch | next to FPC connector and pads `49`/`02`/`60` | Tamper switch (back cover / wall bracket) or pairing button | Confirm on bench |
+| PCB | `K1969-1` | Panasonic board number | Confirmed |
 
 ## Radio
 
 Two radios are fitted:
 
-- **Si4460** (sub-GHz): most likely the Verisure 868 MHz alarm link (the same link as the door sensor
-  and the siren).
-- **DCX81** (DECT 1.88–1.90 GHz in Europe): either the two-way voice link to the hub or only used as
-  the voice DSP. To find out with an SDR at 1.88–1.90 GHz during a voice session.
+- **Si4460** (sub-GHz, long wire antenna, U.FL `2`): almost certainly the Verisure 868.950 MHz alarm
+  link (same PHY as the door sensor and siren — confirm with gateway `sniff` and Saleae SPI capture).
+- **DCX81** (DECT 1.88–1.90 GHz in Europe, `13.824 MHz` crystal `D138`, short wire antenna, U.FL
+  `F1`): full DECT RF front-end is populated (antenna + U.FL + shield footprint), strongly suggesting
+  it handles the two-way DECT voice link to the hub in addition to speakerphone DSP. Confirm with an
+  SDR at 1.88–1.90 GHz during a voice session.
 
 ## Debug / programming
 
-No labelled header was found. Candidates:
+No labelled header is printed. Candidates:
 
-- **Pogo pad cluster** on the front (pads 41, 42, 51–59, 61, 66, 67 and others; about 20 large pads in
-  a hexagonal grid next to the FPC connector). This is most likely the factory test/programming
-  jig. The MSP430F5435A can be programmed through 4-wire JTAG (TDO/TDI/TMS/TCK + TEST/RST) or
-  Spy-Bi-Wire (SBWTCK = TEST, SBWTDIO = RST); both need a TI FET (MSP-FET or a LaunchPad's eZ-FET),
-  which the bench does not have yet. The UART BSL (P1.6/P1.5) is not a read path: a wrong password
-  mass-erases the flash. The DCX81 has its own JTAG/UART.
-- Numbered test pads around the MCU: 70, 71, 72, 76, 77, 79, 101, 102, 104, 105.
-- Others: 1, 2, 28, 45, 49, 62, 63, 65, 73–75, 78, 82, 88, 96, 97, 100, 103, 106–108, 110, 121.
+- **Pogo pad cluster** on the front (16 large round pads in a staggered 2-column grid next to the
+  FPC connector: labelled `02, 41, 42, 51–61, 66, 67`, directly behind the left edge of the
+  MSP430F5435A). This is almost certainly the factory programming/test jig carrying MSP430 4-wire
+  JTAG (`PJ.0–PJ.3`, pins 72–75), `TEST/SBWTCK` (pin 71), `RST/NMI/SBWTDIO` (pin 76), UART BSL
+  (`P1.6`/`P1.5`), and power/GND.
+- **Numbered test pads around the MSP430** on the back: `70, 71, 72, 76, 77, 79, 101, 102, 104, 105`
+  (sitting right along pins 21–40, opposite the Si4460 — prime candidates for Si4460 SPI / `nIRQ` /
+  `SDN` test points!).
+- **MSP430F5435A programming:** supports both 4-wire JTAG and 2-wire Spy-Bi-Wire (`SBWTCK` = pin 71,
+  `SBWTDIO` = pin 76). Unlike the siren's MSP430F149, a TI LaunchPad eZ-FET (SBW) *does* support the
+  F5435A. The F5435A has a JTAG security fuse, and its UART BSL password is the 32-byte interrupt
+  vector table — **never try the BSL** on this unit (wrong password mass-erases the flash). Details:
+  [documentation/bench_recipes.md](../documentation/bench_recipes.md).
+- **W25Q16DW external flash:** **1.8 V ONLY** — requires a 1.8 V level shifter (e.g. TXB0104 /
+  TXS0108) or a 1.8 V-VCCIO FT232H, never a direct 3.3 V clip.
 
-The MSP430F5xx has a JTAG security fuse, and its BSL password is the interrupt vector table, which
-is unknown without the firmware. Check the JTAG state with a FET before anything else, and never try
-the BSL on this unit. Details: [documentation/bench_recipes.md](../documentation/bench_recipes.md).
+## Reverse-engineering plan
+
+1. **Phase 0 (Passive DMM, batteries disconnected):** Confirm how the 3× `CR-2/3AZ` connectors
+   (`01`/`03`/`04`) and `SP1 539` / `F1`–`F3` combine onto the supply rails; map the front pogo pad
+   cluster to MSP430 pins 71–76 (JTAG/SBW/RST) and `P1.5`/`P1.6` (BSL); map back test pads `70–79` /
+   `101–105` to the Si4460 SPI pins (pins 1, 11–15); trace the speakers (`W B` at `45`/`28`) to the
+   audio amplifier.
+2. **Phase 1 (Active read-only at 3.0 V via Otii Arc / PS3005D):** Measure rail voltages (`DVCC`,
+   `Si4460 VDD`, `W25Q16DW VCC` ≈ 1.8 V, `WLAG`, 330 µF cap) and idle/PIR/TX current; listen on
+   868.950 MHz (`sniff`/SDR) and sniff MSP430 ↔ Si4460 SPI at boot with Saleae Logic 4.
+3. **Phase 2 (External flash & JTAG):** Dump `W25Q16DW` at **1.8 V** (level-shifted FT232H +
+   `flashrom`) and inspect for DCX81 firmware / audio prompts; check MSP430 JTAG/SBW fuse state once
+   a TI FET / LaunchPad eZ-FET is available.
+4. **Phase 3 (OpenVerisure firmware):** Evaluate custom MSP430F5435A + Si4460 firmware (868.950 MHz
+   AES-128 KDF protocol, PIR motion + tamper + battery + local speaker chimes/voice prompts).
 
 ## Photo requests
 
-New photos that would identify the parts the current ones cannot. How to take them is in
-[documentation/device_survey.md](../documentation/device_survey.md#photo-requests). Tick an item when
-the photo is in the folder.
+New photos that would identify the remaining unreadable parts. How to take them is in
+[documentation/device_survey.md](../documentation/device_survey.md#photo-requests). Tick an item
+when the photo is in `docs/images/`.
 
-- [ ] The **Si4460** (`44601B`) and its **crystal** next to it (top of the front side): straight on, to
-      confirm the radio and read the crystal frequency.
-- [ ] **`WLAG`** (SOT-23-5) next to the radio, readable.
-- [ ] The **SOIC/MSOP-8 next to the microphone** (back, top) and the **MSOP-8 on the back, right**: the
-      markings are not readable in the current photos.
-- [ ] The **`SP1 6E9`**, **`SP1 51C`** and the 6-pin **`21`** parts on the back, plus the SOT parts
-      marked `B4`, `64`, `6P`.
+- [x] **Batteries:** confirmed `3× CR-2/3AZ` (3.0 V Li-MnO2, `SH384552520`).
+- [x] **DCX81 crystal:** read as `D138` (13.824 MHz DECT).
+- [x] **SOIC/MSOP-8 next to the microphone:** read as `2732 / 613 / JRC` (`NJM2732` dual op-amp).
+- [ ] The **Si4460 crystal** (below `44601B` on the front): straight-on macro to read the exact frequency marking.
+- [ ] The **MSOP-8 on the back, right** (`4G34 / 54663` tentative): raking light to confirm exact part number.
 - [ ] Under the **two black foam squares** on the back, if they can be lifted without damage.
-- [ ] The **DCX81 crystal** and the area around the DCX81 for test pads (UART/JTAG).
-- [ ] The **pogo pad cluster** straight on with all pad numbers readable and a ruler in the picture.
 - [ ] The **other end of the FPC cable** (front panel board: buttons, LEDs) and its markings.
-- [ ] The **batteries**: type and size.
-- [ ] Both **antenna wires** in full length, with a ruler (the length tells which band each serves).
+- [ ] Both **antenna wires** in full length, with a ruler (to confirm exact lengths).
 
 ## Photos
 
-Photos with GPS/EXIF metadata removed and downscaled to 3264 px.
+Photos with GPS/EXIF metadata removed and downscaled to 3264 px live in [docs/images/](docs/images/):
 
-* [voicebox_board_front.jpg](voicebox_board_front.jpg): front (component) side, pogo pads, FPC, PIR, DCX81.
-* [voicebox_board_front_in_housing.jpg](voicebox_board_front_in_housing.jpg): front side in the housing.
-* [voicebox_board_back.jpg](voicebox_board_back.jpg): back side: MSP430, microphone, U.FL, antennas.
-* [voicebox_board_and_speakers.jpg](voicebox_board_and_speakers.jpg): board lifted, speaker wiring.
-* [voicebox_speakers_side.jpg](voicebox_speakers_side.jpg): speakers and the PIR board, side view.
-* [voicebox_closeup_msp430.jpg](voicebox_closeup_msp430.jpg), [voicebox_closeup_msp430_bottom.jpg](voicebox_closeup_msp430_bottom.jpg): the MSP430F5435A.
-* [voicebox_closeup_dcx81_flash.jpg](voicebox_closeup_dcx81_flash.jpg): the DCX81 and the W25Q16DW.
-* [voicebox_closeup_winbond.jpg](voicebox_closeup_winbond.jpg): the W25Q16DW flash.
-* [voicebox_closeup_rf_connector.jpg](voicebox_closeup_rf_connector.jpg): U.FL and antenna feed at the bottom.
-* [voicebox_housing_label.jpg](voicebox_housing_label.jpg), [voicebox_label.jpg](voicebox_label.jpg), [voicebox_label_closeup.jpg](voicebox_label_closeup.jpg): back cover and rating label.
+* [docs/images/voicebox_board_front.jpg](docs/images/voicebox_board_front.jpg): front (component) side — Si4460, pogo pads, FPC, 3 battery JSTs, PIR, W25Q16DW, DCX81.
+* [docs/images/voicebox_board_front_in_housing.jpg](docs/images/voicebox_board_front_in_housing.jpg): front side in the housing over the speakers.
+* [docs/images/voicebox_board_back.jpg](docs/images/voicebox_board_back.jpg): back side — MEMS mic, NJM2732, `SP1 539` (×3), MSP430F5435A, U.FL `F1` & `2`, antennas.
+* [docs/images/voicebox_board_and_speakers.jpg](docs/images/voicebox_board_and_speakers.jpg): board lifted, speaker wiring to the two `W B` JST headers.
+* [docs/images/voicebox_speakers_side.jpg](docs/images/voicebox_speakers_side.jpg): speakers and PIR board `M1821`, side view.
+* [docs/images/voicebox_closeup_msp430.jpg](docs/images/voicebox_closeup_msp430.jpg), [docs/images/voicebox_closeup_msp430_bottom.jpg](docs/images/voicebox_closeup_msp430_bottom.jpg): the MSP430F5435A, `DA609C` 32.768 kHz crystal, and test pads `70–79`/`101–105`.
+* [docs/images/voicebox_closeup_dcx81_flash.jpg](docs/images/voicebox_closeup_dcx81_flash.jpg): the DCX81, `D138` 13.824 MHz crystal, and W25Q16DW.
+* [docs/images/voicebox_closeup_winbond.jpg](docs/images/voicebox_closeup_winbond.jpg): the W25Q16DW 1.8 V SPI NOR flash and speaker JST `28`.
+* [docs/images/voicebox_closeup_rf_connector.jpg](docs/images/voicebox_closeup_rf_connector.jpg): U.FL `2` and 868 MHz antenna feed at the bottom of the back side.
+* [docs/images/voicebox_housing_label.jpg](docs/images/voicebox_housing_label.jpg), [docs/images/voicebox_label.jpg](docs/images/voicebox_label.jpg), [docs/images/voicebox_label_closeup.jpg](docs/images/voicebox_label_closeup.jpg): back cover (3× `CR-2/3AZ` bays) and rating label.
