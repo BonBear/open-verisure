@@ -219,8 +219,22 @@ python tools/cc1101_spi_decode.py capture.csv --xtal-mhz 27
 ```
 
 Use `--xtal-mhz 26` if XT1 turns out to be 26 MHz. The tool prints the strobes, the final register
-image and the derived carrier, data rate, deviation, sync word and WOR timing. The Si4460 uses a
-command-based API, not registers; the tool does not decode it (yet).
+image and the derived carrier, data rate, deviation, sync word and WOR timing.
+
+The voicebox Si4460 uses a command-based API, not registers. Decode its capture with:
+
+```
+python tools/si446x_spi_decode.py capture.csv
+```
+
+It logs every command (`POWER_UP`, `SET_PROPERTY`, `START_TX`, `CHANGE_STATE`, ...), pairs each
+`READ_CMD_BUFF` reply (CTS = `0xFF`) with the command that asked for it, collects the
+`WRITE_TX_FIFO` / `READ_RX_FIFO` payloads, and prints the final property image with the derived
+carrier, channel step, deviation, data rate, modulation, sync word, preamble and CRC. The crystal
+frequency comes from the `POWER_UP` command (`XO_FREQ`), so start the capture before power-on;
+`--xtal-mhz` overrides it. The formulas follow the Si446x API documentation and are marked
+"verify against WDS" in the source: check the first real capture against Silicon Labs WDS before
+relying on the derived values. Polls with CTS not ready are only counted (`--verbose` lists them).
 
 ### Pins (CC1101, QFN20, TI SWRS061)
 

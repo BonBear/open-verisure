@@ -7,6 +7,17 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
+### Tools
+
+- `tools/si446x_spi_decode.py`: decodes a Saleae SPI capture of a Si4460/Si446x radio (voicebox)
+  into the command log, property image, TX/RX payloads and derived RF settings.
+
+### Voicebox
+
+- Corrected MSP430F5435A PN pin references (XT1 pins 13/14, BSL `P1.1`/`P1.2`), added the verified
+  PN pin table, extended the bench worksheet, and added front/back photo overlays that project the
+  MSP430 pins onto the pogo cluster and the Si4460 onto the back test pads.
+
 ## [1.0.0] - 2026-11-22
 
 The first release. Everything below is new.

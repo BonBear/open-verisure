@@ -52,9 +52,10 @@ Verified **MSP430F5435A (LQFP-80 PN)** debug pins (Pin 1 = bottom-left white dot
 - Pin **76**: `RST/NMI/SBWTDIO`
 - Pin **18** / **19**: `P1.1` / `P1.2` = BSL TXD / RXD (do **not** invoke BSL!)
 
-The cluster sits directly over the pin 61–80 edge (front/back photo overlay). SBW needs only pins
-71 and 76 plus `DVCC`/`GND`, so the JTAG test below can use thin wires on the IC pins before this
-table is filled in.
+Photo overlay (`docs/images/voicebox_overlay_msp430_on_front.jpg`, about ±1.5 mm): pins 71–76
+fall on the pad row next to the labels `51`/`54`/`56`, so beep those pads (and one row either side)
+against pins 71–76 first. SBW needs only pins 71 and 76 plus `DVCC`/`GND`, so the JTAG test below
+can use thin wires on the IC pins before this table is filled in.
 
 | Pad | Idle level (V) | Goes to (IC + pin) | Function |
 | :--- | :--- | :--- | :--- |
@@ -111,7 +112,9 @@ MSP430F5435A serial-port candidates (USCI) for the Si4460 and DCX81 links:
 Photo trace hint (`voicebox_closeup_msp430.jpg`): pads `70/71/72/76/77/79` sit on a bundle of 6–8
 traces leaving the pin 21–40 edge (lower half, roughly `P1.4`–`P2.4`) towards the Si4460 corner, so
 they are probably Si4460 control lines rather than the SPI bus. Pads `104/105` sit by pins 41–50.
-Confirm each row by continuity or a Saleae capture.
+The Si4460 overlay (`docs/images/voicebox_overlay_si4460_on_back.jpg`) puts pad `77` over the chip
+and pads `70`/`72` next to it. Confirm each row by continuity or a Saleae capture, and decode the
+capture with `python tools/si446x_spi_decode.py capture.csv`.
 
 | Pad (back, around MSP430) | MSP430 pin | Si4460 pin (or other net) | Function |
 | :--- | :--- | :--- | :--- |
