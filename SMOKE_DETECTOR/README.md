@@ -90,7 +90,9 @@ supply:
    (JEDEC `EF 40 15`, 3 identical reads). Contents: a 16-entry sound sequence table at `0x000000`
    pointing to 19 audio clips plus a repeated tone/silence pattern; `0x184000`–`0x1FFFFF` erased. No
    GBL image, no Cortex-M vector table, no text. Clip encoding is not IMA ADPCM (still unknown).
-   Next (optional): sniff `IC81`/`IC301`/`CP92` buses with Saleae Logic 4 before unlocking.
+   Saleae sniff of the stock firmware done: `PB11` controls the `IC301` audio IC (10.6 µs pulse
+   every 4 s, ~1.1 s high on a test press), the test sound does not read `IC6`, and `CP92` is a
+   power-gated single-wire sensor on `PF3` (see [docs/re_worksheet.md](docs/re_worksheet.md) section 7).
 3. **Phase 2 (OpenVerisure firmware & HA integration):** Unlock Unit 1 (`3EA8VKXK`) via AAP
    `DEVICE_ERASE`, build bare-metal + RAIL EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
    protocol, optical smoke + temp/humidity + tamper + battery + speaker alarm), and add
