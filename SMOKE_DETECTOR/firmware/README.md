@@ -10,15 +10,22 @@ plaintext ID + one AES-128-ECB block with the persistent 32-bit counter, magic `
 see [documentation/cryptography_and_protocol.md](../../documentation/cryptography_and_protocol.md)).
 The gateway decrypts it with the KDF device key and publishes it on MQTT
 (`verisure/<ID>/state`) with Home Assistant discovery; no gateway change is needed.
-Not done yet: sleep (the MCU stays in EM0), battery measurement (reported as 0 mV),
-smoke chamber, test button, speaker, a smoke-specific packet type and HA entities.
+Each packet carries the battery voltage (ADC0 on AVDD, 5 V reference, measured before TX;
+low-battery flag below 2400 mV). Between packets the MCU sleeps in EM2: the RTCC on the
+32.768 kHz LFXO (LFRCO fallback) wakes it and RAIL is put to sleep around it. The first 5 s after
+reset stay in EM0 so SWD can attach (flashing also worked while asleep on the bench).
+Not done yet: smoke chamber, test button, speaker, watchdog, a smoke-specific packet type and HA
+entities. The EM2 current is not measured yet: the bench board draws a constant ~222 mA
+(3.0 V / 13.5 Ω through R1/R56) whose cause is still open.
 
 | File | Content |
 | :--- | :--- |
 | `src/main.c` | Clocks (38.4 MHz HFXO), reset cause, packet loop, SWD diagnostics |
 | `src/packet.c` | Plaintext block, frame and CC1101 CRC-16 (poly `0x8005`, init `0xFFFF`) |
 | `src/ctr_log.c` | Persistent counter: upper 24 bits logged in the last two flash pages |
-| `src/radio.c` | RAIL init and fixed-length TX (`RADIO_TEST_CW` adds a carrier test) |
+| `src/radio.c` | RAIL init, fixed-length TX, RAIL sleep/wake (`RADIO_TEST_CW` adds a carrier test) |
+| `src/battery.c` | AVDD measurement and battery percentage |
+| `src/power.c` | LFXO/RTCC setup and EM2 sleep |
 | `radio/openverisure_868.radioconf` | PHY input for the Silicon Labs radio configurator |
 | `src/autogen/rail_config.{c,h}` | Generated PHY (committed, so builds need no configurator) |
 | `src/config.h` | Device ID + key from `derive_key.py` (**git-ignored**) |
