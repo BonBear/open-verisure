@@ -80,6 +80,10 @@ supply:
   for custom OpenVerisure firmware). `IC6` (`W25Q16JL`) has been dumped (Phase 1): it holds only
   sound data, **no firmware**, so the stock application lives only in the locked EFR32 flash and is
   lost on unlock. Keep Unit 2 (`3EB7KFZQ`) untouched as a stock reference.
+- **2026-11-26: Unit 1 (`3EA8VKXK`) unlocked** with `AAP DEVICE_ERASE` (`AAP_CMDKEY = 0xCFACC118`,
+  `AAP_CMD` bit 0, then bit 1 `SYSRESETREQ`). AP0 now reads AHB-AP `0x24770011`. DEVINFO:
+  `MSIZE 0x00200100` (256 kB flash, 32 kB SRAM), `PART 0x1D3D00E7` → **`EFR32FG14P231F256GM48`**.
+  The stock application on Unit 1 is gone.
 
 ## Reverse-engineering plan
 
@@ -93,8 +97,9 @@ supply:
    Saleae sniff of the stock firmware done: `PB11` controls the `IC301` audio IC (10.6 µs pulse
    every 4 s, ~1.1 s high on a test press), the test sound does not read `IC6`, and `CP92` is a
    power-gated single-wire sensor on `PF3` (see [docs/re_worksheet.md](docs/re_worksheet.md) section 7).
-3. **Phase 2 (OpenVerisure firmware & HA integration):** Unlock Unit 1 (`3EA8VKXK`) via AAP
-   `DEVICE_ERASE`, build bare-metal + RAIL EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
+3. **Phase 2 (OpenVerisure firmware & HA integration) — IN PROGRESS:** Unit 1 unlocked and the
+   bare-metal bring-up firmware in [firmware/](firmware/README.md) (LED81 pulse + SWD heartbeat)
+   builds and runs. Next: bare-metal + RAIL EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
    protocol, optical smoke + temp/humidity + tamper + battery + speaker alarm), and add
    multi-device `smoke` support to `868Receiver` and Home Assistant MQTT discovery.
 
