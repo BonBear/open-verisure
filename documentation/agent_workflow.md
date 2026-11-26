@@ -8,7 +8,7 @@ Each role's instructions live once in `.agents/roles/<role>.md` and are shared b
 
 | Role | Shared instructions | Claude Code wrapper (model / tools) | Antigravity wrapper (model / tools) |
 | :--- | :--- | :--- | :--- |
-| Hardware & Protocol Analyst | `.agents/roles/hardware_analyst.md` | `.claude/agents/hardware_analyst.md` (`opus`, max; Read, Grep, Glob, WebFetch, WebSearch) | `.agents/agents/hardware_analyst.md` (`pro`; `view_file`, `grep_search`) |
+| Hardware & Protocol Analyst | `.agents/roles/hardware_analyst.md` | `.claude/agents/hardware_analyst.md` (`opus`, high; Read, Grep, Glob, WebFetch, WebSearch) | `.agents/agents/hardware_analyst.md` (`pro`; `view_file`, `grep_search`) |
 | Embedded Coder | `.agents/roles/embedded_coder.md` | `.claude/agents/embedded_coder.md` (`sonnet`; Read, Write, Edit, Grep, Glob) | `.agents/agents/embedded_coder.md` (`flash`; `view_file`, `grep_search`, `replace_file_content`) |
 | QA & Test Runner | `.agents/roles/qa_tester.md` | `.claude/agents/qa_tester.md` (`haiku`; Bash, Read, Grep, Glob) | `.agents/agents/qa_tester.md` (`flash`; `view_file`, `grep_search`, `run_command`) |
 | Security & Code Reviewer | `.agents/roles/code_reviewer.md` | `.claude/agents/code_reviewer.md` (`opus`, max; Read, Grep, Glob) | `.agents/agents/code_reviewer.md` (`pro`; `view_file`, `grep_search`) |
@@ -39,7 +39,8 @@ flowchart TD
 ### Claude Code
 - `.claude/agents/` is loaded at session start; start a new session after editing those files.
 - `qa_tester`'s command limits are enforced by `.claude/settings.json` running `.claude/hooks/qa_bash_guard.py` before every Bash call. When the caller is `qa_tester`, it blocks non-read-only git commands, `pio` upload targets, `build_and_flash*.py` without `--compile-only`, OTA, esptool, bench flashers, and nested shells. Other agents and the main session are unaffected. Tests: `tests/test_qa_bash_guard.py`.
-- For low-risk reviews, invoke `code_reviewer` with `model="sonnet"` (or `haiku` for trivial checks) instead of `opus`.
+- `hardware_analyst` defaults to `effort: high`. For specs that touch RF framing, crypto/KDF/replay, or register-level timing, invoke it with `effort="max"`.
+- For low-risk reviews, invoke `code_reviewer` with `model="sonnet"` and `effort="medium"` (or `model="haiku"`, `effort="low"` for trivial checks) instead of `opus`. The wrapper's `effort: max` applies to every call unless the call overrides it, so always pass `effort` together with the lower model. Sensitive reviews keep the wrapper defaults (`opus`, max).
 
 ### Google Antigravity
 - `AGENTS.md` is loaded as an always-on rule; `.agents/agents/` defines custom subagents (`model` accepts only `pro`, `flash`, or `inherit`).

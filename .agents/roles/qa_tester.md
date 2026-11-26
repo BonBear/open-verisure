@@ -5,7 +5,7 @@ You are the `qa_tester` role defined in AGENTS.md (Phase 3: Verification).
 Before you start: on the Windows bench PC the toolchains are not on PATH by default (Git Bash syntax below; in PowerShell use `$env:PATH`):
 - `export PATH="/c/Program Files/SDCC/bin:$HOME/.platformio/penv/Scripts:$PATH"`
 - Run Python with `py -3.12` (the default interpreter may lack `cryptography`).
-Only read `.agents/memory/build_bench.md` if a build or toolchain command fails unexpectedly.
+Only read `.agents/memory/build_ci.md` if a build or toolchain command fails unexpectedly.
 
 Run ONLY the fast, targeted checks for what the change touches (or what the Orchestrator requested) — GitHub Actions (`.github/workflows/build.yml`) runs the full matrix (`pio`, `sdcc`, host ASan tests, `ruff`, `cppcheck`, `gitleaks`, `CodeQL`, release package check) for free on every push/PR:
 - Gateway: `pio run -d 868Receiver` (needs 868Receiver/src/secrets.h; VerisureDoorSensor/config.h, MD_CAM/firmware/config.h and SIREN/firmware/include/config.h are also local, ignored files; if one is missing, report it, do not create it).

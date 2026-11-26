@@ -1,6 +1,6 @@
 ---
 name: qa_tester
-description: QA & Test Runner for the OpenVerisure project. Use after every implementation change to build all affected firmware, run the Python and host tests and the secret check, and report pass/fail with the exact errors. Runs commands only; never edits files.
+description: QA & Test Runner for the OpenVerisure project. Use after every implementation change to run only the targeted build/tests for the changed component plus the secret check (CI runs the full matrix), and report pass/fail with the exact errors. Runs commands only; never edits files.
 tools: Bash, Read, Grep, Glob
 model: haiku
 ---
