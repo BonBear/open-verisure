@@ -15,9 +15,11 @@ contacts (current limit ~200 mA to start; audio playback / DECT TX may need ~500
 | :--- | :--- | :--- | :--- |
 | Battery type | `3× CR-2/3AZ` (3.0 V Li-MnO2, `SH384552520`) | Confirmed (`3× CR-2/3AZ`) | 3 separate bays in back cover |
 | Batteries: parallel OR-ed or split rails? | 3.0 V d.c. + 3× `SP1 539` + `F1`/`F2`/`F3` suggests parallel OR-ed | | Check continuity across `01`, `03`, `04` JSTs |
-| MSP430 DVCC | 1.8–3.6 V (likely ~3.0 V) | | |
+| MSP430 DVCC1/2/3/4 (pins 16, 51, 31, 67) | 1.8–3.6 V (likely ~3.0 V) | | All four should be equal |
+| MSP430 AVCC (pin 11) | = DVCC (max 0.3 V difference) | | |
+| MSP430 VCORE (pin 49, 470 nF cap) | ~1.4–1.9 V (PMM core level 0–3) | | Shows which core level the firmware runs; never load this pin |
 | Si4460 VDD (pins 6, 8) | 1.8–3.6 V (likely ~3.0 V) | | |
-| DCX81 core / IO rails | ~1.8 V IO, ~1.2 V core? | | |
+| DCX81 core / IO rails | 1.2 V core; separate QSPI IO domain 1.8 V or 3.3 V (Synaptics brief) | | QSPI IO should read 1.8 V to match the W25Q16DW |
 | W25Q16DW VCC (pin 8) | **1.65–1.95 V** (1.8 V ONLY!) | | Confirm before any SPI hookup |
 | Output of `WLAG` (SOT-23-5) | LDO (~1.0–3.0 V) or RF switch? | | |
 | Rail at the 330 µF cap (`p3 330 6V`, `+` pad `44`) | ~3.0 V or boosted? | | |
@@ -31,8 +33,8 @@ contacts (current limit ~200 mA to start; audio playback / DECT TX may need ~500
 | Part | Marking | Expected | Measured |
 | :--- | :--- | :--- | :--- |
 | Crystal next to the Si4460 (pins 16–17) | faint | 26 MHz (AN785 for 868 MHz) or 30 MHz | |
-| MSP430 XT1 (pins 11–12) | `DA609C` | 32.768 kHz | |
-| MSP430 XT2 (if fitted) | none visible | n/a | |
+| MSP430 XT1 (pins 13–14, `P7.0/XIN`, `P7.1/XOUT`) | `DA609C` | 32.768 kHz | |
+| MSP430 XT2 (pins 69–70, `P5.2/XT2IN`, `P5.3/XT2OUT`) | none visible | n/a, or used as GPIO | Check whether anything is connected |
 | DCX81 crystal (left of DCX81) | `D138` | 13.824 MHz (standard DECT = 12 × 1.152 MHz) | |
 
 ## 3. Pogo pad cluster (front, next to the FPC)
@@ -48,7 +50,11 @@ Verified **MSP430F5435A (LQFP-80 PN)** debug pins (Pin 1 = bottom-left white dot
 - Pin **74**: `PJ.2/TMS`
 - Pin **75**: `PJ.3/TCK`
 - Pin **76**: `RST/NMI/SBWTDIO`
-- `P1.6` / `P1.5`: BSL TXD / RXD (do **not** invoke BSL!)
+- Pin **18** / **19**: `P1.1` / `P1.2` = BSL TXD / RXD (do **not** invoke BSL!)
+
+The cluster sits directly over the pin 61–80 edge (front/back photo overlay). SBW needs only pins
+71 and 76 plus `DVCC`/`GND`, so the JTAG test below can use thin wires on the IC pins before this
+table is filled in.
 
 | Pad | Idle level (V) | Goes to (IC + pin) | Function |
 | :--- | :--- | :--- | :--- |
@@ -76,7 +82,7 @@ Verified **MSP430F5435A (LQFP-80 PN)** debug pins (Pin 1 = bottom-left white dot
 | :--- | :--- |
 | Tool (MSP-FET / LaunchPad eZ-FET SBW / mspdebug) | |
 | Device ID read | |
-| JTAG fuse blown? | |
+| JTAG locked? (F5xx electronic fuse: lock signature in flash) | |
 | Flash dump (file, size, SHA-256) | |
 | **Do not try the BSL**: a wrong password mass-erases the flash | ☐ read and understood |
 
@@ -90,6 +96,22 @@ top-to-bottom = pins 11–15):
 - Pin **13**: `SDO` (MISO)
 - Pin **14**: `SDI` (MOSI)
 - Pin **15**: `nSEL` (CSn)
+- Pins **9 / 10 / 19 / 20**: `GPIO0` / `GPIO1` / `GPIO2` / `GPIO3` (may carry RX data, TX/RX
+  switch control or clock out)
+
+MSP430F5435A serial-port candidates (USCI) for the Si4460 and DCX81 links:
+
+| USCI | Pins (PN) | Signals |
+| :--- | :--- | :--- |
+| `UCB0` / `UCA0` | 35, 36, 37, 38 | `P3.0` STE/`UCA0CLK`, `P3.1` SIMO/SDA, `P3.2` SOMI/SCL, `P3.3` `UCB0CLK`/`UCA0STE` |
+| `UCA0` UART/SPI | 39, 40 | `P3.4` TXD/SIMO, `P3.5` RXD/SOMI |
+| `UCB1` / `UCA1` | 41, 42, 54, 55 | `P3.6` STE/`UCA1CLK`, `P3.7` SIMO/SDA, `P5.4` SOMI/SCL, `P5.5` `UCB1CLK`/`UCA1STE` |
+| `UCA1` UART/SPI | 56, 57 | `P5.6` TXD/SIMO, `P5.7` RXD/SOMI |
+
+Photo trace hint (`voicebox_closeup_msp430.jpg`): pads `70/71/72/76/77/79` sit on a bundle of 6–8
+traces leaving the pin 21–40 edge (lower half, roughly `P1.4`–`P2.4`) towards the Si4460 corner, so
+they are probably Si4460 control lines rather than the SPI bus. Pads `104/105` sit by pins 41–50.
+Confirm each row by continuity or a Saleae capture.
 
 | Pad (back, around MSP430) | MSP430 pin | Si4460 pin (or other net) | Function |
 | :--- | :--- | :--- | :--- |
@@ -103,6 +125,8 @@ top-to-bottom = pins 11–15):
 | 102 | | | |
 | 104 | | | |
 | 105 | | | |
+| Si4460 `SDN` (pin 1) | | | |
+| Si4460 `GPIO0`–`GPIO3` (pins 9, 10, 19, 20) | | | |
 
 ## 5. DCX81 and its 1.8 V flash (`W25Q16DW`)
 
@@ -163,7 +187,7 @@ top-to-bottom = pins 11–15):
 - [ ] Are the three `CR-2/3AZ` battery bays parallel OR-ed to a single 3.0 V rail or split across MCU vs DCX81?
 - [ ] Which front pogo pads carry MSP430 JTAG/SBW (`pins 71–76`)?
 - [ ] Do back pads `70–79` / `101–105` expose the Si4460 SPI bus (`SCLK`, `SDI`, `SDO`, `nSEL`, `nIRQ`, `SDN`) for easy Saleae sniffing?
-- [ ] Is the MSP430 JTAG fuse blown?
+- [ ] Is the MSP430 JTAG locked (electronic fuse)?
 - [ ] What is stored in the 1.8 V `W25Q16DW` (DCX81 firmware + voice prompts)?
 - [ ] Is the 868 MHz link the same PHY and packet format as the door sensor and siren?
 - [ ] Is the DCX81 used as a DECT radio or only as the voice DSP?
