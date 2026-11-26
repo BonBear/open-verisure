@@ -118,7 +118,7 @@ Never run `efm32 debuglock`, `flash erase_*`, `flash write_*` or `program` on th
 
 | Part | Device | VCC | JEDEC ID (9Fh) |
 | :--- | :--- | :--- | :--- |
-| W25Q16JL | Smoke detector | ~2.3–3.6 V (unverified) | probably `EF 40 15` (unverified) |
+| W25Q16JL | Smoke detector | 2.3–3.6 V (dumped at 3.0 V) | `EF 40 15` (bench-verified) |
 | W25Q16DW | Voicebox | **1.65–1.95 V** | `EF 60 15` (Winbond datasheet) |
 
 ### Command
@@ -139,7 +139,9 @@ Read twice and compare the SHA-256 of both files before trusting the dump.
   board modification), or power the flash side at 1.8 V and put a 4-channel bidirectional level
   shifter (TXB0104 / TXS0108) on CLK, MOSI, CS and MISO. MISO at 1.8 V is marginal for the FT232H's
   input threshold, so shift it too.
-- Smoke detector (W25Q16JL): can be read at 3.3 V, after confirming its VCC pin voltage on the board.
+- Smoke detector (W25Q16JL): verified at 3.0 V (board on `BAT+`, `RES` tied to `GND`). Its VCC is
+  power-gated and stays at 0 V while the EFR32 is in reset, so feed 3.0 V directly to `IC6` pin 8
+  (or pad `60`) and check it with a DMM before probing.
 
 ## 3. Siren and voicebox: MSP430
 
