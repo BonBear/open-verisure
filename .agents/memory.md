@@ -19,4 +19,5 @@ This is the persistent long-term memory of the agents and developers across sess
 | Camera (`MD_CAM`) | [md_cam.md](memory/md_cam.md) | Camera CC1110, Blackfin `ADSP-BF512` / `U3` / JTAG, `OV7955` / JPEG / delta pipeline |
 | Gateway (`868Receiver`) | [gateway.md](memory/gateway.md) | ESP32-S2 coexistence, FreeRTOS radio task, GuardedWebServer, OTA, MQTT/HA |
 | Siren (`SIREN`) | [siren.md](memory/siren.md) | MSP430F149, CC1101 26 MHz, `OKI L22901-707`, LPM3, `TH1`, BSL v1.10 |
+| Smoke Detector (`SMOKE_DETECTOR`) | [smoke.md](memory/smoke.md) | GW-SD3 EFR32FG14P231, SWD AAP, `W25Q16JL` pads, `IC81`/`IC301`/`CP92`, 868.950 MHz |
 | Build, Toolchains & Bench | [build_bench.md](memory/build_bench.md) | SDCC/PlatformIO/CI gotchas, Otii Arc, PSU, BSL/JTAG flashers, logic analysers |

@@ -1,0 +1,8 @@
+# Memory: Smoke Detector GW-SD3 (EFR32FG14P231, W25Q16JL, IC81, IC301, CP92)
+
+## Smoke Detector (`GW-SD3`)
+- [2026-11-26] [SMOKE/POWER_AND_PADS]: Powered by `1× CR-2/3AZ` (`3.0 V` Li-MnO2). Back PCB power pads: `01`/`03`/`29` = `BAT+`, `02`/`04`/`27` = `GND`, `VCC` = `3.0 V` always-on, `VCA` = `0 V` in idle. `R1`+`R56` = 2× 27 Ω parallel (13.5 Ω to `BAT+`).
+- [2026-11-26] [SMOKE/SWD_AAP]: Back pads `CLK` = EFR32 pin 1 (`PF0`), `DIO` = pin 2 (`PF1`), `RES` = pin 12 (`RESETn`), `SW` = pin 25 (`PA0`, not SWO). Raspberry Pi Debug Probe (`D` port: Orange=`CLK`, Yellow=`DIO`, Black=`GND`) + `pyOCD` (`DebugPort.connect()`, 200 kHz, 3.0 V) cleanly reads `DPIDR = 0x2BA01477` and `AP 0 IDR = 0x26E60011` (Silicon Labs Series 1 AAP = debug-locked, recoverable via `AAP DEVICE_ERASE`).
+- [2026-11-26] [SMOKE/SPI_FLASH_IC6]: `IC6` (`W25Q16JL`, 16 Mbit, 2.3–3.6 V) is power-gated (`0 V` in idle) and fully exposed on back PCB pads: `54` = `/CS`, `51` = `DO` (MISO), `53` = `DI` (MOSI), `52` = `CLK`, `60` = `VCC`+`/WP`+`/HOLD`, `02`/`04`/`27` = `GND` (no SOIC-8 clip needed).
+- [2026-11-26] [SMOKE/PERIPHERALS]: `CN301` (`M36BN20-A` 8 Ω 0.5 W speaker) connects via back pads `43`/`42` to `IC301` (`304A`) pins 13+14 and 15+16 (BTL speaker driver). Optical chamber: `LED81` = EFR32 pin 5 (`PF4`), `PD81` → `IC81` (`C4660`, optical AFE). `CP92` (DFN-8 with open sensing window) is a digital temperature & humidity sensor.
+- [2026-11-26] [SMOKE/RF_868]: Stock GW-SD3 boot frames confirmed on OpenVerisure gateway `CC1101#1` (`868.950 MHz`, 2-FSK, 38.4 kBaud, sync `D3 91`) at `-55 dBm` (LQI 51–57). `SiliconLabs/gecko_sdk` `v4.4.6` LTS provides `efr32fg14p231f{128,256}gm48.h` + `librail_efr32xg14_gcc_release.a` for `arm-none-eabi-gcc`.
