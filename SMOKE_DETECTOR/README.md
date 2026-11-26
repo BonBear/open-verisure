@@ -77,17 +77,20 @@ supply:
 - `AP 0 IDR = 0x26E60011` (Silicon Labs Series 1 **AAP** — **debug-locked**)
 - Unlike the SIREN's blown MSP430 JTAG fuse, Series 1 EFR32 debug lock is **recoverable via
   `AAP DEVICE_ERASE`** using the same Raspberry Pi Debug Probe (erases stock flash and unlocks SWD
-  for custom OpenVerisure firmware). **Do not unlock until `IC6` (`W25Q16JL`) has been dumped**, and
-  keep Unit 2 (`3EB7KFZQ`) untouched as a stock reference.
+  for custom OpenVerisure firmware). `IC6` (`W25Q16JL`) has been dumped (Phase 1): it holds only
+  sound data, **no firmware**, so the stock application lives only in the locked EFR32 flash and is
+  lost on unlock. Keep Unit 2 (`3EB7KFZQ`) untouched as a stock reference.
 
 ## Reverse-engineering plan
 
 1. **Phase 0 (Passive DMM & 3.0 V sniff) — DONE:** Confirmed power rails, SWD pins, `IC6` back-pad
    pinout (`51–54`/`60`), `IC301` speaker driver, `IC81`/`LED81`/`PD81` smoke chamber, `CP92`
    temp/humidity sensor, 868.950 MHz RF link, and SWD AAP status.
-2. **Phase 1 (External flash & bus sniff) — NEXT:** Dump `IC6` (`W25Q16JL`, 2 MiB) via back pads
-   `51–54`, `60`, `02` (FT232H + `flashrom`) and inspect for GBL OTA images or voice/audio clips;
-   optionally sniff `IC81`/`IC301`/`CP92` buses with Saleae Logic 4.
+2. **Phase 1 (External flash & bus sniff) — `IC6` DUMP DONE:** Unit 1 `IC6` dumped in circuit
+   (JEDEC `EF 40 15`, 3 identical reads). Contents: a 16-entry sound sequence table at `0x000000`
+   pointing to 19 audio clips plus a repeated tone/silence pattern; `0x184000`–`0x1FFFFF` erased. No
+   GBL image, no Cortex-M vector table, no text. Clip encoding is not IMA ADPCM (still unknown).
+   Next (optional): sniff `IC81`/`IC301`/`CP92` buses with Saleae Logic 4 before unlocking.
 3. **Phase 2 (OpenVerisure firmware & HA integration):** Unlock Unit 1 (`3EA8VKXK`) via AAP
    `DEVICE_ERASE`, build bare-metal + RAIL EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
    protocol, optical smoke + temp/humidity + tamper + battery + speaker alarm), and add

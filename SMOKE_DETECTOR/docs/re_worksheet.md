@@ -16,7 +16,7 @@ Tools: DMM, Otii Arc (3.0 V / 0.2 A), USB microscope, Raspberry Pi Debug Probe (
 | Battery connector (`BAT+` / `BAT-`) | 2-pin JST (back) | **`01`, `03`, `29` = `BAT+`**; **`02`, `04`, `27` = `BAT-` (`GND`)** | `01` & `02` are the two large pads under the base jig holes |
 | `VCC` pad to GND | ~3.0 V | **3.0 V** | Always-on rail to EFR32 |
 | `VCA` pad to GND | switched rail | **0 V** (in idle) | Power-gated analog/audio rail |
-| `IC6` (`W25Q16JL`) `VCC` (pad `60`) | 2.3–3.6 V | **0 V** (in idle) | Power-gated for 10-year battery life! Safe for 3.3 V FT232H dump with battery disconnected |
+| `IC6` (`W25Q16JL`) `VCC` (pad `60`) | 2.3–3.6 V | **0 V** (in idle) | Power-gated; with the EFR32 held in reset it stays at 0 V, so feed pad `60` (or `IC6` pin 8) directly for a dump |
 | `R1` + `R56` (2× `270` = 27 Ω) | series/inrush | **14 Ω** to `BAT+` (27 Ω ∥ 27 Ω = 13.5 Ω) | |
 | Best accessible GND pad | — | **`02`** (large round pad), also `04`, `27` | |
 
@@ -65,7 +65,19 @@ All 6 SPI/power signals are exposed on large round test pads on the **back** of 
 | 7 | `/HOLD` | **Pad `60`** | Tied to `VCC` |
 | 8 | `VCC` | **Pad `60`** | 0 V in idle (power-gated); `W25Q16JL` is 2.3–3.6 V |
 
-Dump pending (FT232H + `flashrom` via pads `51–54`, `60`, `02`).
+### Dump result (Unit 1 `3EA8VKXK`, 2026-11-26)
+
+| Item | Result |
+| :--- | :--- |
+| Setup | FT232H (`AD0` CLK, `AD1` DI, `AD2` DO, `AD3` /CS, `GND`) on `IC6` pins; board at 3.0 V from Otii Arc on `BAT+`; `RES` tied to `GND`; 3.0 V fed directly to `IC6` pin 8 |
+| JEDEC ID | `EF 40 15` (flashrom: `W25Q16.V`) |
+| Reads | 3 identical reads at 1 MHz and 100 kHz; SHA-256 `010d8bc5dc0c86e46c3ed4cd1ab7dc94b2eccf3af7bb6012ebaef77ed2c47901` (image kept off-repo) |
+| Layout | `0x000000`–`0x0007FF`: 16 × 128-byte sound sequence records, each up to 16 big-endian 32-bit `(start, end)` pairs; top byte = flags (`0x80` = tone/silence segment, `0x12`/`0x32` = audio clip) |
+| Audio | 19 distinct clips (~200 KB) between `0x016100` and `0x17AFFF`, ~1.5–13 KB each; repeated 8-byte tone/silence pattern at `0x17B000`–`0x183FFF`; byte values cluster in nibbles 2–5; not IMA ADPCM (an IMA decode clips heavily) |
+| Empty | `0x184000`–`0x1FFFFF` erased (`FF`) |
+| Firmware | **None**: no GBL header, no Cortex-M vector table, no readable strings. Stock application exists only inside the locked EFR32 |
+
+Bench pitfalls: without `RES` low the EFR32 keeps running (periodic ~223 mA `LED81` pulses through `R1`∥`R56`) and drives the bus; without direct VCC the flash returned `FF`/floating data; one early read had bit-shifted bytes from a loose clip, so always compare at least two reads.
 
 ## 5. Identified & mapped ICs / peripherals
 
@@ -90,6 +102,7 @@ Dump pending (FT232H + `flashrom` via pads `51–54`, `60`, `02`).
 
 ## 7. Next bench steps
 
-- [ ] Dump `IC6` (`W25Q16JL`, 2 MiB) via back pads `51–54`, `60`, `02` (FT232H + `flashrom`) and inspect for GBL OTA images, voice/audio clips, or logs.
+- [x] Dump `IC6` (`W25Q16JL`, 2 MiB): sound table + audio clips only, no firmware (see section 4).
+- [ ] Identify the clip audio encoding (optional; needed only to reuse the stock sounds).
 - [ ] Optional Saleae Logic 4 capture on `IC81`, `IC301`, `CP92` (I2C/SPI) before unlocking EFR32.
 - [ ] Unlock Unit 1 (`3EA8VKXK`) via `AAP DEVICE_ERASE` (keep `3EB7KFZQ` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).
