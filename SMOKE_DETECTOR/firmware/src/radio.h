@@ -14,6 +14,11 @@ bool radio_init(void);
 /* Sends len bytes (fixed-length PHY: must be PKT_AIR_LEN) and waits until done. */
 bool radio_send(const uint8_t *data, uint16_t len);
 
+/* Before EM2: idles RAIL and returns whether deep sleep is allowed. Call radio_wake() after,
+ * in any case, with the time slept (RAIL timer sync is disabled). */
+bool radio_sleep(void);
+void radio_wake(uint32_t slept_us);
+
 /* RAIL microsecond time base (valid after radio_init). */
 uint32_t radio_time_us(void);
 

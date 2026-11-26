@@ -69,7 +69,23 @@ bool radio_init(void)
                         RAIL_EVENT_TX_UNDERFLOW) != RAIL_STATUS_NO_ERROR) {
     return false;
   }
+  if (RAIL_ConfigSleep(s_rail, RAIL_SLEEP_CONFIG_TIMERSYNC_DISABLED) != RAIL_STATUS_NO_ERROR) {
+    return false;
+  }
   return RAIL_SetTxFifo(s_rail, s_tx_fifo, 0, sizeof(s_tx_fifo)) == sizeof(s_tx_fifo);
+}
+
+bool radio_sleep(void)
+{
+  bool allowed = false;
+
+  (void)RAIL_Idle(s_rail, RAIL_IDLE, true);
+  return RAIL_Sleep(0, &allowed) == RAIL_STATUS_NO_ERROR && allowed;
+}
+
+void radio_wake(uint32_t slept_us)
+{
+  (void)RAIL_Wake(slept_us);
 }
 
 #ifdef RADIO_TEST_CW

@@ -23,11 +23,12 @@ RAILLIB := $(RAIL)/autogen/librail_release/librail_efr32xg14_gcc_release.a
 BUILD   := build
 TARGET  := $(BUILD)/smoke
 
-SRCS := src/main.c src/packet.c src/ctr_log.c src/radio.c src/autogen/rail_config.c \
+SRCS := src/main.c src/packet.c src/ctr_log.c src/radio.c src/battery.c src/power.c \
+        src/autogen/rail_config.c \
         $(DEV_DIR)/Source/startup_efr32fg14p.c \
         $(DEV_DIR)/Source/system_efr32fg14p.c \
         $(addprefix $(EMLIB)/src/,em_cmu.c em_emu.c em_system.c em_core.c em_msc.c \
-                                  em_crypto.c em_rmu.c em_gpio.c)
+                                  em_crypto.c em_rmu.c em_gpio.c em_adc.c em_rtcc.c)
 OBJS := $(addprefix $(BUILD)/,$(notdir $(SRCS:.c=.o)))
 vpath %.c $(sort $(dir $(SRCS)))
 

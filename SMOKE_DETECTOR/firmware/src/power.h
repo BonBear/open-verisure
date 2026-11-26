@@ -1,0 +1,18 @@
+/*
+ * EM2 sleep between packets. The RTCC runs from the 32.768 kHz LFXO (A320L on PB14/PB15;
+ * LFRCO fallback when the crystal does not start) and wakes the core; RAIL is put to sleep and
+ * woken around it, so the radio timebase stays consistent.
+ */
+#ifndef POWER_H
+#define POWER_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* Starts the LF clock and the RTCC. Returns true when the LFXO runs, false on LFRCO. */
+bool power_init(void);
+
+/* Sleeps in EM2 for about ms milliseconds (the radio must be idle). */
+void power_sleep_ms(uint32_t ms);
+
+#endif /* POWER_H */
