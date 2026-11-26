@@ -92,9 +92,10 @@ bool ctr_log_reserve(uint32_t counter)
   if (block == s_logged_block && block != 0u) {
     return true;
   }
-  /* New block (or a block whose logging failed before): log it first. block 0 (the 32-bit
-   * counter wrapped) and blocks above CTR_BLOCK_MAX are refused by log_block. */
-  if (!log_block(block)) {
+  /* New block (or a block whose logging failed before): log it first. Never go back: after the
+   * 32-bit counter wrapped (block 0, then 1, ...) nothing is sent again. log_block also refuses
+   * blocks above CTR_BLOCK_MAX. */
+  if (block == 0u || block < s_logged_block || !log_block(block)) {
     return false;
   }
   s_logged_block = block;
