@@ -16,8 +16,11 @@ This is the persistent long-term memory of the agents and developers across sess
 | :--- | :--- | :--- |
 | RF link & protocol | [rf_crypto.md](memory/rf_crypto.md) | 868.950 MHz CC1110/CC1101 RF link, AES-128 KDF, replay filter, packet framing |
 | CC1110 & Door Sensor | [cc1110_door.md](memory/cc1110_door.md) | CC1110 clocks/PM2/flash/SDCC, `VerisureDoorSensor` pins & power |
-| Camera (`MD_CAM`) | [md_cam.md](memory/md_cam.md) | Camera CC1110, Blackfin `ADSP-BF512` / `U3` / JTAG, `OV7955` / JPEG / delta pipeline |
+| Camera CC1110 (`MD_CAM`) | [md_cam_cc1110.md](memory/md_cam_cc1110.md) | Camera board CC1110 pins, power, PIR/tamper, alarm loop, RF to gateway |
+| Camera Blackfin (`MD_CAM`) | [md_cam_blackfin.md](memory/md_cam_blackfin.md) | Blackfin `ADSP-BF512`, `U3` boot flash, JTAG |
+| Camera image pipeline (`MD_CAM`) | [md_cam_image.md](memory/md_cam_image.md) | `OV7955`, PLL/PPI, AEC, JPEG, delta, IR flash |
 | Gateway (`868Receiver`) | [gateway.md](memory/gateway.md) | ESP32-S2 coexistence, FreeRTOS radio task, GuardedWebServer, OTA, MQTT/HA |
 | Siren (`SIREN`) | [siren.md](memory/siren.md) | MSP430F149, CC1101 26 MHz, `OKI L22901-707`, LPM3, `TH1`, BSL v1.10 |
 | Smoke Detector (`SMOKE_DETECTOR`) | [smoke.md](memory/smoke.md) | GW-SD3 EFR32FG14P231, SWD AAP, `W25Q16JL` pads, `IC81`/`IC301`/`CP92`, 868.950 MHz |
-| Build, Toolchains & Bench | [build_bench.md](memory/build_bench.md) | SDCC/PlatformIO/CI gotchas, Otii Arc, PSU, BSL/JTAG flashers, logic analysers |
+| Build, Toolchains & CI | [build_ci.md](memory/build_ci.md) | SDCC/PlatformIO/CI gotchas, scripts, repo |
+| Bench Tools | [bench_tools.md](memory/bench_tools.md) | Otii Arc, PSU, BSL/JTAG flashers, logic analysers |
