@@ -100,9 +100,32 @@ Bench pitfalls: without `RES` low the EFR32 keeps running (periodic ~223 mA `LED
 | Captured raw 20-byte frames | `EC F1 {0D,19,05} 91 FF DD 84 DB 15 85 2D B0 B1 DB BF F4 4C 62 28 DF` (identical 20-byte boot/supervision header; byte 2 varies) |
 | Hardware RF compatibility | **100 % compatible** with the OpenVerisure 868.950 MHz CC1101 gateway |
 
-## 7. Next bench steps
+## 7. Stock-firmware logic sniff (Unit 1, 2026-11-26)
+
+Continuity traced on the bench (EFR32 QFN-48 pin numbers):
+
+| Net | Traced connection |
+| :--- | :--- |
+| `CP92` power | `CP92` pins 2+3 ← 3-pin load switch (`YK`, above `TP23`) output; switch input = VCC (EFR32 pin 34), switch control ← EFR32 pin 3 (`PF2`). Switch output reads 0 V in idle (sensor power-gated). |
+| `CP92` data | `CP92` pin 8 → EFR32 pin 4 (`PF3`); pins 9+10 GND; pins 1, 4–7 NC. Single data line → not I2C. |
+| `IC301` control | `IC301` pin 21 → EFR32 pin 31 (`PB11`); pins 19+20 VCC. |
+| `IC81` | Pin 11 GND, pin 15 VCC; no direct trace to an EFR32 pin found (likely analog via RC). |
+
+Saleae Logic 4 @ 12 MS/s, board on Otii (3.0–3.3 V on `BAT+`), test button pressed during the capture:
+
+| Signal | Observed |
+| :--- | :--- |
+| `PB11` → `IC301` pin 21 | High for ~13 s after power-on; high for ~1.1 s on a test-button press; otherwise a 10.6 µs high pulse every 4.000 s (phase restarts after the button event). |
+| Speaker line (`CN301`, Logic 4 Ch0 analog) | Idles at 0 V (amp off). ~1 s after `PB11` drops it steps to VCC for 30.5 ms, then is released and decays. No audio tone without the speaker fitted. |
+| `CP92` pin 8 (`PF3`) | Single ~45 ms high pulse ~2 s after the button press, slow edges. Same timing as the speaker step, so treat as unconfirmed. |
+| `IC6` pin 6 (CLK) | No activity during boot, idle or test: the test sound does not come from `IC6`. |
+| `LED81` pads | Static; no IR pulse seen at the probed pad. |
+
+Pitfall: several early captures were flat because the probe clips had no contact; verify each Saleae lead (tap it on `BAT+`) before a long capture.
+
+## 8. Next bench steps
 
 - [x] Dump `IC6` (`W25Q16JL`, 2 MiB): sound table + audio clips only, no firmware (see section 4).
 - [ ] Identify the clip audio encoding (optional; needed only to reuse the stock sounds).
-- [ ] Optional Saleae Logic 4 capture on `IC81`, `IC301`, `CP92` (I2C/SPI) before unlocking EFR32.
+- [x] Saleae Logic 4 capture of the stock firmware (see section 7). `IC81` and the `LED81` drive were not resolved.
 - [ ] Unlock Unit 1 (`3EA8VKXK`) via `AAP DEVICE_ERASE` (keep `3EB7KFZQ` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).
