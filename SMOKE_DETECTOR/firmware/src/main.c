@@ -26,6 +26,8 @@
 #define __code
 #include "config.h"
 
+_Static_assert(sizeof(DEVICE_ID) == 9u, "DEVICE_ID must be exactly 8 characters");
+
 #define SEND_PERIOD_MS   10000u
 
 /* Read over SWD for bring-up (see README.md). */

@@ -18,7 +18,8 @@ static RAIL_Handle_t s_rail;
 /* Bring-up diagnostics, read over SWD. */
 volatile uint32_t g_rail_first_ch;   /* first channel returned by RAIL_ConfigChannels */
 volatile uint32_t g_rail_tx_power;   /* raw PA level RAIL reports back */
-static uint8_t s_tx_fifo[64];          /* RAIL needs a power of two >= 64 */
+/* RAIL needs a power of two >= 64, aligned to RAIL_FIFO_ALIGNMENT */
+static uint8_t s_tx_fifo[64] __attribute__((aligned(RAIL_FIFO_ALIGNMENT)));
 static volatile bool s_tx_done;
 static volatile bool s_tx_ok;
 

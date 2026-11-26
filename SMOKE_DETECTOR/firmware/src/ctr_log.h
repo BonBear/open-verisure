@@ -15,7 +15,8 @@
 /* Opens a new block and returns its first counter value (block << 8); false if flash failed. */
 bool ctr_log_init(uint32_t *counter);
 
-/* Call before sending with counter; opens the next block when the low byte wrapped to 0. */
+/* Call before sending with counter: true only when counter's block is logged in flash (it logs
+ * a new block first). Never send a counter for which this returned false. */
 bool ctr_log_reserve(uint32_t counter);
 
 #endif /* CTR_LOG_H */

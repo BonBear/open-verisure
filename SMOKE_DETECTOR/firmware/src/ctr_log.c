@@ -10,6 +10,9 @@
 #define CTR_EMPTY       0xFFFFFFFFu
 #define CTR_BLOCK_MAX   0x00FFFFFFu
 
+/* Block confirmed in flash during this boot; counters of any other block are never sent. */
+static uint32_t s_logged_block;
+
 /* Highest block in a page and the index of the first free word (CTR_WORDS when full). */
 static uint32_t page_scan(uint32_t base, uint32_t *free_idx)
 {
@@ -28,7 +31,8 @@ static uint32_t page_scan(uint32_t base, uint32_t *free_idx)
 
 static bool flash_write(uint32_t addr, uint32_t value)
 {
-  return MSC_WriteWord((uint32_t *)addr, &value, sizeof(value)) == mscReturnOk;
+  return MSC_WriteWord((uint32_t *)addr, &value, sizeof(value)) == mscReturnOk &&
+         *(const volatile uint32_t *)addr == value;   /* read back: a failed write never counts */
 }
 
 static bool flash_erase(uint32_t addr)
@@ -74,13 +78,25 @@ bool ctr_log_init(uint32_t *counter)
   const uint32_t block = ((max_a > max_b) ? max_a : max_b) + 1u;   /* block 0 is never used */
 
   *counter = block << 8;
-  return log_block(block);
+  if (!log_block(block)) {
+    return false;
+  }
+  s_logged_block = block;
+  return true;
 }
 
 bool ctr_log_reserve(uint32_t counter)
 {
-  if ((counter & 0xFFu) != 0u) {
+  const uint32_t block = counter >> 8;
+
+  if (block == s_logged_block && block != 0u) {
     return true;
   }
-  return log_block(counter >> 8);
+  /* New block (or a block whose logging failed before): log it first. block 0 (the 32-bit
+   * counter wrapped) and blocks above CTR_BLOCK_MAX are refused by log_block. */
+  if (!log_block(block)) {
+    return false;
+  }
+  s_logged_block = block;
+  return true;
 }

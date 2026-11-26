@@ -2,7 +2,7 @@
 <!-- OpenVerisure 868.950 MHz PHY for EFR32xG14 (nixi), compatible with the CC1110/CC1101 link:
      2-FSK +-21.4 kHz, 38.4 kbps, 32-bit 0xAA preamble, sync D391D391 (CC11xx SYNC_MODE 30/32 sends
      the 16-bit word twice), MSB first, no whitening, fixed 26 bytes = 24 payload + CRC-16 (0x8005,
-     init 0xFFFF) appended in software. Generate with tools/gen_rail_config.sh. -->
+     init 0xFFFF) appended in software. Regenerate src/autogen with the Gecko SDK radio configurator (see README.md). -->
 <multi_phy_configuration part_family="nixi" part_revision="A0" rail_adapter_version="rail_api_2.x" status_code="0" xsd_version="0.0.20">
   <base_channel_configurations>
     <base_channel_configuration name="OpenVerisure" profile="Base">

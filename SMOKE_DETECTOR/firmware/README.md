@@ -63,7 +63,7 @@ python Efr32RadioConfiguratorUcAdapter.py <repo>/SMOKE_DETECTOR/firmware/radio/o
   SHA-256 `817188456d217bcfbe939720899bb9de2c00fbf80eb349026cc1b87e1886057a`. The library uses the
   soft-float call ABI, so the firmware builds with `-mfloat-abi=softfp`.
 - `src/config.h`: `python derive_key.py --id <ID> -w -o SMOKE_DETECTOR/firmware/src/config.h`
-  (the script prints the device key: do not paste its output anywhere). `src/config.h.example`
+  (build outputs contain the key as raw bytes: keep them under the git-ignored `build/`). `src/config.h.example`
   shows the format.
 - pyOCD with the Silicon Labs DFP pack (once): `pyocd pack install EFR32FG14P231F256GM48`.
 - A CMSIS-DAP probe (Raspberry Pi Debug Probe) on the back pads `CLK`/`DIO`/`GND`; leave `RES`
@@ -75,8 +75,8 @@ python Efr32RadioConfiguratorUcAdapter.py <repo>/SMOKE_DETECTOR/firmware/radio/o
 
 ```bash
 make GECKO_SDK=C:/Tools/gecko_sdk_4.4.6          # build/smoke.{elf,hex,bin}
-make GECKO_SDK=C:/Tools/gecko_sdk_4.4.6 flash    # tools/flash.py via pyOCD
-make BUILD=build_cw EXTRA_CFLAGS=-DRADIO_TEST_CW  # bench carrier test (never deploy)
+make GECKO_SDK=C:/Tools/gecko_sdk_4.4.6 flash    # tools/flash.py via pyOCD (Linux: PYTHON=python3)
+make BUILD=build/cw EXTRA_CFLAGS=-DRADIO_TEST_CW  # bench carrier test (never deploy)
 ```
 
 On Windows pass `GECKO_SDK` as a `C:/...` path (the Windows toolchain does not understand
