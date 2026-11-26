@@ -39,7 +39,7 @@ flowchart TD
 ### Claude Code
 - `.claude/agents/` is loaded at session start; start a new session after editing those files.
 - `qa_tester`'s command limits are enforced by `.claude/settings.json` running `.claude/hooks/qa_bash_guard.py` before every Bash call. When the caller is `qa_tester`, it blocks non-read-only git commands, `pio` upload targets, `build_and_flash*.py` without `--compile-only`, OTA, esptool, bench flashers, and nested shells. Other agents and the main session are unaffected. Tests: `tests/test_qa_bash_guard.py`.
-- For low-risk reviews, invoke `code_reviewer` with `model="sonnet"` (or `haiku` for trivial checks) instead of `opus`.
+- For low-risk reviews, invoke `code_reviewer` with `model="sonnet"` and `effort="medium"` (or `model="haiku"`, `effort="low"` for trivial checks) instead of `opus`. The wrapper's `effort: max` applies to every call unless the call overrides it, so always pass `effort` together with the lower model. Sensitive reviews keep the wrapper defaults (`opus`, max).
 
 ### Google Antigravity
 - `AGENTS.md` is loaded as an always-on rule; `.agents/agents/` defines custom subagents (`model` accepts only `pro`, `flash`, or `inherit`).

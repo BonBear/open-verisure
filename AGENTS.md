@@ -25,7 +25,7 @@ Edit shared role instructions only in `.agents/roles/<role>.md` (never in `.clau
 3. **Phase 3 — Verify (`qa_tester`):** Run only the fast, targeted build/tests for the changed component (warning-free `pio`/SDCC, affected `pytest`/host tests, `check_secrets.py`, and `cppcheck` when installed). Let GitHub Actions run the full matrix.
 4. **Phase 4 — Review (`code_reviewer`, risk-tiered):**
    - **Sensitive changes** (RF protocol, crypto/KDF/replay, ISRs/DMA, flash/counter log, firmware memory safety, credentials/auth, CI/security gates): run `code_reviewer` on `pro`/`opus`.
-   - **Low-risk changes** (helper/bench scripts, portal UI, LUT/constant tweaks, build tooling): run `code_reviewer` on `flash`/`sonnet` (1 concise pass).
+   - **Low-risk changes** (helper/bench scripts, portal UI, LUT/constant tweaks, build tooling): run `code_reviewer` on `flash`/`sonnet` (Claude Code: `effort="medium"`; 1 concise pass).
    - **Pure docs, comments, or test-only additions:** no `code_reviewer` subagent needed; CI + Orchestrator inspection suffice.
 
 ### Fast Path for Small Low-Risk Changes
