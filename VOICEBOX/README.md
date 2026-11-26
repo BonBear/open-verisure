@@ -25,8 +25,8 @@ verify on the bench.
 
 | Ref | Marking | Identification | Status |
 | :--- | :--- | :--- | :--- |
-| MCU | `TI 61A47XTG4 M430F5435A REV H` (LQFP-80 PN) | **TI MSP430F5435A** (MSP430F5xx, 192 KB flash, 16 KB RAM). Pin 1 at bottom-left (white PCB dot in `voicebox_closeup_msp430.jpg`); pins 11–12 (`XIN`/`XOUT`) route directly to `DA609C`; pins 71–76 (JTAG/SBW/RST) sit directly opposite the front pogo pad cluster | Confirmed |
-| MCU 32 kHz crystal | `DA609C` (2-pad metal can) | 32.768 kHz XT1 crystal routed to MSP430 pins 11–12 (`P7.0/XIN`, `P7.1/XOUT`) | Visually traced |
+| MCU | `TI 61A47XTG4 M430F5435A REV H` (LQFP-80 PN) | **TI MSP430F5435A** (MSP430F5xx, 192 KB flash, 16 KB RAM). Pin 1 at bottom-left (white PCB dot in `voicebox_closeup_msp430.jpg`); pins 13–14 (`XIN`/`XOUT`) route directly to `DA609C`; pins 71–76 (JTAG/SBW/RST) sit directly opposite the front pogo pad cluster. Full PN pinout: [bench_recipes.md](../documentation/bench_recipes.md) | Confirmed |
+| MCU 32 kHz crystal | `DA609C` (2-pad metal can) | 32.768 kHz XT1 crystal routed to MSP430 pins 13–14 (`P7.0/XIN`, `P7.1/XOUT`; pins 11–12 are `AVCC`/`AVSS`) | Visually traced |
 | Sub-GHz radio | `44601B BCL01Z 1534` (QFN-20, 4×4 mm) | **Silicon Labs Si4460** rev B1 sub-GHz transceiver. Pin 1 dot at bottom-right (`voicebox_board_front.jpg`); pins 11–15 (`nIRQ`, `SCLK`, `SDO`, `SDI`, `nSEL`) on left edge; pins 16–17 (`XOUT`/`XIN`) route directly down to the metal crystal | Very likely; confirm on the bench |
 | Si4460 crystal | faint (`26...`?) 4-pad metal can | Silicon Labs AN785 recommends 26 MHz for 868 MHz designs (family default 30 MHz) | To measure |
 | `WLAG` (SOT-23-5) | `WLAG` | Next to Si4460 RF network; `WLA` matches ABLIC/SII `S-1315` LDO, or could be an RF switch | Measure voltage & continuity |
@@ -65,16 +65,29 @@ Two radios are fitted:
 No labelled header is printed. Candidates:
 
 - **Pogo pad cluster** on the front (16 large round pads in a staggered 2-column grid next to the
-  FPC connector: labelled `02, 41, 42, 51–61, 66, 67`, directly behind the left edge of the
-  MSP430F5435A). This is almost certainly the factory programming/test jig carrying MSP430 4-wire
-  JTAG (`PJ.0–PJ.3`, pins 72–75), `TEST/SBWTCK` (pin 71), `RST/NMI/SBWTDIO` (pin 76), UART BSL
-  (`P1.6`/`P1.5`), and power/GND.
-- **Numbered test pads around the MSP430** on the back: `70, 71, 72, 76, 77, 79, 101, 102, 104, 105`
-  (sitting right along pins 21–40, opposite the Si4460 — prime candidates for Si4460 SPI / `nIRQ` /
-  `SDN` test points!).
+  FPC connector: labelled `02, 41, 42, 51–61, 66, 67`, directly behind the MSP430F5435A). This is
+  almost certainly the factory programming/test jig carrying MSP430 4-wire JTAG (`PJ.0–PJ.3`, pins
+  72–75), `TEST/SBWTCK` (pin 71), `RST/NMI/SBWTDIO` (pin 76), UART BSL (`P1.1` TX pin 18 / `P1.2`
+  RX pin 19), and power/GND. The photo overlay
+  [voicebox_overlay_msp430_on_front.jpg](docs/images/voicebox_overlay_msp430_on_front.jpg)
+  projects the MSP430 pins onto the front: the chip sits under the upper half of the cluster, and
+  pins 71–76 fall on the pad row next to the labels `51`/`54`/`56` (accuracy about ±1.5 mm, about
+  one pad row), so probe those pads first. The pads reach the pins through vias, so the exact
+  pad-to-pin mapping still needs continuity.
+- **Numbered test pads around the MSP430** on the back: `70, 71, 72, 76, 77, 79, 101, 102, 104, 105`.
+  In `voicebox_closeup_msp430.jpg`, pads `70/71/72/76/77/79` sit on a bundle of 6–8 parallel traces
+  that leave the pin 21–40 edge (lower half, roughly `P1.4`–`P2.4`) and run towards the Si4460
+  corner, so they are most likely Si4460 control lines (`nIRQ`, `SDN`, `GPIO0–3`); the hardware SPI
+  candidates `UCB0` are pins 35–38. Pads `104/105` sit by pins 41–50 (`P3.6`/`P3.7`/`P4.x`). The
+  overlay [voicebox_overlay_si4460_on_back.jpg](docs/images/voicebox_overlay_si4460_on_back.jpg)
+  projects the Si4460 onto the back: it lands on the 3×3 via field of its exposed pad, with pad `77`
+  over the chip and pads `70`/`72` just above its crystal side, which supports the Si4460 reading.
+  The board is multilayer with 0.5 mm pin pitch, so the exact pad-to-pin mapping needs continuity or
+  a logic capture.
 - **MSP430F5435A programming:** supports both 4-wire JTAG and 2-wire Spy-Bi-Wire (`SBWTCK` = pin 71,
   `SBWTDIO` = pin 76). Unlike the siren's MSP430F149, a TI LaunchPad eZ-FET (SBW) *does* support the
-  F5435A. The F5435A has a JTAG security fuse, and its UART BSL password is the 32-byte interrupt
+  F5435A. The F5435A JTAG lock is an electronic fuse (a lock signature in flash), not a physical
+  fuse, and its UART BSL password is the 32-byte interrupt
   vector table — **never try the BSL** on this unit (wrong password mass-erases the flash). Details:
   [documentation/bench_recipes.md](../documentation/bench_recipes.md).
 - **W25Q16DW external flash:** **1.8 V ONLY** — requires a 1.8 V level shifter (e.g. TXB0104 /
@@ -84,15 +97,21 @@ No labelled header is printed. Candidates:
 
 1. **Phase 0 (Passive DMM, batteries disconnected):** Confirm how the 3× `CR-2/3AZ` connectors
    (`01`/`03`/`04`) and `SP1 539` / `F1`–`F3` combine onto the supply rails; map the front pogo pad
-   cluster to MSP430 pins 71–76 (JTAG/SBW/RST) and `P1.5`/`P1.6` (BSL); map back test pads `70–79` /
+   cluster to MSP430 pins 71–76 (JTAG/SBW/RST) and `P1.1`/`P1.2` (pins 18/19, BSL); map back test pads `70–79` /
    `101–105` to the Si4460 SPI pins (pins 1, 11–15); trace the speakers (`W B` at `45`/`28`) to the
    audio amplifier.
 2. **Phase 1 (Active read-only at 3.0 V via Otii Arc / PS3005D):** Measure rail voltages (`DVCC`,
    `Si4460 VDD`, `W25Q16DW VCC` ≈ 1.8 V, `WLAG`, 330 µF cap) and idle/PIR/TX current; listen on
-   868.950 MHz (`sniff`/SDR) and sniff MSP430 ↔ Si4460 SPI at boot with Saleae Logic 4.
+   868.950 MHz (`sniff`/SDR) and sniff MSP430 ↔ Si4460 SPI at boot with Saleae Logic 4; decode
+   the export with `python tools/si446x_spi_decode.py capture.csv` (carrier, data rate, deviation,
+   sync word, CRC and TX/RX payloads; see
+   [bench_recipes.md](../documentation/bench_recipes.md)).
 3. **Phase 2 (External flash & JTAG):** Dump `W25Q16DW` at **1.8 V** (level-shifted FT232H +
-   `flashrom`) and inspect for DCX81 firmware / audio prompts; check MSP430 JTAG/SBW fuse state once
-   a TI FET / LaunchPad eZ-FET is available.
+   `flashrom`) and inspect for DCX81 firmware / audio prompts; check MSP430 JTAG/SBW lock state once
+   a TI FET / LaunchPad eZ-FET is available. SBW needs only `TEST` (pin 71), `RST` (pin 76), `DVCC`
+   and `GND`, so thin wires on the IC pins work before the pogo cluster is mapped. If JTAG is open, a
+   flash dump reveals every pin's function from the port setup code and replaces most of the
+   continuity mapping.
 4. **Phase 3 (OpenVerisure firmware):** Evaluate custom MSP430F5435A + Si4460 firmware (868.950 MHz
    AES-128 KDF protocol, PIR motion + tamper + battery + local speaker chimes/voice prompts).
 
@@ -124,4 +143,5 @@ Photos with GPS/EXIF metadata removed and downscaled to 3264 px live in [docs/im
 * [docs/images/voicebox_closeup_dcx81_flash.jpg](docs/images/voicebox_closeup_dcx81_flash.jpg): the DCX81, `D138` 13.824 MHz crystal, and W25Q16DW.
 * [docs/images/voicebox_closeup_winbond.jpg](docs/images/voicebox_closeup_winbond.jpg): the W25Q16DW 1.8 V SPI NOR flash and speaker JST `28`.
 * [docs/images/voicebox_closeup_rf_connector.jpg](docs/images/voicebox_closeup_rf_connector.jpg): U.FL `2` and 868 MHz antenna feed at the bottom of the back side.
+* [docs/images/voicebox_overlay_msp430_on_front.jpg](docs/images/voicebox_overlay_msp430_on_front.jpg), [docs/images/voicebox_overlay_si4460_on_back.jpg](docs/images/voicebox_overlay_si4460_on_back.jpg): derived overlays. The board is flipped about its horizontal axis; the mapping `x_back = x_front − 10`, `y_back = 3361 − y_front` (full-resolution pixels) was fitted on the short-antenna slot, the right-edge notch and the PIR cut-out, and is accurate to about ±40 px (±1.5 mm). The MSP430 pins (back) are drawn on the front and the Si4460 (front) on the back.
 * [docs/images/voicebox_housing_label.jpg](docs/images/voicebox_housing_label.jpg), [docs/images/voicebox_label.jpg](docs/images/voicebox_label.jpg), [docs/images/voicebox_label_closeup.jpg](docs/images/voicebox_label_closeup.jpg): back cover (3× `CR-2/3AZ` bays) and rating label.

@@ -165,16 +165,24 @@ use it (see the table at the top).
 
 ### MSP430F5435A (voicebox), 80-pin LQFP (TI SLAS655H)
 
-Signal names are confirmed; the exact PN pin numbers are in a figure that could not be read, so
-they are **unverified**. TEST, RST/NMI and PJ.0–PJ.3 sit next to each other in one corner.
+PN pin numbers verified against SLAS655H figure 7-2 and the terminal table. TEST, PJ.0–PJ.3 and
+RST/NMI sit next to each other (pins 71–76) on the pin 61–80 edge.
 
-| Signal | Function |
-| :--- | :--- |
-| PJ.0/TDO, PJ.1/TDI/TCLK, PJ.2/TMS, PJ.3/TCK | 4-wire JTAG |
-| TEST/SBWTCK | JTAG enable / Spy-Bi-Wire clock |
-| RST/NMI/SBWTDIO | Reset / Spy-Bi-Wire data |
-| P1.6 / P1.5 | BSL TXD / RXD (UART BSL; F543xA password = vector table) |
-| DVCC1/2, DVSS1/2, AVCC1, AVSS1 | supplies |
+| Signal | PN pin | Function |
+| :--- | :--- | :--- |
+| TEST/SBWTCK | 71 | JTAG enable / Spy-Bi-Wire clock |
+| PJ.0/TDO, PJ.1/TDI/TCLK, PJ.2/TMS, PJ.3/TCK | 72, 73, 74, 75 | 4-wire JTAG |
+| RST/NMI/SBWTDIO | 76 | Reset / Spy-Bi-Wire data |
+| P1.1 / P1.2 | 18 / 19 | BSL TXD / RXD (UART BSL; F543xA password = vector table) |
+| P7.0/XIN, P7.1/XOUT | 13, 14 | XT1 (32.768 kHz) |
+| P5.2/XT2IN, P5.3/XT2OUT | 69, 70 | XT2 |
+| DVCC1, DVCC2, DVCC3, DVCC4 | 16, 51, 31, 67 | digital supply |
+| DVSS1, DVSS2, DVSS3, DVSS4 | 15, 50, 30, 68 | digital ground |
+| AVCC, AVSS | 11, 12 | analog supply / ground |
+| VCORE | 49 | core regulator output (470 nF only, never load) |
+
+The F5xx JTAG lock is an electronic fuse (a lock signature in flash), not a physical fuse. SBW needs
+only pins 71 and 76 plus DVCC/GND.
 
 ### What to do now
 
@@ -211,8 +219,22 @@ python tools/cc1101_spi_decode.py capture.csv --xtal-mhz 27
 ```
 
 Use `--xtal-mhz 26` if XT1 turns out to be 26 MHz. The tool prints the strobes, the final register
-image and the derived carrier, data rate, deviation, sync word and WOR timing. The Si4460 uses a
-command-based API, not registers; the tool does not decode it (yet).
+image and the derived carrier, data rate, deviation, sync word and WOR timing.
+
+The voicebox Si4460 uses a command-based API, not registers. Decode its capture with:
+
+```
+python tools/si446x_spi_decode.py capture.csv
+```
+
+It logs every command (`POWER_UP`, `SET_PROPERTY`, `START_TX`, `CHANGE_STATE`, ...), pairs each
+`READ_CMD_BUFF` reply (CTS = `0xFF`) with the command that asked for it, collects the
+`WRITE_TX_FIFO` / `READ_RX_FIFO` payloads, and prints the final property image with the derived
+carrier, channel step, deviation, data rate, modulation, sync word, preamble and CRC. The crystal
+frequency comes from the `POWER_UP` command (`XO_FREQ`), so start the capture before power-on;
+`--xtal-mhz` overrides it. The formulas follow the Si446x API documentation and are marked
+"verify against WDS" in the source: check the first real capture against Silicon Labs WDS before
+relying on the derived values. Polls with CTS not ready are only counted (`--verbose` lists them).
 
 ### Pins (CC1101, QFN20, TI SWRS061)
 
