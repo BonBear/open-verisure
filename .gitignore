@@ -34,6 +34,8 @@ MD_CAM/firmware/config.h
 !MD_CAM/firmware/config.h.example
 SIREN/firmware/include/config.h
 !SIREN/firmware/include/config.h.example
+SMOKE_DETECTOR/firmware/src/config.h
+!SMOKE_DETECTOR/firmware/src/config.h.example
 868Receiver/src/secrets.h
 !868Receiver/src/secrets.h.example
 MD_CAM/cc_local_index.html
@@ -78,3 +80,4 @@ dist/
 
 # local session hand-over for Claude Code and Antigravity (state + preferences, never committed)
 .agents/handover.md
+SMOKE_DETECTOR/firmware/src/autogen/radioconf_generation_log.json

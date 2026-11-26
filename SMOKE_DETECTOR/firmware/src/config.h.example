@@ -1,0 +1,45 @@
+/**
+ * @file config.h.example
+ * @brief Template Configuration for GW-SD3 smoke detector (EFR32FG14)
+ *
+ * COPY THIS FILE TO `config.h` IN THIS DIRECTORY:
+ *   cp src/config.h.example src/config.h
+ *
+ * OR AUTOMATICALLY GENERATE `config.h` USING derive_key.py:
+ *   1. Configure MASTER_KEY_HEX in `868Receiver/src/secrets.h`
+ *   2. Run: python derive_key.py --id 3EA8VKXK -w -o SMOKE_DETECTOR/firmware/src/config.h
+ *
+ * NOTE: `config.h` is git-ignored and will never be committed to the repository,
+ * keeping your device-specific encryption keys and serial numbers private.
+ */
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#include <stdint.h>
+
+/**
+ * @def DEVICE_ID
+ * @brief 8-character ASCII identifier for this sensor node.
+ *
+ * This matches the code printed on the sensor's physical sticker (e.g. "2JHL2MVN")
+ * or can be any custom ID of exactly 8 characters A-Z/0-9 (e.g. "VSDOOR01"); the gateway
+ * and derive_key.py reject anything else.
+ * The first 8 bytes of each RF transmission are sent in plaintext with this ID.
+ */
+#define DEVICE_ID "SAMPLE01"
+
+/**
+ * @brief 16-byte (128-bit) unique AES-128 encryption key for this device.
+ *
+ * In production, this key is derived from the Master Key via KDF:
+ *   Device_Key = AES-128-ECB(Master_Key, Pad16(Device_ID))
+ *
+ * Below is a standard AES test vector key for development/testing:
+ */
+static const __code uint8_t DEVICE_AES_KEY[16] = {
+    0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
+    0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C
+};
+
+#endif // CONFIG_H

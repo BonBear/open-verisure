@@ -98,8 +98,9 @@ supply:
    every 4 s, ~1.1 s high on a test press), the test sound does not read `IC6`, and `CP92` is a
    power-gated single-wire sensor on `PF3` (see [docs/re_worksheet.md](docs/re_worksheet.md) section 7).
 3. **Phase 2 (OpenVerisure firmware & HA integration) — IN PROGRESS:** Unit 1 unlocked and the
-   bare-metal bring-up firmware in [firmware/](firmware/README.md) (LED81 pulse + SWD heartbeat)
-   builds and runs. Next: bare-metal + RAIL EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
+   first RF firmware in [firmware/](firmware/README.md) sends authenticated OpenVerisure
+   packets (door-sensor format, persistent counter) that the gateway publishes on MQTT
+   (bench-verified 2026-11-26). Next: complete the EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
    protocol, optical smoke + temp/humidity + tamper + battery + speaker alarm), and add
    multi-device `smoke` support to `868Receiver` and Home Assistant MQTT discovery.
 
