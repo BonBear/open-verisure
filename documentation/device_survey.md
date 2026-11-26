@@ -10,12 +10,12 @@ and voicebox remain research-only. Each device has a README and a bench workshee
 | Worksheet / notes | [re_worksheet.md](../SMOKE_DETECTOR/docs/re_worksheet.md) | [re_worksheet.md](../VOICEBOX/docs/re_worksheet.md) | [hardware_pinout_and_measurements.md](../SIREN/docs/hardware_pinout_and_measurements.md) |
 | Maker | Made in Japan (PCB K2226) | Panasonic, Japan (PCB K1969-1) | Panasonic, Japan (PCB M1765-1) |
 | MCU | Silicon Labs EFR32FG14P231 (Cortex-M4) | TI MSP430F5435A | TI MSP430F149 Rev S |
-| Sub-GHz radio | integrated in the EFR32 | Silicon Labs Si4460 (assumed) | TI CC1101 (26 MHz XT1) |
-| Other radio | none expected (P231 = sub-GHz only, to confirm) | DSP Group DCX81 (DECT voice SoC) | none |
-| External flash | Winbond W25Q16JL (16 Mbit) | Winbond W25Q16DW (16 Mbit, 1.8 V) | none |
-| Audio | 8 Ω speaker, driver unknown (IC81?) | 2x 8 Ω speakers, MEMS microphone | OKI L22901-707 + IC5/IC9 H-bridge piezo horn (`CN2`) |
-| Other sensors | optical smoke chamber | PIR | thermistor (`TH1`), tamper switch (`SW1`) |
-| Debug | labelled pads: CLK, DIO, SW, RES, TXD, RXD, TPR, FIRE (SWD + UART) | unlabelled pogo cluster (JTAG/SBW to find) | JTAG fuse blown (`TP61–64`/`TP5`); flashed via ROM BSL (`tools/esp32_msp430_bsl/`) |
+| Sub-GHz radio | integrated in EFR32 (**868.950 MHz 2-FSK 38.4 kBaud `D3 91` confirmed**) | Silicon Labs Si4460 (assumed) | TI CC1101 (26 MHz XT1) |
+| Other radio | none expected (P231 = sub-GHz only) | DSP Group DCX81 (DECT voice SoC) | none |
+| External flash | Winbond W25Q16JL (16 Mbit, 2.3–3.6 V, power-gated; back pads `51–54`/`60`) | Winbond W25Q16DW (16 Mbit, 1.8 V) | none |
+| Audio | `M36BN20-A` 8 Ω speaker (`CN301`) driven BTL by `IC301` (`304A`) | 2x 8 Ω speakers, MEMS microphone | OKI L22901-707 + IC5/IC9 H-bridge piezo horn (`CN2`) |
+| Other sensors | optical smoke chamber (`LED81`=`PF4`, `PD81`→`IC81`), `CP92` temp/humidity | PIR | thermistor (`TH1`), tamper switch (`SW1`) |
+| Debug | `CLK`/`DIO`/`RES` (`PF0`/`PF1`/`RESETn`) verified: `DPIDR 0x2BA01477`, AAP `0x26E60011` (locked, unlockable via Pi Debug Probe) | unlabelled pogo cluster (JTAG/SBW to find) | JTAG fuse blown (`TP61–64`/`TP5`); flashed via ROM BSL (`tools/esp32_msp430_bsl/`) |
 | Bench recipes | [bench_recipes.md](bench_recipes.md) §1, §2 | §2, §3, §4 | §3, §4 (firmware working) |
 | Battery | 1× `CR-2/3AZ` 3.0 V (built in, not replaceable) | 3× `CR-2/3AZ` (`SH384552520`) 3.0 V | 3x parallel `CR-2/3AZ` 3 V (`CN5`–`CN7`) |
 

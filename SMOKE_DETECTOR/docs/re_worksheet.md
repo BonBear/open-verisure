@@ -1,148 +1,95 @@
 # GW-SD3 smoke detector: bench worksheet
 
-Fill in on the bench. Leave a cell empty when it has not been measured; write `n/a` when it does
-not apply. Background and part list: [README.md](../README.md). Procedures, pinouts and the list of
-actions that can erase the unit: [documentation/bench_recipes.md](../../documentation/bench_recipes.md).
+Bench measurements for the Verisure **GW-SD3** smoke detector. Background and part list:
+[README.md](../README.md). Procedures, pinouts and erase warnings:
+[documentation/bench_recipes.md](../../documentation/bench_recipes.md).
 
-Unit used: ☐ 3EA8VKXK ☐ 3EB7KFZQ  Date: ________  Tools: ______________________
-
-Safety: the battery is soldered in or plugged in and cannot be replaced. Do not short it, and
-keep the probe away from the battery terminals when the board is loose. The chamber is optical (no
-radioactive source).
+Unit used: ☑ `3EA8VKXK` (reference unit `3EB7KFZQ` kept untouched)  
+Date: `2026-11-25/26`  
+Tools: DMM, Otii Arc (3.0 V / 0.2 A), USB microscope, Raspberry Pi Debug Probe (CMSIS-DAP v2 + `pyOCD 0.46.1`), OpenVerisure Gateway (`lolin_s2_mini_eval` `sniff all`).
 
 ## 1. Power
 
 | Point | Expected | Measured | Notes |
 | :--- | :--- | :--- | :--- |
-| Battery voltage (open circuit) | 3.0 V (`CR-2/3AZ`) | | |
-| Battery type / marking (inside the base) | | `1× CR-2/3AZ` (3.0 V Li-MnO2) | Same cell type as SIREN `GW-SI` |
-| `VCC` pad to GND | ~3 V or ~1.8 V | | |
-| `VCA` pad to GND | analog supply? | | |
-| EFR32 DECOUPLE pin / DVDD | ~1.2 V / ~1.8 V | | |
-| Boost/driver rail at the 100 µF `107 6.38` cap | > battery when sounding? | | |
-| Idle current (supervision) | µA range | | |
-| Current while transmitting (peak) | 10–30 mA | | |
-| Current while sounding | | | |
-| Where GND can be reached (pad / part pin) | | | |
+| Battery type / marking | Lithium | `1× CR-2/3AZ` (3.0 V Li-MnO2) | Same cell type as SIREN `GW-SI` |
+| Battery connector (`BAT+` / `BAT-`) | 2-pin JST (back) | **`01`, `03`, `29` = `BAT+`**; **`02`, `04`, `27` = `BAT-` (`GND`)** | `01` & `02` are the two large pads under the base jig holes |
+| `VCC` pad to GND | ~3.0 V | **3.0 V** | Always-on rail to EFR32 |
+| `VCA` pad to GND | switched rail | **0 V** (in idle) | Power-gated analog/audio rail |
+| `IC6` (`W25Q16JL`) `VCC` (pad `60`) | 2.3–3.6 V | **0 V** (in idle) | Power-gated for 10-year battery life! Safe for 3.3 V FT232H dump with battery disconnected |
+| `R1` + `R56` (2× `270` = 27 Ω) | series/inrush | **14 Ω** to `BAT+` (27 Ω ∥ 27 Ω = 13.5 Ω) | |
+| Best accessible GND pad | — | **`02`** (large round pad), also `04`, `27` | |
 
 ## 2. Clocks
 
-| Part | Marking | Expected | Measured (frequency counter / scope) |
+| Part | Marking | Expected | Status |
 | :--- | :--- | :--- | :--- |
-| HFXO next to the EFR32 | `3840T` | 38.400 MHz | |
-| LFXO (brown 2-pad) | `A320L` | 32.768 kHz | |
+| HFXO next to EFR32 | `3840T` | 38.400 MHz | Visually traced to EFR32 pins 10–11 (`HFXTAL_N`/`_P`) |
+| LFXO (brown 2-pad) | `A320L` | 32.768 kHz | Visually traced to EFR32 pins 35–36 (`PB14`/`PB15`) |
 
 ## 3. Debug header (8 pogo pads on the back)
 
-Measure with the board powered by its own battery unless noted. "Idle level" = DC voltage to GND.
-"Goes to" = EFR32 pin number or part found by continuity (beeper with the battery disconnected).
+| Pad | Assumed | Goes to (EFR32 pin) | Confirmed function |
+| :--- | :--- | :--- | :--- |
+| `CLK` | `SWCLK` | **EFR32 pin 1 (`PF0`)** | **Confirmed `SWCLK`** |
+| `DIO` | `SWDIO` | **EFR32 pin 2 (`PF1`)** | **Confirmed `SWDIO`** |
+| `RES` | `RESETn` | **EFR32 pin 12 (`RESETn`)** | **Confirmed `RESETn`** |
+| `SW` | `SWO` or switch | **EFR32 pin 25 (`PA0`)** | **Not `SWO`** (`PF2`); GPIO input (likely test switch) |
+| `TXD` | UART TX | TBD | |
+| `RXD` | UART RX | TBD | |
+| `TPR` | tamper | TBD | |
+| `FIRE` | alarm signal | TBD | |
 
-| Pad | Assumed | Idle level (V) | Goes to (EFR32 pin / part) | Confirmed function |
-| :--- | :--- | :--- | :--- | :--- |
-| CLK | SWCLK | | | |
-| DIO | SWDIO | | | |
-| SW | SWO or switch | | | |
-| RES | RESETn | | | |
-| TXD | UART TX | | | |
-| RXD | UART RX | | | |
-| TPR | tamper | | | |
-| FIRE | alarm signal | | | |
-
-Pad pitch / diameter (for a pogo jig): pitch ______ mm, pad Ø ______ mm.
-Position of the jig holes in the base relative to the pads: ______________________
-
-### SWD connection test
+### SWD connection test (strictly read-only, 2026-11-26)
 
 | Step | Result |
 | :--- | :--- |
-| Probe used (J-Link / CMSIS-DAP / other) | |
-| Target voltage seen by the probe | |
-| `IDCODE` / DPIDR read | |
-| Part number read (DI page) | |
-| Flash size reported | |
-| Debug lock state (locked / unlocked) | |
-| Main flash dump possible? (file name, size, SHA-256) | |
-| **Do not run a device erase on the only unit** | ☐ read and understood |
+| Probe used | Raspberry Pi Debug Probe (CMSIS-DAP v2, `D` port: Orange=`CLK`, Yellow=`DIO`, Black=`GND`) + `pyOCD 0.46.1` (200 kHz, 3.0 V from Otii Arc) |
+| `DPIDR` | **`0x2BA01477`** (ARM Cortex-M4 SW-DP, rev 2) |
+| `AP 0 IDR` / `AP 255 IDR` | **`0x26E60011`** (Silicon Labs EFR32 Series 1 **AAP** — Authentication Access Port) |
+| Debug lock state | **DEBUG-LOCKED** (factory lock active; no AHB-AP exposed). Unlockable via `AAP DEVICE_ERASE` with the Raspberry Pi Debug Probe when ready for custom firmware |
+| Main flash dump possible? | No (debug-locked; stopped read-only without erasing) |
 
-### UART test (TXD/RXD)
+## 4. External SPI flash (`IC6`, Winbond `W25Q16JL`, 16 Mbit / 2 MiB)
 
-| Item | Result |
-| :--- | :--- |
-| Activity on TXD at power-up / button press (scope) | |
-| Baud rate (from the bit width) | |
-| Text or binary? First bytes seen | |
-| Reaction to input on RXD | |
+All 6 SPI/power signals are exposed on large round test pads on the **back** of the PCB (no SOIC-8 clip needed):
 
-## 4. External SPI flash (IC6, W25Q16JL)
+| `IC6` pin | Signal | Back PCB pad | Notes |
+| :---: | :--- | :--- | :--- |
+| 1 | `/CS` | **Pad `54`** | Confirmed by DMM continuity |
+| 2 | `DO` (MISO) | **Pad `51`** | Confirmed by DMM continuity |
+| 3 | `/WP` | **Pad `60`** | Tied to `VCC` |
+| 4 | `GND` | **`GND`** (`02`/`04`/`27`) | Confirmed by DMM continuity |
+| 5 | `DI` (MOSI) | **Pad `53`** | Confirmed by DMM continuity |
+| 6 | `CLK` | **Pad `52`** | Confirmed by DMM continuity |
+| 7 | `/HOLD` | **Pad `60`** | Tied to `VCC` |
+| 8 | `VCC` | **Pad `60`** | 0 V in idle (power-gated); `W25Q16JL` is 2.3–3.6 V |
 
-| Item | Result |
-| :--- | :--- |
-| VCC at pin 8 | |
-| JEDEC ID (should be EF 40 15 or EF 60 15) | |
-| Dumped in circuit (clip) or desoldered? | |
-| Dump file name, size, SHA-256 | |
-| Content (empty / code / audio / log; `binwalk`, strings) | |
-| EFR32 pins wired to CS / CLK / MOSI / MISO | |
+Dump pending (FT232H + `flashrom` via pads `51–54`, `60`, `02`).
 
-## 5. Unknown ICs
+## 5. Identified & mapped ICs / peripherals
 
-| Ref | Marking | Package / pin count | Supply pin and voltage | Nets / connected parts | Identified as |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| IC81 | `C4660 224KU` | TSSOP-20 | | | |
-| IC301 | `304A 029J 363` | QFN-32 | | | |
-| 6-pad near U.FL | `341 ZF` | | | | |
-| SOT-23 parts `YK`, `KFD`, `A1`, `4A` | | | | | |
-
-## 6. Connectors and peripherals
-
-| Item | Pins | Measured / traced | Function |
-| :--- | :--- | :--- | :--- |
-| CN301 (3-pin) | | | |
-| 2-pin connector (back, top) | | | battery? |
-| Speaker (8 Ω): driven by | | | |
-| LED41 / LED42 / LED43 colour and EFR32 pin | | | |
-| Test button: EFR32 pin | | | |
-| Tamper (bracket) detection: switch or reed? | | | |
-| Optical chamber: IR LED drive pin, photodiode input | | | |
-| U.FL connector: connected to the antenna path? | | | |
-
-## 7. Numbered test pads
-
-Add rows as needed.
-
-| Pad | Side | Idle voltage | Connected to | Notes |
+| Ref | Marking | Package | Measured / traced | Confirmed function |
 | :--- | :--- | :--- | :--- | :--- |
-| 15 | front | | | next to the EFR32 |
-| 23 | front | | | |
-| 28 | front | | | |
-| 32 | front | | | |
-| 39 | front | | | next to IC81 |
-| 40 | front | | | |
-| 48/49/56/57/58/59 | front | | | 2x4 grid next to IC6 (SPI?) |
-| 50 | front | | | |
-| 62 | front | | | |
-| 90/91/94 | front | | | near CN11 |
-| 95 | front | | | |
-| 61 | back | | | next to the header |
-| 64 | back | | | next to FIRE |
-| 10 | back | | | next to R1 |
+| `IC301` | `304A 029J 363` | QFN-32 | Pins 13+14 → Pad `43` → `CN301` speaker; Pins 15+16 → Pad `42` → `CN301` speaker | **Audio/voice IC with BTL speaker driver** (drives `M36BN20-A` 8 Ω speaker on `CN301`) |
+| `IC81` | `C4660 224KU` | TSSOP-20 | Connected directly to `PD81` (optical chamber photodiode); surrounded by inductors + `PC41` + 100 µF cap | **Optical smoke-chamber AFE** |
+| `LED81` | IR LED (chamber) | 2-pin TH | Connected to **EFR32 pin 5 (`PF4`)** | **Smoke chamber IR emitter** |
+| `PD81` | Photodiode (chamber) | 3-pin TH | Connected to **`IC81`** (`C4660`) | **Smoke chamber optical receiver** |
+| `CP92` | `CP92` | DFN-8 w/ window | Microscope confirms rectangular open sensing window over silicon die (Sensirion SHT3x / Si70xx family) | **Digital temperature & humidity sensor** |
+| `CN301` | 3-pin JST | — | Outer pins (black + white wire, center empty) → Pads `43`/`42` → `IC301` pins 13–16 | **Speaker connector** (`M36BN20-A`, 8 Ω 0.5 W) |
+| `341 ZF` | `341 ZF` | 6-pad metal lid | Between EFR32 pins 13–16 (`SUBGRF`) and U.FL / wire antenna | **EPCOS/TDK 868 MHz SAW bandpass filter** |
 
-## 8. Radio
+## 6. Radio (bench sniff, 2026-11-26)
 
 | Item | Result |
 | :--- | :--- |
-| Frequency seen on the SDR (test button / alarm / supervision) | |
-| Modulation, data rate, deviation | |
-| Seen by the gateway with the door sensor settings (868.950 MHz, 38.4 kBaud, sync `D3 91`)? | |
-| Packet length, first bytes (is the device ID in plaintext like the door sensor?) | |
-| Supervision/heartbeat interval | |
-| Does it receive (siren/alarm command from the hub)? | |
-| 2.4 GHz activity? (P231 should be sub-GHz only) | |
+| Gateway sniff (`lolin_s2_mini_eval`, `sniff all`) | **Confirmed!** Caught **3 boot packets** on `CC1101#1` (**868.950 MHz, 2-FSK, 38.4 kBaud, sync `D3 91`**) during 3.0 V power-on (`+0.0 s`, `+4.5 s`, `+3.5 s`) |
+| Signal strength & freq offset | **RSSI -55 to -56 dBm**, LQI 51–57, freq error `-39.7 kHz` |
+| Captured raw 20-byte frames | `EC F1 {0D,19,05} 91 FF DD 84 DB 15 85 2D B0 B1 DB BF F4 4C 62 28 DF` (identical 20-byte boot/supervision header; byte 2 varies) |
+| Hardware RF compatibility | **100 % compatible** with the OpenVerisure 868.950 MHz CC1101 gateway |
 
-## 9. Open questions
+## 7. Next bench steps
 
-- [ ] What is IC81, and is the speaker driven by it?
-- [ ] What is IC301?
-- [ ] What does the W25Q16 hold?
-- [ ] Is SWD locked?
-- [ ] Same 868 MHz PHY and packet format as the door sensor?
+- [ ] Dump `IC6` (`W25Q16JL`, 2 MiB) via back pads `51–54`, `60`, `02` (FT232H + `flashrom`) and inspect for GBL OTA images, voice/audio clips, or logs.
+- [ ] Optional Saleae Logic 4 capture on `IC81`, `IC301`, `CP92` (I2C/SPI) before unlocking EFR32.
+- [ ] Unlock Unit 1 (`3EA8VKXK`) via `AAP DEVICE_ERASE` (keep `3EB7KFZQ` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).
