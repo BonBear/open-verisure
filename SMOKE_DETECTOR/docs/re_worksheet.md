@@ -4,7 +4,7 @@ Bench measurements for the Verisure **GW-SD3** smoke detector. Background and pa
 [README.md](../README.md). Procedures, pinouts and erase warnings:
 [documentation/bench_recipes.md](../../documentation/bench_recipes.md).
 
-Unit used: ☑ `3EA8VKXK` (reference unit `3EB7KFZQ` kept untouched)  
+Unit used: ☑ `3EB7KFZQ` (reference units `3EA8VKXK` and `3EA8W6D6` kept untouched)  
 Date: `2026-11-25/26`  
 Tools: DMM, Otii Arc (3.0 V / 0.2 A), USB microscope, Raspberry Pi Debug Probe (CMSIS-DAP v2 + `pyOCD 0.46.1`), OpenVerisure Gateway (`lolin_s2_mini_eval` `sniff all`).
 
@@ -65,7 +65,7 @@ All 6 SPI/power signals are exposed on large round test pads on the **back** of 
 | 7 | `/HOLD` | **Pad `60`** | Tied to `VCC` |
 | 8 | `VCC` | **Pad `60`** | 0 V in idle (power-gated); `W25Q16JL` is 2.3–3.6 V |
 
-### Dump result (Unit 1 `3EA8VKXK`, 2026-11-26)
+### Dump result (Unit 1 `3EB7KFZQ`, 2026-11-26)
 
 | Item | Result |
 | :--- | :--- |
@@ -128,4 +128,4 @@ Pitfall: several early captures were flat because the probe clips had no contact
 - [x] Dump `IC6` (`W25Q16JL`, 2 MiB): sound table + audio clips only, no firmware (see section 4).
 - [ ] Identify the clip audio encoding (optional; needed only to reuse the stock sounds).
 - [x] Saleae Logic 4 capture of the stock firmware (see section 7). `IC81` and the `LED81` drive were not resolved.
-- [ ] Unlock Unit 1 (`3EA8VKXK`) via `AAP DEVICE_ERASE` (keep `3EB7KFZQ` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).
+- [ ] Unlock Unit 1 (`3EB7KFZQ`) via `AAP DEVICE_ERASE` (keep `3EA8VKXK` and `3EA8W6D6` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).

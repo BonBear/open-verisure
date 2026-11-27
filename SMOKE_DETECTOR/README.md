@@ -6,16 +6,19 @@ cross-device overview is in [documentation/device_survey.md](../documentation/de
 
 ## Unit data (from the labels)
 
-| Field | Unit 1 | Unit 2 |
-| :--- | :--- | :--- |
-| Model | GW-SD3 "Smoke alarm device" | GW-SD3 |
-| Part No | 121467 | 121467 |
-| HW / SW | 5.0 / 7.00 | 5.0 / 7.00 |
-| Date (YYMMDD) | 240301 | 240219 |
-| Serial (device ID) | 3EA8VKXK | 3EB7KFZQ |
-| Origin | Verisure Sàrl, Made in Japan | same |
-| Detection | Optical, EN 14604:2005, CE 2797 | same |
-| Battery | 1× `CR-2/3AZ` (3.0 V Li-MnO2), built-in / "replace by 2034" | same |
+Correction 2026-11-27: the bench unit (Unit 1, unlocked and running OpenVerisure firmware) is
+`3EB7KFZQ`; earlier notes had the two serials swapped.
+
+| Field | Unit 1 (bench, custom firmware) | Unit 2 (stock) | Unit 3 (stock) |
+| :--- | :--- | :--- | :--- |
+| Model | GW-SD3 "Smoke alarm device" | GW-SD3 | GW-SD3 |
+| Part No | 121467 | 121467 | 121467 |
+| HW / SW | 5.0 / 7.00 | 5.0 / 7.00 | not read |
+| Date (YYMMDD) | 240219 | 240301 | not read |
+| Serial (device ID) | 3EB7KFZQ | 3EA8VKXK | 3EA8W6D6 |
+| Origin | Verisure Sàrl, Made in Japan | same | same |
+| Detection | Optical, EN 14604:2005, CE 2797 | same | same |
+| Battery | 1× `CR-2/3AZ` (3.0 V Li-MnO2), built-in / "replace by 2034" | same | same |
 
 Power-off procedure printed on the label: remove the detector from the bracket and hold the front
 button until the LED flashes red fast.
@@ -79,7 +82,11 @@ supply:
   `AAP DEVICE_ERASE`** using the same Raspberry Pi Debug Probe (erases stock flash and unlocks SWD
   for custom OpenVerisure firmware). `IC6` (`W25Q16JL`) has been dumped (Phase 1): it holds only
   sound data, **no firmware**, so the stock application lives only in the locked EFR32 flash and is
-  lost on unlock. Keep Unit 2 (`3EB7KFZQ`) untouched as a stock reference.
+  lost on unlock. Keep Units 2 and 3 (`3EA8VKXK`, `3EA8W6D6`) untouched as a stock reference.
+- **2026-11-26: Unit 1 (`3EB7KFZQ`) unlocked** with `AAP DEVICE_ERASE` (`AAP_CMDKEY = 0xCFACC118`,
+  `AAP_CMD` bit 0, then bit 1 `SYSRESETREQ`). AP0 now reads AHB-AP `0x24770011`. DEVINFO:
+  `MSIZE 0x00200100` (256 kB flash, 32 kB SRAM), `PART 0x1D3D00E7` → **`EFR32FG14P231F256GM48`**.
+  The stock application on Unit 1 is gone.
 
 ## Reverse-engineering plan
 
@@ -93,8 +100,10 @@ supply:
    Saleae sniff of the stock firmware done: `PB11` controls the `IC301` audio IC (10.6 µs pulse
    every 4 s, ~1.1 s high on a test press), the test sound does not read `IC6`, and `CP92` is a
    power-gated single-wire sensor on `PF3` (see [docs/re_worksheet.md](docs/re_worksheet.md) section 7).
-3. **Phase 2 (OpenVerisure firmware & HA integration):** Unlock Unit 1 (`3EA8VKXK`) via AAP
-   `DEVICE_ERASE`, build bare-metal + RAIL EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
+3. **Phase 2 (OpenVerisure firmware & HA integration) — IN PROGRESS:** Unit 1 unlocked and the
+   first RF firmware in [firmware/](firmware/README.md) sends authenticated OpenVerisure
+   packets (door-sensor format, persistent counter) that the gateway publishes on MQTT
+   (bench-verified 2026-11-26). Next: complete the EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
    protocol, optical smoke + temp/humidity + tamper + battery + speaker alarm), and add
    multi-device `smoke` support to `868Receiver` and Home Assistant MQTT discovery.
 
