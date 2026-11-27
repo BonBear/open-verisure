@@ -15,10 +15,13 @@ low-battery flag below 2400 mV). Between packets the MCU sleeps in EM2: the RTCC
 32.768 kHz LFXO (LFRCO fallback) wakes it and RAIL is put to sleep around it. The first 5 s after
 reset stay in EM0 so SWD can attach (flashing also worked while asleep on the bench).
 Not done yet: smoke chamber, test button, speaker, watchdog, a smoke-specific packet type and HA
-entities. Measured on the bench board at 3.0 V (2026-11-27): EM0 debug window ~23 mA, EM2
-between packets ~1.9 mA, TX peak ~55 mA. A test without RAIL gives EM0 13.2 mA, EM2 1.83 mA and
-EM4S 0.27 mA, so EM2 is far above the datasheet (~2 µA) and the cause is still open. (A constant
-~222 mA load seen earlier was a solder fault at the smoke chamber pins and is gone.)
+entities. Measured on the bench board at 3.0 V (2026-11-27): EM0 debug window ~6.4 mA, EM2
+between packets ~8 µA, TX peak ~58 mA (stock firmware: ~2–3 µA floor, 5–16 µA average). Earlier the
+same firmware drew ~23 mA in EM0 and ~1.8 mA in EM2 with DECOUPLE at 2.67 V; that state persisted
+across short Otii power cycles and cleared after the board was left unpowered (cause not proven,
+latch-up suspected). The board has the DC-DC inductor (VREGSW–DVDD 0.3 Ω), but
+`EMU_DCDCINIT_DEFAULT` raised EM2 to ~11 mA, so the firmware leaves the reset power configuration.
+`pins_init()` holds PC6 low: PC6 high switches the LED81 IR drive on (~220 mA through R1/R56).
 
 | File | Content |
 | :--- | :--- |
