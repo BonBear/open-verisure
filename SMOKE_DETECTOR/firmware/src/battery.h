@@ -7,7 +7,8 @@
 
 #include <stdint.h>
 
-/* AVDD in millivolts (average of a few conversions). */
+/* AVDD in millivolts (average of a few conversions); 0 when the ADC did not finish. Needs
+ * radio_init() first (the timeout uses the RAIL time base). */
 uint16_t battery_read_mv(void);
 
 /* Same curve as the siren (same Li-MnO2 cell): 3000 mV = 100 %, 2200 mV = 0 %. */

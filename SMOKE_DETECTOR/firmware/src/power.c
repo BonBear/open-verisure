@@ -10,7 +10,10 @@
 
 #define RTCC_HZ          1024u     /* rtccCntPresc_32 on 32.768 kHz */
 #define WAKE_CH          1
-#define LFXO_POLL_LIMIT  20000000u /* ~1 s of status reads at 38.4 MHz */
+#define LFXO_TIMEOUT_US  2000000u  /* LFXORDY needs ~1.1-1.5 s (32K-cycle startup timeout) */
+
+/* Sleeps RAIL could not allow in EM2 (spent in EM1 instead); read over SWD. */
+volatile uint32_t g_sleep_refused;
 
 void RTCC_IRQHandler(void)
 {
@@ -20,17 +23,14 @@ void RTCC_IRQHandler(void)
 bool power_init(void)
 {
   CMU_LFXOInit_TypeDef lfxo = CMU_LFXOINIT_DEFAULT;
-  bool lfxo_ok = false;
 
   CMU_ClockEnable(cmuClock_HFLE, true);
   CMU_LFXOInit(&lfxo);
   CMU_OscillatorEnable(cmuOsc_LFXO, true, false);
-  for (uint32_t i = 0; i < LFXO_POLL_LIMIT; i++) {
-    if (CMU->STATUS & CMU_STATUS_LFXORDY) {
-      lfxo_ok = true;
-      break;
-    }
+  const uint32_t t0 = radio_time_us();
+  while ((CMU->STATUS & CMU_STATUS_LFXORDY) == 0u && (radio_time_us() - t0) < LFXO_TIMEOUT_US) {
   }
+  const bool lfxo_ok = (CMU->STATUS & CMU_STATUS_LFXORDY) != 0u;
   if (lfxo_ok) {
     CMU_ClockSelectSet(cmuClock_LFE, cmuSelect_LFXO);
   } else {
@@ -66,16 +66,20 @@ void power_sleep_ms(uint32_t ms)
 
   /* PRIMASK critical section: the RTCC interrupt still ends WFI, its handler runs on exit. */
   CORE_ENTER_CRITICAL();
-  bool allowed = radio_sleep();
-  while (allowed && (RTCC_CounterGet() - start) < ticks) {
-    EMU_EnterEM2(true);                                 /* restores HFXO as HFCLK on wake */
+  const radio_sleep_t rs = radio_sleep();
+  if (rs != RADIO_SLEEP_DEEP) {
+    g_sleep_refused++;
+  }
+  while ((RTCC_CounterGet() - start) < ticks) {
+    if (rs == RADIO_SLEEP_DEEP) {
+      EMU_EnterEM2(true);                               /* restores HFXO as HFCLK on wake */
+    } else {
+      EMU_EnterEM1();                                   /* HF clocks keep running for RAIL */
+    }
     RTCC_IntClear(RTCC_IF_CC1);
   }
-  radio_wake((uint32_t)(((uint64_t)(RTCC_CounterGet() - start) * 1000000u) / RTCC_HZ));
-  CORE_EXIT_CRITICAL();
-
-  if (!allowed) {                                       /* RAIL busy: wait in EM0 instead */
-    while ((RTCC_CounterGet() - start) < ticks) {
-    }
+  if (rs != RADIO_SLEEP_ERROR) {
+    radio_wake((uint32_t)(((uint64_t)(RTCC_CounterGet() - start) * 1000000u) / RTCC_HZ));
   }
+  CORE_EXIT_CRITICAL();
 }

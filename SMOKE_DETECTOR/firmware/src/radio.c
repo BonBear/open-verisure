@@ -75,12 +75,15 @@ bool radio_init(void)
   return RAIL_SetTxFifo(s_rail, s_tx_fifo, 0, sizeof(s_tx_fifo)) == sizeof(s_tx_fifo);
 }
 
-bool radio_sleep(void)
+radio_sleep_t radio_sleep(void)
 {
   bool allowed = false;
 
   (void)RAIL_Idle(s_rail, RAIL_IDLE, true);
-  return RAIL_Sleep(0, &allowed) == RAIL_STATUS_NO_ERROR && allowed;
+  if (RAIL_Sleep(0, &allowed) != RAIL_STATUS_NO_ERROR) {
+    return RADIO_SLEEP_ERROR;
+  }
+  return allowed ? RADIO_SLEEP_DEEP : RADIO_SLEEP_SHALLOW;
 }
 
 void radio_wake(uint32_t slept_us)

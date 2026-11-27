@@ -104,7 +104,7 @@ static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
 {
   const uint16_t mv = s_batt_mv;
   g_batt_mv = mv;
-  if (mv < 2400u) {
+  if (mv != 0u && mv < 2400u) {                  /* 0 = no reading yet: no flag */
     flags |= PKT_FLAG_LOW_BATT;
   }
   const pkt_fields_t f = {
@@ -124,7 +124,10 @@ static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
   CRYPTO_AES_ECB128(CRYPTO0, cipher, plain, sizeof(plain), DEVICE_AES_KEY, true);
   pkt_build_frame(DEVICE_ID, cipher, frame);
   const bool ok = radio_send(frame, sizeof(frame));
-  s_batt_mv = battery_read_mv();                   /* after TX: settled, ready for the next one */
+  const uint16_t now = battery_read_mv();          /* after TX: settled, ready for the next one */
+  if (now != 0u) {
+    s_batt_mv = now;
+  }
   return ok;
 }
 

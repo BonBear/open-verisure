@@ -3,8 +3,11 @@
 #include "em_adc.h"
 #include "em_cmu.h"
 
+#include "radio.h"
+
 #define BATT_SAMPLES  8u
 #define ADC_FULLSCALE_MV 5000u   /* adcRef5V: AVDD is scaled internally, 0..5 V maps to 0..4095 */
+#define ADC_TIMEOUT_US   1000u   /* one conversion takes ~20 us at 1 MHz */
 
 uint16_t battery_read_mv(void)
 {
@@ -22,15 +25,26 @@ uint16_t battery_read_mv(void)
   single.acqTime = adcAcqTime16;
   ADC_InitSingle(ADC0, &single);
 
-  for (uint32_t i = 0; i < BATT_SAMPLES; i++) {
+  bool ok = true;
+  for (uint32_t i = 0; ok && i < BATT_SAMPLES; i++) {
     ADC_Start(ADC0, adcStartSingle);
+    const uint32_t t0 = radio_time_us();
     while ((ADC0->STATUS & ADC_STATUS_SINGLEDV) == 0u) {
+      if ((radio_time_us() - t0) >= ADC_TIMEOUT_US) {
+        ok = false;
+        break;
+      }
     }
-    sum += ADC_DataSingleGet(ADC0);
+    if (ok) {
+      sum += ADC_DataSingleGet(ADC0);
+    }
   }
 
   ADC_Reset(ADC0);                                 /* back to the lowest-power state */
   CMU_ClockEnable(cmuClock_ADC0, false);
+  if (!ok) {
+    return 0u;
+  }
   return (uint16_t)((sum * ADC_FULLSCALE_MV) / (BATT_SAMPLES * 4095u));
 }
 

@@ -9,10 +9,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Starts the LF clock and the RTCC. Returns true when the LFXO runs, false on LFRCO. */
+/* Starts the LF clock and the RTCC (call after radio_init: the LFXO wait uses the RAIL time
+ * base). Returns true when the LFXO runs, false on LFRCO. */
 bool power_init(void);
 
-/* Sleeps in EM2 for about ms milliseconds (the radio must be idle). */
+/* Sleeps for about ms milliseconds: EM2, or EM1 when RAIL does not allow EM2 (counted in
+ * g_sleep_refused). The radio must be idle. */
 void power_sleep_ms(uint32_t ms);
 
 #endif /* POWER_H */
