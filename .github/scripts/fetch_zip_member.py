@@ -10,6 +10,7 @@ The caller checks the SHA-256 of the result.
 """
 import struct
 import sys
+import time
 import urllib.request
 import zlib
 
@@ -19,11 +20,24 @@ EOCD64_SIG = b"PK\x06\x06"
 CDIR_SIG = b"PK\x01\x02"
 LOCAL_SIG = b"PK\x03\x04"
 MAX_MEMBER = 64 * 1024 * 1024  # sanity limit for the extracted file
+MAX_CDIR = 256 * 1024 * 1024   # sanity limit for the central directory
+ATTEMPTS = 3
 
 
-def fetch(url, start, length):
+def retry(fn, *args):
+    for i in range(ATTEMPTS):
+        try:
+            return fn(*args)
+        except (OSError, RuntimeError) as e:  # URLError, IncompleteRead, timeouts, short reads
+            if i == ATTEMPTS - 1:
+                raise
+            print(f"retry after: {e}", file=sys.stderr)
+            time.sleep(5 * (i + 1))
+
+
+def _fetch(url, start, length):
     req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{start + length - 1}"})
-    with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310 (https URL from the workflow)
+    with urllib.request.urlopen(req, timeout=120) as r:
         if r.status != 206:
             raise RuntimeError(f"server ignored the range request (HTTP {r.status})")
         data = r.read()
@@ -32,13 +46,21 @@ def fetch(url, start, length):
     return data
 
 
-def total_size(url):
+def fetch(url, start, length):
+    return retry(_fetch, url, start, length)
+
+
+def _total_size(url):
     req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
-    with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=120) as r:
         rng = r.headers.get("Content-Range", "")
     if "/" not in rng:
         raise RuntimeError("no Content-Range in the reply")
     return int(rng.rsplit("/", 1)[1])
+
+
+def total_size(url):
+    return retry(_total_size, url)
 
 
 def central_directory(url, size):
@@ -57,6 +79,8 @@ def central_directory(url, size):
         if rec[:4] != EOCD64_SIG:
             raise RuntimeError("bad ZIP64 end of central directory")
         cd_size, cd_off = struct.unpack_from("<QQ", rec, 40)
+    if cd_size > MAX_CDIR:
+        raise RuntimeError(f"central directory too large ({cd_size} bytes)")
     return fetch(url, cd_off, cd_size)
 
 
@@ -94,6 +118,8 @@ def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__)
     url, name, out = sys.argv[1:]
+    if not url.startswith("https://"):
+        sys.exit("only https:// URLs are accepted")
     size = total_size(url)
     method, crc, csize, usize, loff = find_member(central_directory(url, size), name)
     if usize > MAX_MEMBER or csize > MAX_MEMBER:
@@ -106,7 +132,7 @@ def main():
     if method == 0:
         data = comp
     elif method == 8:
-        data = zlib.decompress(comp, -15)
+        data = zlib.decompressobj(-15).decompress(comp, usize + 1)  # capped output
     else:
         raise RuntimeError(f"unsupported compression method {method}")
     if len(data) != usize or zlib.crc32(data) != crc:

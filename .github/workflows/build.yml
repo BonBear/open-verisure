@@ -159,13 +159,14 @@ jobs:
       - name: Install arm-none-eabi-gcc and newlib
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q gcc-arm-none-eabi libnewlib-arm-none-eabi make
+          sudo apt-get install -y -q gcc-arm-none-eabi libnewlib-arm-none-eabi libnewlib-nano-arm-none-eabi make
           arm-none-eabi-gcc --version | head -1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: sdk-cache
         with:
           path: ${{ runner.temp }}/gecko_sdk
-          key: gecko-sdk-${{ env.GECKO_SDK_COMMIT }}-${{ env.RAIL_LIB_SHA256 }}
+          # bump v1 when the sparse-checkout list below changes (the key does not cover it)
+          key: gecko-sdk-v1-${{ env.GECKO_SDK_COMMIT }}-${{ env.RAIL_LIB_SHA256 }}
       - name: Gecko SDK ${{ env.GECKO_SDK_TAG }} (sparse checkout + RAIL library)
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: |

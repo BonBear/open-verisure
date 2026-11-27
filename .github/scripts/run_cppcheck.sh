@@ -31,10 +31,14 @@ cppcheck "${common[@]}" --platform=avr8 --language=c --std=c99 \
     -DSIREN_USE_EXAMPLE_CONFIG -D__MSP430F149__ -DCTR_SEED=1UL \
     -I SIREN/firmware/include -I SIREN/firmware/src SIREN/firmware/src/*.c || rc=1
 
-# the Gecko SDK headers are not in the repository; cppcheck runs on the project sources alone
+# the Gecko SDK headers are not in the repository; cppcheck runs on the project sources alone,
+# with config.h.example for the device ID/key, in the normal and the carrier-test configuration
 echo "== Smoke detector (EFR32FG14)"
-cppcheck "${common[@]}" --platform=unix32 --language=c --std=c99 -D__code= -DEFR32FG14P231F256GM48 \
-    -I SMOKE_DETECTOR/firmware/src SMOKE_DETECTOR/firmware/src/*.c || rc=1
+for cfg in -DSMOKE_NORMAL_BUILD -DRADIO_TEST_CW; do
+    cppcheck "${common[@]}" --platform=unix32 --language=c --std=c99 -D__code= -DEFR32FG14P231F256GM48 \
+        "$cfg" --include=SMOKE_DETECTOR/firmware/src/config.h.example \
+        -I SMOKE_DETECTOR/firmware/src SMOKE_DETECTOR/firmware/src/*.c || rc=1
+done
 
 echo "== BSL flasher (ESP32-C3)"
 cppcheck "${common[@]}" --platform=unix32 --language=c++ --std=c++17 \
