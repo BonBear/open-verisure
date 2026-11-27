@@ -97,7 +97,7 @@ static void pins_init(void)
 
 /* Battery voltage sent with the next packet. Read at boot and then right after each TX: a
  * read within ~1 ms of EM2 wake comes out ~40-120 mV low (bench 2026-11-27: 2968 mV at wake,
- * 3009 mV 5 ms later), while TX gives the supply that time without extra awake time. */
+ * 3009 mV re-read 5 ms after TX), while TX gives the supply that time without extra awake time. */
 static uint16_t s_batt_mv;
 
 static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
