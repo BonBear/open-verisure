@@ -83,7 +83,7 @@ Bench pitfalls: without `RES` low the EFR32 keeps running (periodic ~223 mA batt
 
 | Ref | Marking | Package | Measured / traced | Confirmed function |
 | :--- | :--- | :--- | :--- | :--- |
-| `IC301` | `304A 029J 363` | QFN-32 | Pins 13+14 → Pad `43` → `CN301` speaker; Pins 15+16 → Pad `42` → `CN301` speaker; pins 1/2/4/28/29 → `IC81` pins 6/7/8/12/13; pin 21 ↔ EFR32 `PB11`; pins 5/6/9/11 → `IC6` `DO`/`CLK`/`DI`/`/CS`; pins 7/10/12 → back pads `47`/`46`/`44`; pins 25/30/31/32 `GND` | **Smoke controller with BTL speaker driver** (sequences the chamber, drives `M36BN20-A` 8 Ω speaker on `CN301`) |
+| `IC301` | `304A 029J 363` | QFN-32 | Pins 13+14 → Pad `43` → `CN301` speaker; Pins 15+16 → Pad `42` → `CN301` speaker; pins 1/2/4/28/29 → `IC81` pins 6/7/8/12/13; pin 21 ↔ EFR32 `PB11`; pins 5/6/10/11 → `IC6` `DO`/`CLK`/`DI`/`/CS`; pin 12 → diode → EFR32 `RESETn`; pins 7/9 → back pads `47`/`46`; pins 25/30/31/32 `GND` | **Smoke controller with BTL speaker driver** (sequences the chamber, drives `M36BN20-A` 8 Ω speaker on `CN301`) |
 | `IC81` | `C4660 224KU` | 16-pin | Pin 14 = 1 Ω to EFR32 `PB13` (+18 kΩ `PA1`, 13 kΩ `PA2`); pin 15 VCC; pin 16 = `LED81` cathode; pins 9–11 = `PD81`; pins 6/7/8/12/13 → `IC301` pins 1/2/4/28/29; pins 1/5 no link; pins 2–4 ~100 kΩ to several nets | **Optical chamber front end** (LED driver + photodiode input) |
 | `LED81` | IR LED (chamber) | 2-pin TH | Anode via a diode to `BAT+`, cathode 0 Ω to `IC81` pin 16 (earlier note "EFR32 pin 5 `PF4`" superseded) | **Smoke chamber IR emitter** |
 | Load-test MOSFET | not read (near the PCB code `K2226`) | SOT-23 (3-pin) | Gate ← EFR32 `PC6` (pin 43) via 9 kΩ; source GND; drain → `R1`/`R56` (13.5 Ω to `BAT+`) | **Battery load-test switch** (~222 mA) |
@@ -111,8 +111,9 @@ Continuity traced on the bench (EFR32 QFN-48 pin numbers):
 | `CP92` power | `CP92` pins 2+3 ← 3-pin load switch (`YK`, above `TP23`) output; switch input = VCC (EFR32 pin 34), switch control ← EFR32 pin 3 (`PF2`). Switch output reads 0 V in idle (sensor power-gated). |
 | `CP92` data | `CP92` pin 8 → EFR32 pin 4 (`PF3`); pins 9+10 GND; pins 1, 4–7 NC. Single data line → not I2C. |
 | `IC301` control | `IC301` pin 21 → EFR32 pin 31 (`PB11`); pins 19+20 VCC. |
-| `IC301` ↔ `IC6` (DMM 2026-11-27) | `IC301` pin 9 → `IC6` pin 5 (`DI`) 47 Ω; pin 11 → `IC6` pin 1 (`/CS`) 47 Ω; pin 5 → `IC6` pin 2 (`DO`) 0 Ω; pin 6 → `IC6` pin 6 (`CLK`) 0 Ω; pin 32 → `IC6` pin 4 (`GND`) 1 Ω. `IC301` is the SPI master and reads the sound clips from `IC6` itself. |
-| `IC301` other pins (DMM 2026-11-27) | Pins 25 (via a 0 Ω resistor), 30, 31 = `GND`; pins 13/14 and 15/16 = speaker (`CN301`); pin 7 → back pad `47`, pin 10 → back pad `46`, pin 12 → back pad `44` and a diode to `GND` (next to `IC6`). No other EFR32 link found for pins 7, 9–12, 25, 30–32. |
+| `IC301` ↔ `IC6` (DMM 2026-11-27) | `IC301` pin 5 → `IC6` pin 2 (`DO`) 0 Ω; pin 6 → `IC6` pin 6 (`CLK`) 0 Ω; pin 10 → `IC6` pin 5 (`DI`); pin 11 → `IC6` pin 1 (`/CS`) 47 Ω; pin 32 → `IC6` pin 4 (`GND`) 1 Ω. `IC301` is the SPI master and reads the sound clips from `IC6` itself. |
+| `IC301` → EFR32 reset (DMM 2026-11-27) | `IC301` pin 12 → 2 kΩ to `GND`, and → a diode (next to `IC6`) → pad `32` → debug pad `RES` = EFR32 `RESETn` (pin 12). `IC301` can pull the EFR32 into reset; diode direction not yet checked. |
+| `IC301` other pins (DMM 2026-11-27) | Pins 3, 25 (via a 0 Ω resistor), 30, 31 = `GND`; pins 13/14 and 15/16 = speaker (`CN301`); pin 24 → capacitor → `GND`; pins 17–23 beep to `GND` partly through decoupling capacitors (pins 19/20 are VCC and pin 21 is `PB11`, so a brief beep there is a capacitor charging); pin 7 → back pad `47`, pin 9 → back pad `46`; pin 8 no link found; pins 27/28 → `IC81` pins 12/13 (this round; the earlier map said pins 28/29, so recheck the pin count on that side). |
 | `IC81` | Pin 14 → EFR32 `PB13` (1 Ω); full pin map in section 5. |
 
 Saleae Logic 4 @ 12 MS/s, board on Otii (3.0–3.3 V on `BAT+`), test button pressed during the capture:
@@ -149,8 +150,7 @@ Conclusion: `IC301` is the smoke controller and `IC81` its LED/photodiode front 
 - [ ] Identify the clip audio encoding (optional; needed only to reuse the stock sounds).
 - [x] Saleae Logic 4 capture of the stock firmware (see section 7). `IC81` and the `LED81` drive were not resolved.
 - [x] Chamber mapping (2026-11-27, see section 7a): `IC301` sequences `IC81`/`LED81`; `PC6` is a battery load test; test button on `PA0`.
-- [x] Map `IC301` pins 7, 9–16, 21, 25, 30–32 (2026-11-27, see section 7): only pin 21 (`PB11`) reaches the EFR32 directly; pins 9/11 drive `IC6`.
-- [x] `IC6` `DO`/`CLK` = `IC301` pins 5/6 (0 Ω), so pins 7 and 10 are not SPI.
-- [ ] Check back pads `44`/`46`/`47` (`IC301` pins 12/10/7) against the EFR32 GPIO rows.
-- [ ] Map the remaining `IC301` pins 3, 8, 17, 18, 22–24, 26–28 against the EFR32 to find the smoke/alarm result line.
+- [x] Map `IC301` pins 3, 5–25, 30–32 (2026-11-27, see section 7): `PB11` (pin 21) and `RESETn` (pin 12 through a diode) reach the EFR32; pins 5/6/10/11 drive `IC6`.
+- [ ] Check the pin 12 diode direction (diode mode) and recheck `IC301` pins 1, 2, 4, 26–29 against `IC81` (pin count on that side).
+- [ ] Saleae `PB11`, `RES` and `PB13` on Unit 1 with the custom firmware (which leaves `PB11` undriven) during a ~10 s test-button hold, to see which line `IC301` uses to report the alarm.
 - [ ] Unlock Unit 1 (`3EB7KFZQ`) via `AAP DEVICE_ERASE` (keep `3EA8VKXK` and `3EA8W6D6` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).
