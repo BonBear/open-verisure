@@ -92,6 +92,10 @@ make GECKO_SDK=C:/Tools/gecko_sdk_4.4.6 flash    # tools/flash.py via pyOCD (Lin
 make BUILD=build/cw EXTRA_CFLAGS=-DRADIO_TEST_CW  # bench carrier test (never deploy)
 ```
 
+CI (job "Smoke detector" in `.github/workflows/build.yml`) runs both builds on Ubuntu with the
+packaged `gcc-arm-none-eabi` and `src/config.h.example`; it takes the RAIL library out of
+`gecko-sdk.zip` with `.github/scripts/fetch_zip_member.py` (HTTP range requests, no 1.3 GB download).
+
 On Windows pass `GECKO_SDK` as a `C:/...` path (the Windows toolchain does not understand
 `/c/...`). The build is warning-free (`-Wall -Wextra -Werror` for project sources).
 

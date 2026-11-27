@@ -1,8 +1,9 @@
 # Actions are pinned to commit SHAs (tag in the comment) and the SDCC download is checksummed.
 # Build check for every push and pull request: the gateway firmware and its host unit tests, both
-# CC1110 firmwares and the host tests of their counter log, the key derivation and the Python
-# script tests. It uses only the *.example configs (placeholder keys, no credentials), so nothing secret is needed or produced. The builds are never flashed: the CC1110
-# builds are unseeded (counter block 1).
+# CC1110 firmwares and the host tests of their counter log, the smoke detector (EFR32FG14) firmware,
+# the key derivation and the Python script tests. It uses only the *.example configs (placeholder
+# keys, no credentials), so nothing secret is needed or produced. The builds are never flashed: the
+# CC1110 builds are unseeded (counter block 1).
 name: build
 
 on:
@@ -142,6 +143,54 @@ jobs:
         run: pio run -d SIREN/firmware -e siren_f149_ci
       - name: Build BSL flasher (ESP32-C3)
         run: pio run -d tools/esp32_msp430_bsl
+
+  smoke:
+    name: Smoke detector (EFR32FG14, arm-none-eabi-gcc)
+    runs-on: ubuntu-24.04
+    env:
+      GECKO_SDK_TAG: "v4.4.6"
+      GECKO_SDK_COMMIT: "59d2160fe448b13730a91c0f019a8b4c53c43eb2"
+      # librail_efr32xg14_gcc_release.a is a Git LFS file whose object is not on GitHub's LFS
+      # server; it is taken from the release asset gecko-sdk.zip (1.3 GB) with range requests
+      RAIL_LIB: "platform/radio/rail_lib/autogen/librail_release/librail_efr32xg14_gcc_release.a"
+      RAIL_LIB_SHA256: "817188456d217bcfbe939720899bb9de2c00fbf80eb349026cc1b87e1886057a"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install arm-none-eabi-gcc and newlib
+        # Ubuntu 24.04 ships nano.specs in libnewlib-arm-none-eabi (no separate nano package)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc-arm-none-eabi libnewlib-arm-none-eabi make
+          arm-none-eabi-gcc --version | head -1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        id: sdk-cache
+        with:
+          path: ${{ runner.temp }}/gecko_sdk
+          # bump v1 when the sparse-checkout list below changes (the key does not cover it)
+          key: gecko-sdk-v1-${{ env.GECKO_SDK_COMMIT }}-${{ env.RAIL_LIB_SHA256 }}
+      - name: Gecko SDK ${{ env.GECKO_SDK_TAG }} (sparse checkout + RAIL library)
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          sdk="$RUNNER_TEMP/gecko_sdk"
+          git clone -q --depth 1 --branch "$GECKO_SDK_TAG" --filter=blob:none --sparse \
+              https://github.com/SiliconLabs/gecko_sdk.git "$sdk"
+          test "$(git -C "$sdk" rev-parse HEAD)" = "$GECKO_SDK_COMMIT"
+          GIT_LFS_SKIP_SMUDGE=1 git -C "$sdk" sparse-checkout set --no-cone \
+              /platform/Device/SiliconLabs/EFR32FG14P/ /platform/CMSIS/Core/Include/ \
+              /platform/common/inc/ /platform/emlib/ /platform/radio/rail_lib/common/ \
+              /platform/radio/rail_lib/chip/efr32/efr32xg1x/
+          mkdir -p "$sdk/$(dirname "$RAIL_LIB")"
+          python3 .github/scripts/fetch_zip_member.py \
+              "https://github.com/SiliconLabs/gecko_sdk/releases/download/${GECKO_SDK_TAG}/gecko-sdk.zip" \
+              "$RAIL_LIB" "$sdk/$RAIL_LIB"
+      - name: Check the RAIL library
+        run: echo "${RAIL_LIB_SHA256}  $RUNNER_TEMP/gecko_sdk/$RAIL_LIB" | sha256sum -c -
+      - name: config.h from the example
+        run: cp SMOKE_DETECTOR/firmware/src/config.h.example SMOKE_DETECTOR/firmware/src/config.h
+      - name: Build (warnings are errors)
+        run: make -C SMOKE_DETECTOR/firmware GECKO_SDK="$RUNNER_TEMP/gecko_sdk"
+      - name: Carrier test build
+        run: make -C SMOKE_DETECTOR/firmware GECKO_SDK="$RUNNER_TEMP/gecko_sdk" BUILD=build/cw EXTRA_CFLAGS=-DRADIO_TEST_CW
 
   secrets:
     name: Key guard (no real keys in the repository)
