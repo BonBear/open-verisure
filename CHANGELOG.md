@@ -17,7 +17,7 @@ All notable changes to this project. The format follows
 
 ### Gateway
 
-- Web portal and CLI `status` show smoke detectors with smoke wording (Smoke: SMOKE!/Clear, Chamber:
+- Web portal and CLI `status` show smoke detectors with smoke wording (portal SMOKE!/Clear, CLI SMOKE ALARM/Clear; Chamber:
   OK/FAULT/DIRTY/TEST/HUSHED) instead of door contact/shock; `/api/status` sensors carry `smoke_status`.
 - Smoke detector class: packets with `plain[12]` = `0x5D` (status), `0x5E` (temperature) or `0x5F`
   (humidity) are published as a smoke detector (smoke, chamber fault/dirty, test, tamper, battery,
