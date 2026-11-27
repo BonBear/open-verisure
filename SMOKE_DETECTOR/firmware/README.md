@@ -10,7 +10,8 @@ plaintext ID + one AES-128-ECB block with the persistent 32-bit counter, magic `
 see [documentation/cryptography_and_protocol.md](../../documentation/cryptography_and_protocol.md)).
 The gateway decrypts it with the KDF device key and publishes it on MQTT
 (`verisure/<ID>/state`) with Home Assistant discovery; no gateway change is needed.
-Each packet carries the battery voltage (ADC0 on AVDD, 5 V reference, measured before TX;
+Each packet carries the battery voltage (ADC0 on AVDD, 5 V reference, read at boot and after each TX
+for the next packet, since a read right after EM2 wake is up to ~120 mV low;
 low-battery flag below 2400 mV). Between packets the MCU sleeps in EM2: the RTCC on the
 32.768 kHz LFXO (LFRCO fallback) wakes it and RAIL is put to sleep around it. The first 5 s after
 reset stay in EM0 so SWD can attach (flashing also worked while asleep on the bench).

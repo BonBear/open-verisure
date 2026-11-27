@@ -95,9 +95,14 @@ static void pins_init(void)
   GPIO_PinModeSet(gpioPortF, 2, gpioModeInputPull, 1);
 }
 
+/* Battery voltage sent with the next packet. Read at boot and then right after each TX: a
+ * read within ~1 ms of EM2 wake comes out ~40-120 mV low (bench 2026-11-27: 2968 mV at wake,
+ * 3009 mV 5 ms later), while TX gives the supply that time without extra awake time. */
+static uint16_t s_batt_mv;
+
 static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
 {
-  const uint16_t mv = battery_read_mv();           /* before TX: no PA load on the cell */
+  const uint16_t mv = s_batt_mv;
   g_batt_mv = mv;
   if (mv < 2400u) {
     flags |= PKT_FLAG_LOW_BATT;
@@ -118,7 +123,9 @@ static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
   pkt_build_plain(DEVICE_ID, &f, plain);
   CRYPTO_AES_ECB128(CRYPTO0, cipher, plain, sizeof(plain), DEVICE_AES_KEY, true);
   pkt_build_frame(DEVICE_ID, cipher, frame);
-  return radio_send(frame, sizeof(frame));
+  const bool ok = radio_send(frame, sizeof(frame));
+  s_batt_mv = battery_read_mv();                   /* after TX: settled, ready for the next one */
+  return ok;
 }
 
 int main(void)
@@ -174,6 +181,7 @@ int main(void)
   }
 #endif
 
+  s_batt_mv = battery_read_mv();                   /* boot: radio idle since reset */
   bool first = true;
   bool first_sleep = true;
   for (;;) {
