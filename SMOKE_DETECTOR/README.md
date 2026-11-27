@@ -32,7 +32,7 @@ button until the LED flashes red fast.
 | LFXO crystal | `A320L` (2-pad brown) | 32.768 kHz LFXO routed to EFR32 pins 35–36 (`PB14`/`PB15`) | Visually traced |
 | `IC6` | `winbond 25Q16JLNIG 2323` (SOIC-8) | Winbond **W25Q16JL**, 16 Mbit (2 MiB) SPI NOR flash (2.3–3.6 V, power-gated 0 V in idle) | **DMM mapped** to back pads `51` (`DO`), `52` (`CLK`), `53` (`DI`), `54` (`/CS`), `60` (`VCC`/`/WP`/`/HOLD`) |
 | `IC81` | `C4660 224KU` (16-pin) | **Optical chamber front end**: drives `LED81` (pin 16) and reads `PD81` (pins 9–11); pins 6/7/8/12/13 go to `IC301`, pin 14 to EFR32 `PB13` | **DMM mapped**, stock sequence captured (see `docs/re_worksheet.md` section 7a) |
-| `IC301` | `304A 029J 363` (QFN-32) | **Smoke controller + BTL speaker driver**: sequences the chamber through `IC81` every 8 s and drives `CN301` (pins 13–14 → pad `43`, pins 15–16 → pad `42`); pin 21 ↔ EFR32 `PB11` | **DMM confirmed**; EFR32 result line still open |
+| `IC301` | `304A 029J 363` (QFN-32) | **Smoke controller + BTL speaker driver**: sequences the chamber through `IC81` every 8 s and drives `CN301` (pins 13–14 → pad `43`, pins 15–16 → pad `42`); pin 21 ↔ EFR32 `PB11`; pins 9/11 read the sound clips from `IC6` (`DI`/`/CS`, 47 Ω) | **DMM confirmed**; EFR32 result line still open |
 | `CP92` | `CP92` (DFN-8 w/ window) | **Digital temperature & humidity sensor** (open rectangular sensing die window visible under microscope) | **Microscope confirmed** |
 | 6-pin near `IC81` | `PC41 351 APBP` | Likely boost converter or LDO feeding the 100 µF `107 6.38` rail | Assumption |
 | 6-pad metal lid | `341 ZF` | **EPCOS/TDK 868 MHz SAW bandpass filter** between EFR32 `SUBGRF` (pins 13–16) and U.FL / wire antenna | Visually traced |
