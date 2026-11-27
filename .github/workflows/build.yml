@@ -157,9 +157,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install arm-none-eabi-gcc and newlib
+        # Ubuntu 24.04 ships nano.specs in libnewlib-arm-none-eabi (no separate nano package)
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q gcc-arm-none-eabi libnewlib-arm-none-eabi libnewlib-nano-arm-none-eabi make
+          sudo apt-get install -y -q gcc-arm-none-eabi libnewlib-arm-none-eabi make
           arm-none-eabi-gcc --version | head -1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         id: sdk-cache
