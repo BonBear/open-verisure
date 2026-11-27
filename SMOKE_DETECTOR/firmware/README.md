@@ -15,8 +15,10 @@ low-battery flag below 2400 mV). Between packets the MCU sleeps in EM2: the RTCC
 32.768 kHz LFXO (LFRCO fallback) wakes it and RAIL is put to sleep around it. The first 5 s after
 reset stay in EM0 so SWD can attach (flashing also worked while asleep on the bench).
 Not done yet: smoke chamber, test button, speaker, watchdog, a smoke-specific packet type and HA
-entities. The EM2 current is not measured yet: the bench board draws a constant ~222 mA
-(3.0 V / 13.5 Ω through R1/R56) whose cause is still open.
+entities. Measured on the bench board at 3.0 V (2026-11-27): EM0 debug window ~23 mA, EM2
+between packets ~1.9 mA, TX peak ~55 mA. A test without RAIL gives EM0 13.2 mA, EM2 1.83 mA and
+EM4S 0.27 mA, so EM2 is far above the datasheet (~2 µA) and the cause is still open. (A constant
+~222 mA load seen earlier was a solder fault at the smoke chamber pins and is gone.)
 
 | File | Content |
 | :--- | :--- |
@@ -104,6 +106,6 @@ Watch the gateway serial log: every 10 s `[AUTHENTICATED] Device: "<ID>"` with a
 `g_tx_ok` counts sent packets and `g_tx_fail` failures (attach with pyOCD
 `connect_mode=attach`; the default connect resets the target).
 
-Bench result 2026-11-26 on Unit 1 (`3EA8VKXK`): packets every 10.0 s, counter #2304–#2308,
+Bench result 2026-11-26 on Unit 1 (`3EB7KFZQ`, then still built with ID `3EA8VKXK`): packets every 10.0 s, counter #2304–#2308,
 all authenticated and published to MQTT, RSSI −45 dBm, frequency error −30 kHz at the gateway
 (HFXO `CTUNE` not trimmed yet).
