@@ -32,7 +32,7 @@
 _Static_assert(sizeof(DEVICE_ID) == 9u, "DEVICE_ID must be exactly 8 characters");
 
 #define SEND_PERIOD_MS   10000u
-#define DEBUG_WINDOW_MS  5000u    /* EM0 after reset: SWD cannot attach in EM2 */
+#define DEBUG_WINDOW_MS  5000u    /* EM0 after reset: reliable SWD window */
 
 /* Read over SWD for bring-up (see README.md). */
 volatile uint32_t g_heartbeat;

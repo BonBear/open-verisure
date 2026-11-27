@@ -16,7 +16,7 @@ low-battery flag below 2400 mV). Between packets the MCU sleeps in EM2: the RTCC
 reset stay in EM0 so SWD can attach (flashing also worked while asleep on the bench).
 Not done yet: smoke chamber, test button, speaker, watchdog, a smoke-specific packet type and HA
 entities. Measured on the bench board at 3.0 V (2026-11-27): EM0 debug window ~6.4 mA, EM2
-between packets ~8 µA, TX peak ~58 mA (stock firmware: ~2–3 µA floor, 5–16 µA average). Earlier the
+between packets ~8 µA, TX peak ~55–58 mA (stock firmware: ~2–3 µA floor, 5–16 µA average). Earlier the
 same firmware drew ~23 mA in EM0 and ~1.8 mA in EM2 with DECOUPLE at 2.67 V; that state persisted
 across short Otii power cycles and cleared after the board was left unpowered (cause not proven,
 latch-up suspected). The board has the DC-DC inductor (VREGSW–DVDD 0.3 Ω), but

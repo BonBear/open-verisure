@@ -1,5 +1,5 @@
 /*
- * Battery voltage: ADC0 measures AVDD (the 3.0 V CR-2/3AZ cell behind R1/R56) against the
+ * Battery voltage: ADC0 measures AVDD (the 3.0 V CR-2/3AZ cell) against the
  * internal 5 V full-scale reference. Call while the radio is idle (no TX load on the cell).
  */
 #ifndef BATTERY_H
