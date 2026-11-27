@@ -42,6 +42,7 @@
 #include "picture_token.h"
 #include "duty_cycle.h"
 #include "ha_discovery.h"
+#include "smoke_packet.h"
 #include "gateway_diag.h"
 #include "radio_task.h"
 #ifdef RADIO_EVAL
@@ -493,6 +494,8 @@ static void handleRadioFrame(const RadioFrame& item) {
                     telem.hasTemp = true;
                     telem.tempC = prev->tempC;
                 }
+            } else if (smokeIsPacket(telem.rawP0)) {
+                smokeApply(telem, sensorRegistryFind(telem.deviceId));
             }
             packetCount++;
             sensorRegistryUpdate(telem); // Cache in memory
@@ -500,8 +503,19 @@ static void handleRadioFrame(const RadioFrame& item) {
             printTimestamp(now);
             Serial.printf(">>> [#%04lu] [AUTHENTICATED] Device: \"%s\" | Seq: #%lu <<<\n",
                           packetCount, telem.deviceId, (unsigned long)telem.counter);
-            Serial.printf("    Magnet  : %s\n", telem.isOpen ? "OPEN [ALARM!]" : "CLOSED (Secure)");
-            Serial.printf("    Shock   : %s\n", telem.isShock ? "SHOCK / VIBRATION DETECTED!" : "Clear");
+            if (telem.isSmoke) {
+                Serial.printf("    Smoke   : %s\n", telem.isOpen ? "SMOKE ALARM!" : "Clear");
+                Serial.printf("    Chamber : %s%s%s%s%s\n", (telem.smokeStatus & (SMOKE_STATUS_FAULT | SMOKE_STATUS_DIRTY | SMOKE_STATUS_TEST | SMOKE_STATUS_HUSHED)) ? "" : "OK ",
+                              (telem.smokeStatus & SMOKE_STATUS_FAULT) ? "FAULT " : "",
+                              (telem.smokeStatus & SMOKE_STATUS_DIRTY) ? "DIRTY " : "",
+                              (telem.smokeStatus & SMOKE_STATUS_TEST) ? "TEST " : "",
+                              (telem.smokeStatus & SMOKE_STATUS_HUSHED) ? "HUSHED" : "");
+                if (telem.hasTemp) Serial.printf("    Temp    : %.1f C\n", telem.tempC);
+                if (telem.hasHumidity) Serial.printf("    Humidity: %u %%\n", telem.humidityPct);
+            } else {
+                Serial.printf("    Magnet  : %s\n", telem.isOpen ? "OPEN [ALARM!]" : "CLOSED (Secure)");
+                Serial.printf("    Shock   : %s\n", telem.isShock ? "SHOCK / VIBRATION DETECTED!" : "Clear");
+            }
             Serial.printf("    Tamper  : %s\n", telem.isButton ? "TAMPER (Cover removed!)" : "Secure (Cover closed)");
             Serial.printf("    Battery : %u mV (%u%%)%s", telem.batteryMv, telem.batteryPct, telem.isLowBatt ? " [LOW BATTERY!]" : "");
             if (telem.batteryLoadMv) Serial.printf(" | under load %u mV", telem.batteryLoadMv);

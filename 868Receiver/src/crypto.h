@@ -69,12 +69,16 @@ struct VerisureTelemetry {
     uint8_t rawP1;          /**< Diagnostic: Port 1 raw input states from CC1110 */
     uint8_t rawP2;          /**< Diagnostic: Port 2 raw input states from CC1110 */
     uint8_t rawRst;         /**< Diagnostic: Microcontroller reset reason from SLEEP register */
+    uint8_t smokeStatus;    /**< Smoke status bits (PKT_SMOKE_* in the firmware), cached */
+    uint8_t humidityPct;    /**< Smoke detector relative humidity 0..100 % */
+    bool hasHumidity;       /**< True when humidityPct holds a valid reading */
     uint32_t counter;       /**< 32-bit persistent counter (flag 0x20), else the 16-bit seq */
     bool hasCounter;        /**< The packet carried the persistent counter (flag 0x20) */
     float tempC;            /**< Decoded temperature in deg C (from 0xB6 packet or cached) */
     bool hasTemp;           /**< True when tempC holds a valid temperature reading */
     bool valid;             /**< True if packet passed authentication, decryption and replay check */
     uint8_t fastWakeState;  /**< Siren fast-wake state: 0 = unknown, 1 = OFF, 2 = ON */
+    bool isSmoke;           /**< Smoke detector packet (rawP0 0x5D..0x5F, see smoke_packet.h) */
 };
 
 /**

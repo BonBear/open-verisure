@@ -295,7 +295,7 @@ TEST(ha_siren_discovery_and_state_payload) {
         CHECK(strcmp(def->key, "contact") != 0);
         CHECK(strcmp(def->key, "vibration") != 0);
         String topic = haDiscoveryBuildTopic("2S5F554X", def);
-        String payload = haDiscoveryBuildPayload("2S5F554X", def, "verisure");
+        String payload = haDiscoveryBuildPayload("2S5F554X", def, "verisure", false);
         Json j(payload.c_str());
         REQUIRE(j.ok);
         CHECK(topic.length() + payload.length() + 10 < MQTT_BUFFER);
@@ -360,6 +360,85 @@ TEST(ha_siren_discovery_and_state_payload) {
     Json stCam(haStateBuildPayload(t).c_str());
     REQUIRE(stCam.ok);
     CHECK(!stCam.has("siren"));
+}
+
+TEST(ha_smoke_discovery_and_state_payload) {
+    const char* ID = "5MKE0001";
+    VerisureTelemetry t = {};
+    strcpy(t.deviceId, ID);
+    t.isSmoke = true;
+    t.isOpen = true;                 // smoke alarm (flags bit 0)
+    t.smokeStatus = 0x01 | 0x04 | 0x10;
+    t.hasTemp = true;
+    t.tempC = 21.5f;
+    t.hasHumidity = true;
+    t.humidityPct = 45;
+    t.batteryPct = 90;
+    t.batteryMv = 3000;
+    t.rssi = -60;
+    t.lqi = 50;
+    t.counter = 0x10;
+    t.valid = true;
+    Json st(haStateBuildPayload(t).c_str());
+    REQUIRE(st.ok);
+    CHECK_STR(st.get("smoke"), "ON");
+    CHECK_STR(st.get("chamber_fault"), "ON");
+    CHECK_STR(st.get("maintenance"), "OFF");
+    CHECK_STR(st.get("test"), "ON");
+    CHECK_STR(st.get("hushed"), "ON");
+    CHECK_STR(st.get("temperature_c"), "21.5");
+    CHECK_STR(st.get("humidity_pct"), "45");
+    CHECK(!st.has("contact"));
+    CHECK(!st.has("motion"));
+    CHECK(!st.has("vibration"));
+
+    int count = haDiscoveryGetSmokeEntityCount();
+    CHECK_EQ(count, 11);
+    CHECK(!haDiscoveryGetSmokeEntityDef(-1));
+    CHECK(!haDiscoveryGetSmokeEntityDef(count));
+    bool sawSmoke = false;
+    for (int i = 0; i < count; i++) {
+        const HaEntityDef* def = haDiscoveryGetSmokeEntityDef(i);
+        REQUIRE(def);
+        String topic = haDiscoveryBuildTopic(ID, def);
+        String payload = haDiscoveryBuildPayload(ID, def, "verisure", true);
+        Json j(payload.c_str());
+        REQUIRE(j.ok);
+        CHECK(topic.length() + payload.length() + 10 < MQTT_BUFFER);
+        CHECK(strstr(payload.c_str(), "Verisure Smoke Detector 5MKE0001") != nullptr);
+        CHECK(strstr(payload.c_str(), "GW-SD3 (Smoke Detector)") != nullptr);
+        // every key the value template reads is in the state JSON
+        std::string tpl = j.get("value_template");
+        size_t at = tpl.find("value_json.");
+        REQUIRE(at != std::string::npos);
+        std::string key;
+        for (size_t k = at + 11; k < tpl.size() && (isalnum((unsigned char)tpl[k]) || tpl[k] == '_'); k++) key += tpl[k];
+        CHECK(st.has(key.c_str()));
+        if (strcmp(def->key, "smoke") == 0) {
+            sawSmoke = true;
+            CHECK_STR(j.get("device_class"), "smoke");
+            CHECK_STR(j.get("payload_on"), "ON");
+            CHECK_STR(j.get("payload_off"), "OFF");
+        }
+    }
+    CHECK(sawSmoke);
+
+    // The ID prefix of a camera or siren wins over the smoke marker
+    t.rawP0 = 0x5D;
+    strcpy(t.deviceId, "2S5F554X");
+    Json stSiren(haStateBuildPayload(t).c_str());
+    REQUIRE(stSiren.ok);
+    CHECK(!stSiren.has("smoke"));
+    CHECK(stSiren.has("contact"));
+
+    // Without climate values the optional keys are absent
+    strcpy(t.deviceId, ID);
+    t.hasTemp = false;
+    t.hasHumidity = false;
+    Json stNo(haStateBuildPayload(t).c_str());
+    REQUIRE(stNo.ok);
+    CHECK(!stNo.has("temperature_c"));
+    CHECK(!stNo.has("humidity_pct"));
 }
 
 TEST(ha_siren_fast_wake_discovery_and_state) {

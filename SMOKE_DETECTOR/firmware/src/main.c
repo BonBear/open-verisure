@@ -34,6 +34,16 @@ _Static_assert(sizeof(DEVICE_ID) == 9u, "DEVICE_ID must be exactly 8 characters"
 #define SEND_PERIOD_MS   10000u
 #define DEBUG_WINDOW_MS  5000u    /* EM0 after reset: reliable SWD window */
 
+/* HFXO steady-state load capacitance (CMU_HFXOSTEADYSTATECTRL.CTUNE, 0-511). Bench trim on
+ * Unit 1 (2026-11-27, gateway FREQEST): reset default 0x168 = -28.6 kHz, 0x0F0 = +4.8 kHz,
+ * 0x100 = 0.0 kHz, 0x110 = -4.8 kHz (~0.3 kHz per step). Crystals differ per board, so check
+ * the gateway's "Freq. error" on each new unit. It can only be set while the HFXO is off
+ * (CMU_HFXOInit), so another value needs a rebuild (-DHFXO_CTUNE=...). */
+#ifndef HFXO_CTUNE
+#define HFXO_CTUNE       0x100u
+#endif
+_Static_assert(HFXO_CTUNE <= 0x1FFu, "HFXO_CTUNE is a 9-bit field");
+
 /* Read over SWD for bring-up (see README.md). */
 volatile uint32_t g_heartbeat;
 volatile uint32_t g_tx_ok;
@@ -77,6 +87,7 @@ static void clocks_init(void)
 {
   CMU_HFXOInit_TypeDef hfxo = CMU_HFXOINIT_DEFAULT;
 
+  hfxo.ctuneSteadyState = HFXO_CTUNE;
   CMU_HFXOInit(&hfxo);
   CMU_ClockSelectSet(cmuClock_HF, cmuSelect_HFXO);   /* RAIL needs the 38.4 MHz HFXO */
   CMU_ClockEnable(cmuClock_CRYPTO0, true);
@@ -113,8 +124,8 @@ static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
     .rst_cause = rst_cause,
     .batt_pct = battery_pct(mv),
     .batt_mv = mv,
-    .diag0 = 0u,
-    .diag1 = 0u,
+    .diag0 = PKT_TYPE_SMOKE_STATUS,
+    .diag1 = PKT_SMOKE_HEARTBEAT,    /* all packets are periodic for now */
   };
   uint8_t plain[16];
   uint8_t cipher[16];

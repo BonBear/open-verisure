@@ -166,16 +166,19 @@ static unsigned long s_lastGatewayStatePub = 0;
 static bool s_wasConnected = false;
 
 static char s_discoveredDevices[MAX_SENSORS][9];
+static bool s_discoveredSmoke[MAX_SENSORS];   // class announced for each entry (smoke or not)
 static int s_numDiscovered = 0;
 
 /**
- * @brief Check if Home Assistant auto-discovery has already been published for this device.
+ * @brief Check if Home Assistant auto-discovery has already been published for this device
+ *        as this class (a door sensor that turns out to be a smoke detector is announced again).
  * @param deviceId Sensor identifier.
+ * @param isSmoke True if the device is a smoke detector.
  * @return True if previously published.
  */
-static bool isDeviceDiscovered(const char* deviceId) {
+static bool isDeviceDiscovered(const char* deviceId, bool isSmoke) {
     for (int i = 0; i < s_numDiscovered; i++) {
-        if (strcmp(s_discoveredDevices[i], deviceId) == 0) return true;
+        if (strcmp(s_discoveredDevices[i], deviceId) == 0) return s_discoveredSmoke[i] == isSmoke;
     }
     return false;
 }
@@ -183,12 +186,19 @@ static bool isDeviceDiscovered(const char* deviceId) {
 /**
  * @brief Register a device as announced in the discovery cache.
  * @param deviceId Sensor identifier.
+ * @param isSmoke True if the device was announced as a smoke detector.
  */
-static void markDeviceDiscovered(const char* deviceId) {
-    if (isDeviceDiscovered(deviceId)) return;
+static void markDeviceDiscovered(const char* deviceId, bool isSmoke) {
+    for (int i = 0; i < s_numDiscovered; i++) {
+        if (strcmp(s_discoveredDevices[i], deviceId) == 0) {
+            s_discoveredSmoke[i] = isSmoke;
+            return;
+        }
+    }
     if (s_numDiscovered < MAX_SENSORS) {
-        strncpy(s_discoveredDevices[s_numDiscovered++], deviceId, 8);
-        s_discoveredDevices[s_numDiscovered - 1][8] = '\0';
+        strncpy(s_discoveredDevices[s_numDiscovered], deviceId, 8);
+        s_discoveredDevices[s_numDiscovered][8] = '\0';
+        s_discoveredSmoke[s_numDiscovered++] = isSmoke;
     }
 }
 
@@ -398,23 +408,38 @@ static void onMqttMessage(char* topic, byte* payload, unsigned int len) {
     }
 }
 
-static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) {
+static void publishSensorDiscovery(const char* deviceId, const char* baseTopic, bool isSmoke) {
     bool isMotionCam = haIsMotionCameraSensor(deviceId);
     bool isSiren = haIsSirenSensor(deviceId);
-    if (isMotionCam) {
-        // Clear any legacy Door/Vibration discovery topics for this Motion Camera ID
+    if (isMotionCam || isSiren) isSmoke = false;   // the ID prefix wins
+    if (isMotionCam || isSmoke) {
+        // Clear any legacy Door/Vibration discovery topics for this Motion Camera / Smoke Detector ID
         String oldContact = "homeassistant/binary_sensor/verisure_" + String(deviceId) + "_contact/config";
         String oldVib     = "homeassistant/binary_sensor/verisure_" + String(deviceId) + "_vibration/config";
         s_mqttClient.publish(oldContact.c_str(), "", true);
         s_mqttClient.publish(oldVib.c_str(), "", true);
+    }
+    if (isSmoke) {
+        int count = haDiscoveryGetSmokeEntityCount();
+        for (int i = 0; i < count; i++) {
+            const HaEntityDef* def = haDiscoveryGetSmokeEntityDef(i);
+            if (!def) continue;
 
+            String topic = haDiscoveryBuildTopic(deviceId, def);
+            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic, true);
+
+            s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
+        }
+        markDeviceDiscovered(deviceId, true);
+        Serial.printf("[MQTT] Published Home Assistant Discovery for Smoke Detector \"%s\" (%d entities retained)\n", deviceId, count);
+    } else if (isMotionCam) {
         int count = haDiscoveryGetMotionSensorEntityCount();
         for (int i = 0; i < count; i++) {
             const HaEntityDef* def = haDiscoveryGetMotionSensorEntityDef(i);
             if (!def) continue;
 
             String topic = haDiscoveryBuildTopic(deviceId, def);
-            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic);
+            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic, false);
 
             s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
         }
@@ -426,7 +451,7 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
         publishPictureButtonDiscovery(deviceId, baseTopic, "", "Take 640x480 picture", "mdi:camera", "D2");
         publishPictureButtonDiscovery(deviceId, baseTopic, "_flash", "Take flash picture", "mdi:camera-flash", "D4");
 
-        markDeviceDiscovered(deviceId);
+        markDeviceDiscovered(deviceId, false);
         Serial.printf("[MQTT] Published Home Assistant Discovery for Motion Camera \"%s\" (%d sensor entities + 1 camera retained)\n", deviceId, count);
     } else if (isSiren) {
         int count = haDiscoveryGetSirenEntityCount();
@@ -435,7 +460,7 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
             if (!def) continue;
 
             String topic = haDiscoveryBuildTopic(deviceId, def);
-            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic);
+            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic, false);
 
             s_mqttClient.publish(topic.c_str(), payload.c_str(), true);
         }
@@ -448,20 +473,35 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic) 
         String fwPayload = haDiscoveryBuildSirenFastWakePayload(deviceId, baseTopic);
         s_mqttClient.publish(fwTopic.c_str(), fwPayload.c_str(), true);
 
-        markDeviceDiscovered(deviceId);
+        markDeviceDiscovered(deviceId, false);
         Serial.printf("[MQTT] Published Home Assistant Discovery for Siren \"%s\" (%d sensor entities + 1 siren + 1 switch retained)\n", deviceId, count);
     } else {
+        // Announced as a smoke detector before: clear the retained smoke-only entities
+        // (those whose key the door table does not have; the shared ones are overwritten below)
+        for (int i = 0; i < s_numDiscovered; i++) {
+            if (strcmp(s_discoveredDevices[i], deviceId) != 0 || !s_discoveredSmoke[i]) continue;
+            for (int k = 0; k < haDiscoveryGetSmokeEntityCount(); k++) {
+                const HaEntityDef* sdef = haDiscoveryGetSmokeEntityDef(k);
+                bool shared = false;
+                for (int d = 0; d < haDiscoveryGetSensorEntityCount(); d++) {
+                    if (strcmp(haDiscoveryGetSensorEntityDef(d)->key, sdef->key) == 0) shared = true;
+                }
+                if (shared) continue;
+                String oldTopic = haDiscoveryBuildTopic(deviceId, sdef);
+                s_mqttClient.publish(oldTopic.c_str(), "", true);
+            }
+        }
         int count = haDiscoveryGetSensorEntityCount();
         for (int i = 0; i < count; i++) {
             const HaEntityDef* def = haDiscoveryGetSensorEntityDef(i);
             if (!def) continue;
 
             String topic = haDiscoveryBuildTopic(deviceId, def);
-            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic);
+            String payload = haDiscoveryBuildPayload(deviceId, def, baseTopic, false);
 
             s_mqttClient.publish(topic.c_str(), payload.c_str(), true); // Retained message
         }
-        markDeviceDiscovered(deviceId);
+        markDeviceDiscovered(deviceId, false);
         Serial.printf("[MQTT] Published Home Assistant Discovery for sensor \"%s\" (%d entities retained)\n", deviceId, count);
     }
 }
@@ -589,7 +629,7 @@ static void checkMqttConnection() {
         for (int i = 0; i < count; i++) {
             const SensorRecord* rec = sensorRegistryGetByIndex(i);
             if (rec && rec->active) {
-                publishSensorDiscovery(rec->lastTelem.deviceId, cfg.mqttTopic);
+                publishSensorDiscovery(rec->lastTelem.deviceId, cfg.mqttTopic, rec->lastTelem.isSmoke);
                 feedLoopWDT();   // one sensor = up to ~20 publishes
             }
         }
@@ -629,8 +669,8 @@ void mqttPublishTelemetry(const VerisureTelemetry& telem) {
     if (!s_mqttClient.connected()) return;
 
     // 1. Ensure Home Assistant discovery is registered for this device
-    if (!isDeviceDiscovered(telem.deviceId)) {
-        publishSensorDiscovery(telem.deviceId, cfg.mqttTopic);
+    if (!isDeviceDiscovered(telem.deviceId, telem.isSmoke)) {
+        publishSensorDiscovery(telem.deviceId, cfg.mqttTopic, telem.isSmoke);
     }
 
     // 2. Publish state payload: <baseTopic>/<deviceId>/state
