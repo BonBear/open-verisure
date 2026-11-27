@@ -7,6 +7,14 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
+### CI
+
+- New job "Smoke detector (EFR32FG14, arm-none-eabi-gcc)": builds `SMOKE_DETECTOR/firmware`
+  (normal and carrier-test build, warnings are errors) against a cached sparse Gecko SDK v4.4.6;
+  the RAIL library is cut out of the 1.3 GB release zip with HTTP range requests
+  (`.github/scripts/fetch_zip_member.py`) and checked by SHA-256. cppcheck also covers the smoke
+  detector sources.
+
 ### Tools
 
 - `tools/si446x_spi_decode.py`: decodes a Saleae SPI capture of a Si4460/Si446x radio (voicebox)

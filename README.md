@@ -24,6 +24,7 @@ it into **Home Assistant** through an **ESP32-S2 + CC1101 gateway**: local, no c
 | **Door / window sensor** | [`VerisureDoorSensor/`](VerisureDoorSensor/README.md) | Verisure `GW-MC-SHOCK`, TI CC1110F32 | ✅ Working: contact, shock, tamper, battery; PM2 sleep (~26 µA idle), events verified |
 | **Motion camera** | [`MD_CAM/`](MD_CAM/README.md) | Verisure `GW MD CAM2`: CC1110F32 + Blackfin BF512 + OV7955 + IR flash + PIR | ✅ Working: alarm pictures, deltas, IR flash in the dark, PM2 sleep; bench tests pending |
 | **Siren** | [`SIREN/`](SIREN/README.md) | Verisure `GW-SI`: TI MSP430F149 + CC1101 (26 MHz) + OKI L22901-707 | ✅ Working: RF telemetry, downlink `0xA0`/`0xA1`, 6 HA tones (`alarm`, `ding_dong`, `chime`, `double_beep`, `beep`, `tone`), optional CC1101 WOR ~1 s "Fast Wake (Doorbell)" mode (`~21 µA` WOR / `7.6 µA` SPWD), full-volume `CN2` piezo horn + `P1.7` HV boost bench-verified |
+| **Smoke detector** | [`SMOKE_DETECTOR/`](SMOKE_DETECTOR/README.md) | Verisure `GW-SD3`: Silicon Labs EFR32FG14P231 (RAIL) + W25Q16JL + optical chamber | 🚧 In progress: unlocked unit sends authenticated packets (door format, persistent counter) published on MQTT, battery voltage, EM2 sleep; no smoke sensing yet |
 
 ---
 
@@ -72,6 +73,8 @@ plain text, followed by AES-128 with a per-device key derived from one master ke
 ├── cc1110_common/        CC1110 code shared by both firmwares (AES, clocks, sleep timer, counter log)
 ├── SIREN/                Siren firmware (PlatformIO, MSP430F149),
 │                         hardware docs, photos                            → SIREN/README.md
+├── SMOKE_DETECTOR/       Smoke detector: EFR32FG14 firmware (make + RAIL),
+│                         hardware docs, photos                            → SMOKE_DETECTOR/README.md
 ├── tools/                Host & bench tools (CC1101 SPI decoder,
 │                         ESP32-C3 MSP430 ROM BSL flasher, photo prep)     → tools/esp32_msp430_bsl/README.md
 ├── documentation/        Shared docs: protocol & crypto, CC flasher, gateway hardware, HA/MQTT
