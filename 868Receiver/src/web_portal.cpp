@@ -1061,6 +1061,7 @@ static void handleApiStatus() {
         json += "\"id\":\"" + String(rec->lastTelem.deviceId) + "\",";
         json += "\"camera\":" + String(haIsMotionCameraSensor(rec->lastTelem.deviceId) ? "true" : "false") + ",";
         json += "\"siren\":" + String(haIsSirenSensor(rec->lastTelem.deviceId) ? "true" : "false") + ",";
+        json += "\"smoke\":" + String(rec->lastTelem.isSmoke ? "true" : "false") + ",";
         if (rec->hasTemp) {
             char tbuf[12];
             snprintf(tbuf, sizeof(tbuf), "%.1f", rec->tempC);

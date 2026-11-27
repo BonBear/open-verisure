@@ -52,6 +52,16 @@ Decrypted by the gateway into the following 16-byte telemetry fields:
 | **`13`** | **Port 1 Diagnostics**| `uint8_t` | Raw state of CC1110 `P1` (P1_7 Reed switch, P1_2 Shock). |
 | **`14..15`** | **Counter, high half** | `uint16_t` (Little-Endian) | With flag bit 5: bits 16..31 of the persistent packet counter. Without it (older door firmware): `P2` and the reset cause. |
 
+The smoke detector (GW-SD3) marks itself in-band with the type in byte 12, which the gateway checks when the ID is not a camera or siren prefix (the door firmware drives P0_2/P0_4 low before sampling `P0`, so it cannot produce values with bits `0x14` set):
+
+| Byte 12 | Meaning | Byte 13 |
+| :--- | :--- | :--- |
+| `0x5D` | Smoke status (sent now) | Bit 0 chamber fault, bit 1 chamber dirty/maintenance, bit 2 test button pressed, bit 3 heartbeat (timer packet, 0 = event packet), bit 4 alarm hushed, bits 5..7 reserved 0 |
+| `0x5E` | Smoke climate (reserved, parsed by the gateway, not sent yet) | Temperature, `raw * 0.5 - 40` °C, `0xFF` = none |
+| `0x5F` | Smoke humidity (reserved, not sent yet) | Relative humidity 0..100 %, `0xFF` = none |
+
+For the smoke detector flag bit 0 is the smoke alarm, bit 1 is reserved and must be 0 (no shock sensor), the other flag bits and the counter are as above. An older gateway authenticates these packets and shows them as a door sensor (alarm = contact OPEN); a new gateway shows a smoke detector that sends `diag0 = 0` as a door sensor.
+
 The camera uses bytes 12..13 differently (a packet type such as the poll marker 0xBA, and its argument), uses the same counter in bytes 0..1 and 14..15, and also sends 56-byte picture packets and receives downlink answers; see [MD_CAM/docs/Camera_protocol.md](../MD_CAM/docs/Camera_protocol.md).
 
 ### Flag Bits (Byte 2)

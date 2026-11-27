@@ -9,14 +9,17 @@ authenticated OpenVerisure uplink packet on 868.950 MHz in the door-sensor forma
 plaintext ID + one AES-128-ECB block with the persistent 32-bit counter, magic `VS` and ID echo;
 see [documentation/cryptography_and_protocol.md](../../documentation/cryptography_and_protocol.md)).
 The gateway decrypts it with the KDF device key and publishes it on MQTT
-(`verisure/<ID>/state`) with Home Assistant discovery; no gateway change is needed.
+(`verisure/<ID>/state`) with Home Assistant discovery. Every packet has packet type `0x5D`
+(smoke status, `plain[12]`) and the heartbeat bit in `plain[13]`; a gateway with smoke support
+(`868Receiver/src/smoke_packet.h`) publishes it as a smoke detector, an older gateway shows it as a
+door sensor (alarm = contact OPEN). Types `0x5E`/`0x5F` (temperature, humidity) are reserved and
+not sent yet.
 Each packet carries the battery voltage (ADC0 on AVDD, 5 V reference, read at boot and after each TX
 for the next packet, since a read right after EM2 wake is up to ~120 mV low;
 low-battery flag below 2400 mV). Between packets the MCU sleeps in EM2: the RTCC on the
 32.768 kHz LFXO (LFRCO fallback) wakes it and RAIL is put to sleep around it. The first 5 s after
 reset stay in EM0 so SWD can attach (flashing also worked while asleep on the bench).
-Not done yet: smoke chamber, test button, speaker, watchdog, a smoke-specific packet type and HA
-entities. Measured on the bench board at 3.0 V (2026-11-27): EM0 debug window ~6.4 mA, EM2
+Not done yet: smoke chamber, test button, speaker, watchdog, event-driven packets. Measured on the bench board at 3.0 V (2026-11-27): EM0 debug window ~6.4 mA, EM2
 between packets ~8 µA, TX peak ~55–58 mA (stock firmware: ~2–3 µA floor, 5–16 µA average). Earlier the
 same firmware drew ~23 mA in EM0 and ~1.8 mA in EM2 with DECOUPLE at 2.67 V; that state persisted
 across short Otii power cycles and cleared after the board was left unpowered (cause not proven,

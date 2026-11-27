@@ -123,8 +123,8 @@ static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
     .rst_cause = rst_cause,
     .batt_pct = battery_pct(mv),
     .batt_mv = mv,
-    .diag0 = 0u,
-    .diag1 = 0u,
+    .diag0 = PKT_TYPE_SMOKE_STATUS,
+    .diag1 = PKT_SMOKE_HEARTBEAT,    /* all packets are periodic for now */
   };
   uint8_t plain[16];
   uint8_t cipher[16];

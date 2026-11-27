@@ -17,6 +17,20 @@
 #define PKT_FLAG_BOOT     0x08u  /* first packet after power-on */
 #define PKT_FLAG_LOW_BATT 0x10u
 #define PKT_FLAG_CTR32    0x20u  /* 32-bit counter, high half in plain[14..15] */
+/* flags bit 1 (0x02) is the door shock flag: it must stay 0 here. */
+
+/* plain[12] packet type of the smoke detector. The gateway tells smoke from door sensors by
+ * these values (door firmware cannot produce them: bits 0x14 are driven low before sampling). */
+#define PKT_TYPE_SMOKE_STATUS   0x5Du  /* plain[13] = PKT_SMOKE_* bits */
+#define PKT_TYPE_SMOKE_CLIMATE  0x5Eu  /* plain[13] = temperature, raw*0.5-40 C, 0xFF = none (reserved) */
+#define PKT_TYPE_SMOKE_HUMIDITY 0x5Fu  /* plain[13] = RH 0..100 %, 0xFF = none (reserved) */
+
+/* plain[13] status bits of PKT_TYPE_SMOKE_STATUS. */
+#define PKT_SMOKE_FAULT     0x01u  /* chamber fault */
+#define PKT_SMOKE_DIRTY     0x02u  /* chamber dirty / maintenance */
+#define PKT_SMOKE_TEST      0x04u  /* test button pressed */
+#define PKT_SMOKE_HEARTBEAT 0x08u  /* periodic timer packet (0 = event packet) */
+#define PKT_SMOKE_HUSHED    0x10u  /* alarm hushed */
 
 /* Reset cause in flags bits 7:6, same codes as the CC1110 devices. */
 #define PKT_RST_POWER_ON  0u

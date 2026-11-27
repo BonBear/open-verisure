@@ -11,6 +11,9 @@
 /** The same for the door sensor: heartbeat every 3600 s (60.0 min apart since its sleep tick
  *  fix); 2.5 h is two missed heartbeats plus margin. */
 #define HA_SENSOR_EXPIRE_S 9000
+/** The same for the smoke detector. Same value as the door sensor for now: the production
+ *  heartbeat interval is not decided yet. */
+#define HA_SMOKE_EXPIRE_S HA_SENSOR_EXPIRE_S
 
 /**
  * @brief Sensor entity configuration table.
@@ -262,6 +265,144 @@ static const HaEntityDef S_SIREN_ENTITIES[] = {
 };
 
 /**
+ * @brief Verisure Smoke Detector (GW-SD3) entity configuration table.
+ */
+static const HaEntityDef S_SMOKE_ENTITIES[] = {
+    {
+        "smoke",
+        "binary_sensor",
+        "Smoke",
+        "smoke",
+        nullptr,
+        nullptr,
+        "{{ value_json.smoke }}",
+        "ON",
+        "OFF",
+        nullptr
+    },
+    {
+        "chamber_fault",
+        "binary_sensor",
+        "Chamber Fault",
+        "problem",
+        nullptr,
+        nullptr,
+        "{{ value_json.chamber_fault }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
+        "maintenance",
+        "binary_sensor",
+        "Chamber Dirty",
+        "problem",
+        nullptr,
+        nullptr,
+        "{{ value_json.maintenance }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
+        "test",
+        "binary_sensor",
+        "Test Button",
+        nullptr,
+        nullptr,
+        nullptr,
+        "{{ value_json.test }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
+        "button",
+        "binary_sensor",
+        "Tamper",
+        "tamper",
+        nullptr,
+        nullptr,
+        "{{ value_json.button }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
+        "battery",
+        "sensor",
+        "Battery",
+        "battery",
+        "measurement",
+        "%",
+        "{{ value_json.battery_pct }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "voltage",
+        "sensor",
+        "Battery Voltage",
+        "voltage",
+        "measurement",
+        "mV",
+        "{{ value_json.battery_mv }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "low_battery",
+        "binary_sensor",
+        "Low Battery",
+        "battery",
+        nullptr,
+        nullptr,
+        "{{ value_json.low_battery }}",
+        "ON",
+        "OFF",
+        "diagnostic"
+    },
+    {
+        "rssi",
+        "sensor",
+        "Signal Strength",
+        "signal_strength",
+        "measurement",
+        "dBm",
+        "{{ value_json.rssi }}",
+        nullptr,
+        nullptr,
+        "diagnostic"
+    },
+    {
+        "temperature",
+        "sensor",
+        "Temperature",
+        "temperature",
+        "measurement",
+        "°C",
+        "{{ value_json.temperature_c if value_json.temperature_c is defined else None }}",
+        nullptr,
+        nullptr,
+        nullptr
+    },
+    {
+        "humidity",
+        "sensor",
+        "Humidity",
+        "humidity",
+        "measurement",
+        "%",
+        "{{ value_json.humidity_pct if value_json.humidity_pct is defined else None }}",
+        nullptr,
+        nullptr,
+        nullptr
+    }
+};
+
+/**
  * @brief Gateway health and diagnostics entity configuration table.
  */
 static const HaEntityDef S_GATEWAY_ENTITIES[] = {
@@ -439,6 +580,7 @@ static const HaEntityDef S_GATEWAY_ENTITIES[] = {
 static const int NUM_SENSOR_ENTITIES = sizeof(S_SENSOR_ENTITIES) / sizeof(S_SENSOR_ENTITIES[0]);
 static const int NUM_MOTION_SENSOR_ENTITIES = sizeof(S_MOTION_SENSOR_ENTITIES) / sizeof(S_MOTION_SENSOR_ENTITIES[0]);
 static const int NUM_SIREN_ENTITIES = sizeof(S_SIREN_ENTITIES) / sizeof(S_SIREN_ENTITIES[0]);
+static const int NUM_SMOKE_ENTITIES = sizeof(S_SMOKE_ENTITIES) / sizeof(S_SMOKE_ENTITIES[0]);
 static const int NUM_GATEWAY_ENTITIES = sizeof(S_GATEWAY_ENTITIES) / sizeof(S_GATEWAY_ENTITIES[0]);
 
 bool haIsMotionCameraSensor(const char* deviceId) {
@@ -474,6 +616,15 @@ int haDiscoveryGetSirenEntityCount() {
 const HaEntityDef* haDiscoveryGetSirenEntityDef(int idx) {
     if (idx < 0 || idx >= NUM_SIREN_ENTITIES) return nullptr;
     return &S_SIREN_ENTITIES[idx];
+}
+
+int haDiscoveryGetSmokeEntityCount() {
+    return NUM_SMOKE_ENTITIES;
+}
+
+const HaEntityDef* haDiscoveryGetSmokeEntityDef(int idx) {
+    if (idx < 0 || idx >= NUM_SMOKE_ENTITIES) return nullptr;
+    return &S_SMOKE_ENTITIES[idx];
 }
 
 String haDiscoveryBuildTopic(const char* deviceId, const HaEntityDef* def) {
@@ -578,11 +729,12 @@ String haDiscoveryBuildCameraPayload(const char* deviceId, const char* baseTopic
     return p;
 }
 
-String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, const char* baseTopic) {
+String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, const char* baseTopic, bool isSmoke) {
     String stateTopic = haStateBuildTopic(deviceId, baseTopic);
     String uniqueId = "verisure_" + String(deviceId) + "_" + String(def->key);
     bool isMotionCam = haIsMotionCameraSensor(deviceId);
     bool isSiren = haIsSirenSensor(deviceId);
+    if (isMotionCam || isSiren) isSmoke = false;   // the ID prefix wins, as in main.cpp
 
     String p = "{";
     p += "\"name\":\"" + String(def->name) + "\",";
@@ -611,7 +763,8 @@ String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, con
     // Without packets for this long the entities turn unavailable (dead battery, out of range)
     // instead of keeping old values: cameras and sirens poll at least every ~2 minutes, the door
     // sensor sends a heartbeat about every hour
-    p += "\"expire_after\":" + String((isMotionCam || isSiren) ? HA_CAMERA_EXPIRE_S : HA_SENSOR_EXPIRE_S) + ",";
+    p += "\"expire_after\":" + String((isMotionCam || isSiren) ? HA_CAMERA_EXPIRE_S
+                                      : isSmoke ? HA_SMOKE_EXPIRE_S : HA_SENSOR_EXPIRE_S) + ",";
 
     String availTopic = String(baseTopic) + "/status";
     p += "\"availability_topic\":\"" + availTopic + "\",";
@@ -629,6 +782,10 @@ String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, con
         p += "\"name\":\"Verisure Siren " + String(deviceId) + "\",";
         p += "\"model\":\"Verisure Siren (GW-SI)\",";
         p += "\"sw_version\":\"1.0-MSP430\",";
+    } else if (isSmoke) {
+        p += "\"name\":\"Verisure Smoke Detector " + String(deviceId) + "\",";
+        p += "\"model\":\"GW-SD3 (Smoke Detector)\",";
+        p += "\"sw_version\":\"1.0-EFR32FG14\",";
     } else {
         p += "\"name\":\"Verisure Sensor " + String(deviceId) + "\",";
         p += "\"model\":\"GW-MC-SHOCK (Door/Window & Shock)\",";
@@ -647,9 +804,19 @@ String haStateBuildTopic(const char* deviceId, const char* baseTopic) {
 
 String haStateBuildPayload(const VerisureTelemetry& telem) {
     String p = "{";
-    p += "\"contact\":\"" + String(telem.isOpen ? "OPEN" : "CLOSED") + "\",";
-    p += "\"motion\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";
-    p += "\"vibration\":\"" + String(telem.isShock ? "ON" : "OFF") + "\",";
+    // The camera and siren ID prefixes win over the in-band smoke marker (as in main.cpp)
+    const bool smoke = telem.isSmoke && !haIsMotionCameraSensor(telem.deviceId) && !haIsSirenSensor(telem.deviceId);
+    if (smoke) {
+        p += "\"smoke\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";   // flags bit 0
+        p += "\"chamber_fault\":\"" + String((telem.smokeStatus & 0x01) ? "ON" : "OFF") + "\",";
+        p += "\"maintenance\":\"" + String((telem.smokeStatus & 0x02) ? "ON" : "OFF") + "\",";
+        p += "\"test\":\"" + String((telem.smokeStatus & 0x04) ? "ON" : "OFF") + "\",";
+        p += "\"hushed\":\"" + String((telem.smokeStatus & 0x10) ? "ON" : "OFF") + "\",";
+    } else {
+        p += "\"contact\":\"" + String(telem.isOpen ? "OPEN" : "CLOSED") + "\",";
+        p += "\"motion\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";
+        p += "\"vibration\":\"" + String(telem.isShock ? "ON" : "OFF") + "\",";
+    }
     p += "\"button\":\"" + String(telem.isButton ? "ON" : "OFF") + "\",";
     p += "\"power_on\":\"" + String(telem.isPowerOn ? "ON" : "OFF") + "\",";
     p += "\"battery_pct\":" + String(telem.batteryPct) + ",";
@@ -666,6 +833,7 @@ String haStateBuildPayload(const VerisureTelemetry& telem) {
         snprintf(tbuf, sizeof(tbuf), "%.1f", telem.tempC);
         p += "\"temperature_c\":" + String(tbuf) + ",";
     }
+    if (smoke && telem.hasHumidity) p += "\"humidity_pct\":" + String(telem.humidityPct) + ",";
     if (telem.batteryLoadMv) p += "\"battery_load_mv\":" + String(telem.batteryLoadMv) + ",";
     p += "\"rssi\":" + String(telem.rssi) + ",";
     p += "\"lqi\":" + String(telem.lqi) + ",";

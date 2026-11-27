@@ -460,6 +460,10 @@ bool cryptoProcessPacket(const uint8_t* rxBuf24, int rssi, uint8_t lqi, const ui
     outTelem->lqi           = lqi;
     outTelem->valid         = true;
     outTelem->fastWakeState = 0;
+    outTelem->isSmoke       = false;        // set by smokeApply() from rawP0
+    outTelem->smokeStatus   = 0;
+    outTelem->humidityPct   = 0;
+    outTelem->hasHumidity   = false;
 
     return true;
 }

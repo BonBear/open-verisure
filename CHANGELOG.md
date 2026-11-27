@@ -7,8 +7,18 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
+### Gateway
+
+- Smoke detector class: packets with `plain[12]` = `0x5D` (status), `0x5E` (temperature) or `0x5F`
+  (humidity) are published as a smoke detector (smoke, chamber fault/dirty, test, tamper, battery,
+  signal, temperature, humidity) with its own HA device block; the last values are kept between packet
+  types; a device first seen as a door sensor is announced again. Host tests in `test_smoke.cpp`.
+
 ### Smoke detector
 
+- Packets carry the smoke status type `0x5D` and the heartbeat bit (`PKT_TYPE_SMOKE_STATUS`,
+  `PKT_SMOKE_*`); types `0x5E`/`0x5F` are reserved for temperature and humidity. An older gateway
+  shows the detector as a door sensor.
 - HFXO `CTUNE` trimmed to `0x100` (`HFXO_CTUNE`): carrier error at the gateway went from −28.6 kHz
   to 0.0 kHz on the bench unit.
 

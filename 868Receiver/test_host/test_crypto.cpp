@@ -250,6 +250,33 @@ TEST(packet_valid_fields) {
     CHECK_EQ(t.lqi, 42);
 }
 
+TEST(packet_smoke_status_authenticates) {
+    const char* SMK = "5MKE0001";
+    uint8_t p[16], pkt[24];
+    makePlain(p, SMK, 0x00040100, 0x20 | 0x01);   // counter + smoke alarm
+    p[12] = 0x5D;                                  // smoke status packet
+    p[13] = 0x08 | 0x01;                           // heartbeat + chamber fault
+    seal(pkt, SMK, p);
+    VerisureTelemetry t;
+    memset(&t, 0xA5, sizeof(t));
+    REQUIRE(rx(pkt, &t));
+    CHECK_STR(t.deviceId, SMK);
+    CHECK_EQ(t.rawP0, 0x5D);
+    CHECK_EQ(t.rawP1, 0x09);
+    CHECK(t.isOpen);                               // flags bit 0 = smoke alarm
+    CHECK(!t.isShock);
+    CHECK(!t.isSmoke);                             // set by smokeApply(), not by the crypto layer
+    CHECK_EQ(t.smokeStatus, 0);
+    CHECK(!t.hasHumidity);
+    CHECK_EQ(t.humidityPct, 0);
+    CHECK(!rx(pkt));                               // same replay rules: equal counter is dropped
+    makePlain(p, SMK, 0x00040101, 0x20);
+    p[12] = 0x5D;
+    p[13] = 0x00;
+    seal(pkt, SMK, p);
+    CHECK(rx(pkt));
+}
+
 TEST(packet_rejects_wrong_id_echo) {
     uint8_t p[16], pkt[24];
     makePlain(p, CAM, 0x100, 0x20);

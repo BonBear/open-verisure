@@ -96,6 +96,19 @@ int haDiscoveryGetSirenEntityCount();
 const HaEntityDef* haDiscoveryGetSirenEntityDef(int idx);
 
 /**
+ * @brief Get total number of sensor entity definitions exposed per smoke detector node.
+ * @return Number of smoke detector entities (11).
+ */
+int haDiscoveryGetSmokeEntityCount();
+
+/**
+ * @brief Get smoke detector entity definition by zero-based index.
+ * @param idx Index from 0 to count-1.
+ * @return Pointer to HaEntityDef structure.
+ */
+const HaEntityDef* haDiscoveryGetSmokeEntityDef(int idx);
+
+/**
  * @brief Construct MQTT config discovery topic for a Siren entity.
  * @param deviceId 8-character sensor identifier.
  * @return Full topic string: `homeassistant/siren/verisure_<deviceId>_siren/config`.
@@ -153,9 +166,11 @@ String haDiscoveryBuildCameraPayload(const char* deviceId, const char* baseTopic
  * @param deviceId 8-character sensor identifier.
  * @param def Entity definition pointer.
  * @param baseTopic Base MQTT topic configured on gateway (e.g. "verisure").
+ * @param isSmoke True when the device is a smoke detector (VerisureTelemetry::isSmoke); ignored
+ *        for camera and siren ID prefixes.
  * @return JSON configuration string with device metadata, identifiers, and connections.
  */
-String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, const char* baseTopic);
+String haDiscoveryBuildPayload(const char* deviceId, const HaEntityDef* def, const char* baseTopic, bool isSmoke);
 
 /**
  * @brief Construct telemetry state topic for a sensor node.

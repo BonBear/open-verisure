@@ -102,10 +102,11 @@ supply:
    power-gated single-wire sensor on `PF3` (see [docs/re_worksheet.md](docs/re_worksheet.md) section 7).
 3. **Phase 2 (OpenVerisure firmware & HA integration) — IN PROGRESS:** Unit 1 unlocked and the
    first RF firmware in [firmware/](firmware/README.md) sends authenticated OpenVerisure
-   packets (door-sensor format, persistent counter) that the gateway publishes on MQTT
-   (bench-verified 2026-11-26). Next: complete the EFR32FG14 firmware (EM2 sleep, 868.950 MHz AES-128 KDF
-   protocol, optical smoke + temp/humidity + tamper + battery + speaker alarm), and add
-   multi-device `smoke` support to `868Receiver` and Home Assistant MQTT discovery.
+   packets (door-sensor format, persistent counter, smoke status type `0x5D`) that the gateway
+   publishes on MQTT (bench-verified 2026-11-26). The gateway now has a smoke detector class
+   (smoke, chamber fault/dirty, test, tamper, battery, signal, temperature and humidity entities;
+   an older gateway shows the detector as a door sensor). Next: complete the EFR32FG14 firmware
+   (smoke chamber, test button, temp/humidity, tamper, speaker alarm).
 
 ## Photos
 

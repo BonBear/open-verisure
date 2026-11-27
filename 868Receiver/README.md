@@ -109,6 +109,13 @@ The web page has the same upload (Firmware Update card).
   never goes back (kept in their flash), which must increase with no exception for resets or
   tamper; its last value is kept in NVS (`replay`) across gateway restarts. Details:
   [cryptography & protocol](../documentation/cryptography_and_protocol.md).
+* **Smoke detector (GW-SD3):** recognised by packet type `plain[12]` = `0x5D`/`0x5E`/`0x5F` (not by
+  ID prefix) when the ID is not a camera or siren. Entities: Smoke, Chamber Fault, Chamber Dirty,
+  Test Button, Tamper, Battery, Battery Voltage, Low Battery, Signal Strength, Temperature and
+  Humidity (the last two once the detector reports them); the state JSON also has `hushed`. The
+  status, temperature and humidity of the latest packets are kept between packet types, the test
+  button only for its own packet. A detector that was first seen as a door sensor is announced again
+  and its retained `_contact`/`_vibration` topics are cleared. The portal's sensor JSON has `"smoke"`.
 * **Home Assistant:** MQTT auto-discovery per device (door sensor entities; camera entity, motion
   and buttons "Take 640x480 picture" and "Take flash picture" for the camera), an alarm switch, and
   availability (LWT).

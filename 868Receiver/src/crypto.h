@@ -75,6 +75,10 @@ struct VerisureTelemetry {
     bool hasTemp;           /**< True when tempC holds a valid temperature reading */
     bool valid;             /**< True if packet passed authentication, decryption and replay check */
     uint8_t fastWakeState;  /**< Siren fast-wake state: 0 = unknown, 1 = OFF, 2 = ON */
+    bool isSmoke;           /**< Smoke detector packet (rawP0 0x5D..0x5F, see smoke_packet.h) */
+    uint8_t smokeStatus;    /**< Smoke status bits (PKT_SMOKE_* in the firmware), cached */
+    uint8_t humidityPct;    /**< Smoke detector relative humidity 0..100 % */
+    bool hasHumidity;       /**< True when humidityPct holds a valid reading */
 };
 
 /**
