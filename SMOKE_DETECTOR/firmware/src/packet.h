@@ -20,7 +20,8 @@
 /* flags bit 1 (0x02) is the door shock flag: it must stay 0 here. */
 
 /* plain[12] packet type of the smoke detector. The gateway tells smoke from door sensors by
- * these values (door firmware cannot produce them: bits 0x14 are driven low before sampling). */
+ * these values (door firmware cannot produce them: bits 0x14 are driven low before sampling).
+ * Every smoke packet type must stay within 0x5D..0x5F: the gateway classifies per packet. */
 #define PKT_TYPE_SMOKE_STATUS   0x5Du  /* plain[13] = PKT_SMOKE_* bits */
 #define PKT_TYPE_SMOKE_CLIMATE  0x5Eu  /* plain[13] = temperature, raw*0.5-40 C, 0xFF = none (reserved) */
 #define PKT_TYPE_SMOKE_HUMIDITY 0x5Fu  /* plain[13] = RH 0..100 %, 0xFF = none (reserved) */

@@ -20,7 +20,11 @@
 #define SMOKE_TYPE_STATUS   0x5D
 #define SMOKE_TYPE_CLIMATE  0x5E
 #define SMOKE_TYPE_HUMIDITY 0x5F
-#define SMOKE_STATUS_TEST   0x04   /* test button: event only, never cached */
+#define SMOKE_STATUS_FAULT     0x01   /* chamber fault */
+#define SMOKE_STATUS_DIRTY     0x02   /* chamber dirty / maintenance */
+#define SMOKE_STATUS_TEST      0x04   /* test button: event only, never cached */
+#define SMOKE_STATUS_HEARTBEAT 0x08   /* periodic timer packet */
+#define SMOKE_STATUS_HUSHED    0x10   /* alarm hushed */
 
 static inline bool smokeIsPacket(uint8_t rawP0) {
     return rawP0 >= SMOKE_TYPE_STATUS && rawP0 <= SMOKE_TYPE_HUMIDITY;

@@ -505,9 +505,11 @@ static void handleRadioFrame(const RadioFrame& item) {
                           packetCount, telem.deviceId, (unsigned long)telem.counter);
             if (telem.isSmoke) {
                 Serial.printf("    Smoke   : %s\n", telem.isOpen ? "SMOKE ALARM!" : "Clear");
-                Serial.printf("    Chamber : %s%s%s%s%s\n", (telem.smokeStatus & 0x17) ? "" : "OK ",
-                              (telem.smokeStatus & 0x01) ? "FAULT " : "", (telem.smokeStatus & 0x02) ? "DIRTY " : "",
-                              (telem.smokeStatus & 0x04) ? "TEST " : "", (telem.smokeStatus & 0x10) ? "HUSHED" : "");
+                Serial.printf("    Chamber : %s%s%s%s%s\n", (telem.smokeStatus & (SMOKE_STATUS_FAULT | SMOKE_STATUS_DIRTY | SMOKE_STATUS_TEST | SMOKE_STATUS_HUSHED)) ? "" : "OK ",
+                              (telem.smokeStatus & SMOKE_STATUS_FAULT) ? "FAULT " : "",
+                              (telem.smokeStatus & SMOKE_STATUS_DIRTY) ? "DIRTY " : "",
+                              (telem.smokeStatus & SMOKE_STATUS_TEST) ? "TEST " : "",
+                              (telem.smokeStatus & SMOKE_STATUS_HUSHED) ? "HUSHED" : "");
                 if (telem.hasTemp) Serial.printf("    Temp    : %.1f C\n", telem.tempC);
                 if (telem.hasHumidity) Serial.printf("    Humidity: %u %%\n", telem.humidityPct);
             } else {

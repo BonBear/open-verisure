@@ -476,6 +476,21 @@ static void publishSensorDiscovery(const char* deviceId, const char* baseTopic, 
         markDeviceDiscovered(deviceId, false);
         Serial.printf("[MQTT] Published Home Assistant Discovery for Siren \"%s\" (%d sensor entities + 1 siren + 1 switch retained)\n", deviceId, count);
     } else {
+        // Announced as a smoke detector before: clear the retained smoke-only entities
+        // (those whose key the door table does not have; the shared ones are overwritten below)
+        for (int i = 0; i < s_numDiscovered; i++) {
+            if (strcmp(s_discoveredDevices[i], deviceId) != 0 || !s_discoveredSmoke[i]) continue;
+            for (int k = 0; k < haDiscoveryGetSmokeEntityCount(); k++) {
+                const HaEntityDef* sdef = haDiscoveryGetSmokeEntityDef(k);
+                bool shared = false;
+                for (int d = 0; d < haDiscoveryGetSensorEntityCount(); d++) {
+                    if (strcmp(haDiscoveryGetSensorEntityDef(d)->key, sdef->key) == 0) shared = true;
+                }
+                if (shared) continue;
+                String oldTopic = haDiscoveryBuildTopic(deviceId, sdef);
+                s_mqttClient.publish(oldTopic.c_str(), "", true);
+            }
+        }
         int count = haDiscoveryGetSensorEntityCount();
         for (int i = 0; i < count; i++) {
             const HaEntityDef* def = haDiscoveryGetSensorEntityDef(i);

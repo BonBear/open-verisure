@@ -4,6 +4,7 @@
  */
 
 #include "ha_discovery.h"
+#include "smoke_packet.h"
 
 /** Seconds without a packet before Home Assistant shows a camera's entities as unavailable
  *  (the camera polls every ~30 s, every ~2 minutes when disarmed and idle). */
@@ -808,10 +809,10 @@ String haStateBuildPayload(const VerisureTelemetry& telem) {
     const bool smoke = telem.isSmoke && !haIsMotionCameraSensor(telem.deviceId) && !haIsSirenSensor(telem.deviceId);
     if (smoke) {
         p += "\"smoke\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";   // flags bit 0
-        p += "\"chamber_fault\":\"" + String((telem.smokeStatus & 0x01) ? "ON" : "OFF") + "\",";
-        p += "\"maintenance\":\"" + String((telem.smokeStatus & 0x02) ? "ON" : "OFF") + "\",";
-        p += "\"test\":\"" + String((telem.smokeStatus & 0x04) ? "ON" : "OFF") + "\",";
-        p += "\"hushed\":\"" + String((telem.smokeStatus & 0x10) ? "ON" : "OFF") + "\",";
+        p += "\"chamber_fault\":\"" + String((telem.smokeStatus & SMOKE_STATUS_FAULT) ? "ON" : "OFF") + "\",";
+        p += "\"maintenance\":\"" + String((telem.smokeStatus & SMOKE_STATUS_DIRTY) ? "ON" : "OFF") + "\",";
+        p += "\"test\":\"" + String((telem.smokeStatus & SMOKE_STATUS_TEST) ? "ON" : "OFF") + "\",";
+        p += "\"hushed\":\"" + String((telem.smokeStatus & SMOKE_STATUS_HUSHED) ? "ON" : "OFF") + "\",";
     } else {
         p += "\"contact\":\"" + String(telem.isOpen ? "OPEN" : "CLOSED") + "\",";
         p += "\"motion\":\"" + String(telem.isOpen ? "ON" : "OFF") + "\",";

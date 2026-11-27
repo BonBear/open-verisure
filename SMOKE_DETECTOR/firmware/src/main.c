@@ -42,6 +42,7 @@ _Static_assert(sizeof(DEVICE_ID) == 9u, "DEVICE_ID must be exactly 8 characters"
 #ifndef HFXO_CTUNE
 #define HFXO_CTUNE       0x100u
 #endif
+_Static_assert(HFXO_CTUNE <= 0x1FFu, "HFXO_CTUNE is a 9-bit field");
 
 /* Read over SWD for bring-up (see README.md). */
 volatile uint32_t g_heartbeat;
