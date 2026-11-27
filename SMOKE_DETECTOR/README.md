@@ -31,16 +31,17 @@ button until the LED flashes red fast.
 | HFXO crystal | `3840T` (4-pad metal can) | 38.400 MHz HFXO routed to EFR32 pins 10–11 (`HFXTAL_N`/`_P`) | Visually traced |
 | LFXO crystal | `A320L` (2-pad brown) | 32.768 kHz LFXO routed to EFR32 pins 35–36 (`PB14`/`PB15`) | Visually traced |
 | `IC6` | `winbond 25Q16JLNIG 2323` (SOIC-8) | Winbond **W25Q16JL**, 16 Mbit (2 MiB) SPI NOR flash (2.3–3.6 V, power-gated 0 V in idle) | **DMM mapped** to back pads `51` (`DO`), `52` (`CLK`), `53` (`DI`), `54` (`/CS`), `60` (`VCC`/`/WP`/`/HOLD`) |
-| `IC81` | `C4660 224KU` (TSSOP-20) | **Optical smoke-chamber AFE** (connected to `PD81` photodiode; flanked by inductors, `PC41`, 100 µF cap) | **DMM confirmed** (`PD81` → `IC81`) |
-| `IC301` | `304A 029J 363` (QFN-32) | **Audio/voice IC with BTL speaker driver** (pins 13–14 → pad `43`, pins 15–16 → pad `42` → `CN301`) | **DMM confirmed** |
+| `IC81` | `C4660 224KU` (16-pin) | **Optical chamber front end**: drives `LED81` (pin 16) and reads `PD81` (pins 9–11); pins 6/7/8/12/13 go to `IC301`, pin 14 to EFR32 `PB13` | **DMM mapped**, stock sequence captured (see `docs/re_worksheet.md` section 7a) |
+| `IC301` | `304A 029J 363` (QFN-32) | **Smoke controller + BTL speaker driver**: sequences the chamber through `IC81` every 8 s and drives `CN301` (pins 13–14 → pad `43`, pins 15–16 → pad `42`); pin 21 ↔ EFR32 `PB11` | **DMM confirmed**; EFR32 result line still open |
 | `CP92` | `CP92` (DFN-8 w/ window) | **Digital temperature & humidity sensor** (open rectangular sensing die window visible under microscope) | **Microscope confirmed** |
 | 6-pin near `IC81` | `PC41 351 APBP` | Likely boost converter or LDO feeding the 100 µF `107 6.38` rail | Assumption |
 | 6-pad metal lid | `341 ZF` | **EPCOS/TDK 868 MHz SAW bandpass filter** between EFR32 `SUBGRF` (pins 13–16) and U.FL / wire antenna | Visually traced |
 | Speaker & `CN301` | `M36BN20-A 8Ω 0.5W` | 36 mm 8 Ω dynamic speaker plugged into 3-pin JST `CN301` (outer 2 pins used) | **Confirmed** (`CN301` → `IC301`) |
-| Optical chamber | black disc (`LED81`, `PD81`) | Photoelectric smoke chamber; **`LED81` → EFR32 pin 5 (`PF4`)**, **`PD81` → `IC81`** | **DMM confirmed** |
+| Optical chamber | black disc (`LED81`, `PD81`) | Photoelectric smoke chamber; **`LED81`** anode via a diode to `BAT+`, cathode → `IC81` pin 16; **`PD81` → `IC81`** pins 9–11 | **DMM confirmed** |
 | Power pads | `01`/`03`/`29`, `02`/`04`/`27`, `VCC`, `VCA` | `01`/`03`/`29` = `BAT+`, `02`/`04`/`27` = `GND`, `VCC` = 3.0 V always-on, `VCA` = 0 V in idle | **DMM & voltage confirmed** |
 | `LED41` / `LED42` / `LED43` | under curved reflector mask | `LED41` and `LED42` populated with SOT-23 drivers (`44`/`YK`); `LED43` unpopulated | Confirmed |
-| `R1` + `R56` | `270` 2512 (27 Ω) ×2 | 27 Ω ∥ 27 Ω = 13.5 Ω (measured 14 Ω) to `BAT+` | **DMM confirmed** |
+| `R1` + `R56` | `270` 2512 (27 Ω) ×2 | 27 Ω ∥ 27 Ω = 13.5 Ω (measured 14 Ω) to `BAT+`; switched to GND by a 3-pin SOT-23 MOSFET whose gate is EFR32 `PC6` via 9 kΩ = **~222 mA battery load test** (not the IR LED) | **DMM confirmed** |
+| Test button | — | GND ↔ EFR32 pin 25 (`PA0`, back pad `SW`) via 22 Ω, external pull-up = active low; stock firmware needs a ~10 s hold | **DMM confirmed** |
 | PCB | `K2226`, UL `94V-0` | 4-layer board | Confirmed |
 
 ## Radio & custom firmware readiness
@@ -68,7 +69,7 @@ A staggered 2×4 group of round pogo pads on the back matches 8 holes in the pla
 | `CLK` | **Pin 1 (`PF0`)** | **Confirmed `SWCLK`** |
 | `DIO` | **Pin 2 (`PF1`)** | **Confirmed `SWDIO`** |
 | `RES` | **Pin 12 (`RESETn`)** | **Confirmed `RESETn`** |
-| `SW` | **Pin 25 (`PA0`)** | GPIO input (not `SWO`; likely test button) |
+| `SW` | **Pin 25 (`PA0`)** | GPIO input (not `SWO`): **test button**, active low (DMM confirmed) |
 | `TXD` / `RXD` / `TPR` / `FIRE` | TBD | UART / tamper / fire interconnect |
 | `01` / `03` / `29` | — | **`BAT+`** (3.0 V) |
 | `02` / `04` / `27` | — | **`GND`** |

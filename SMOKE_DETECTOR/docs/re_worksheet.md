@@ -77,15 +77,17 @@ All 6 SPI/power signals are exposed on large round test pads on the **back** of 
 | Empty | `0x184000`–`0x1FFFFF` erased (`FF`) |
 | Firmware | **None**: no GBL header, no Cortex-M vector table, no readable strings. Stock application exists only inside the locked EFR32 |
 
-Bench pitfalls: without `RES` low the EFR32 keeps running (periodic ~223 mA `LED81` pulses through `R1`∥`R56`) and drives the bus; without direct VCC the flash returned `FF`/floating data; one early read had bit-shifted bytes from a loose clip, so always compare at least two reads.
+Bench pitfalls: without `RES` low the EFR32 keeps running (periodic ~223 mA battery load-test pulses through `R1`∥`R56`) and drives the bus; without direct VCC the flash returned `FF`/floating data; one early read had bit-shifted bytes from a loose clip, so always compare at least two reads.
 
 ## 5. Identified & mapped ICs / peripherals
 
 | Ref | Marking | Package | Measured / traced | Confirmed function |
 | :--- | :--- | :--- | :--- | :--- |
-| `IC301` | `304A 029J 363` | QFN-32 | Pins 13+14 → Pad `43` → `CN301` speaker; Pins 15+16 → Pad `42` → `CN301` speaker | **Audio/voice IC with BTL speaker driver** (drives `M36BN20-A` 8 Ω speaker on `CN301`) |
-| `IC81` | `C4660 224KU` | TSSOP-20 | Connected directly to `PD81` (optical chamber photodiode); surrounded by inductors + `PC41` + 100 µF cap | **Optical smoke-chamber AFE** |
-| `LED81` | IR LED (chamber) | 2-pin TH | Connected to **EFR32 pin 5 (`PF4`)** | **Smoke chamber IR emitter** |
+| `IC301` | `304A 029J 363` | QFN-32 | Pins 13+14 → Pad `43` → `CN301` speaker; Pins 15+16 → Pad `42` → `CN301` speaker; pins 1/2/4/28/29 → `IC81` pins 6/7/8/12/13; pin 21 ↔ EFR32 `PB11` | **Smoke controller with BTL speaker driver** (sequences the chamber, drives `M36BN20-A` 8 Ω speaker on `CN301`) |
+| `IC81` | `C4660 224KU` | 16-pin | Pin 14 = 1 Ω to EFR32 `PB13` (+18 kΩ `PA1`, 13 kΩ `PA2`); pin 15 VCC; pin 16 = `LED81` cathode; pins 9–11 = `PD81`; pins 6/7/8/12/13 → `IC301` pins 1/2/4/28/29; pins 1/5 no link; pins 2–4 ~100 kΩ to several nets | **Optical chamber front end** (LED driver + photodiode input) |
+| `LED81` | IR LED (chamber) | 2-pin TH | Anode via a diode to `BAT+`, cathode 0 Ω to `IC81` pin 16 (earlier note "EFR32 pin 5 `PF4`" superseded) | **Smoke chamber IR emitter** |
+| Load-test MOSFET | not read (near the PCB code `K2226`) | SOT-23 (3-pin) | Gate ← EFR32 `PC6` (pin 43) via 9 kΩ; source GND; drain → `R1`/`R56` (13.5 Ω to `BAT+`) | **Battery load-test switch** (~222 mA) |
+| Test button | — | — | GND ↔ EFR32 pin 25 (`PA0`) via 22 Ω; `PA0` pulled up externally | **Test button, active low** |
 | `PD81` | Photodiode (chamber) | 3-pin TH | Connected to **`IC81`** (`C4660`) | **Smoke chamber optical receiver** |
 | `CP92` | `CP92` | DFN-8 w/ window | Microscope confirms rectangular open sensing window over silicon die (Sensirion SHT3x / Si70xx family) | **Digital temperature & humidity sensor** |
 | `CN301` | 3-pin JST | — | Outer pins (black + white wire, center empty) → Pads `43`/`42` → `IC301` pins 13–16 | **Speaker connector** (`M36BN20-A`, 8 Ω 0.5 W) |
@@ -109,7 +111,7 @@ Continuity traced on the bench (EFR32 QFN-48 pin numbers):
 | `CP92` power | `CP92` pins 2+3 ← 3-pin load switch (`YK`, above `TP23`) output; switch input = VCC (EFR32 pin 34), switch control ← EFR32 pin 3 (`PF2`). Switch output reads 0 V in idle (sensor power-gated). |
 | `CP92` data | `CP92` pin 8 → EFR32 pin 4 (`PF3`); pins 9+10 GND; pins 1, 4–7 NC. Single data line → not I2C. |
 | `IC301` control | `IC301` pin 21 → EFR32 pin 31 (`PB11`); pins 19+20 VCC. |
-| `IC81` | Pin 11 GND, pin 15 VCC; no direct trace to an EFR32 pin found (likely analog via RC). |
+| `IC81` | Pin 14 → EFR32 `PB13` (1 Ω); full pin map in section 5. |
 
 Saleae Logic 4 @ 12 MS/s, board on Otii (3.0–3.3 V on `BAT+`), test button pressed during the capture:
 
@@ -123,9 +125,27 @@ Saleae Logic 4 @ 12 MS/s, board on Otii (3.0–3.3 V on `BAT+`), test button pre
 
 Pitfall: several early captures were flat because the probe clips had no contact; verify each Saleae lead (tap it on `BAT+`) before a long capture.
 
+## 7a. Optical chamber mapping (2026-11-27)
+
+`-DCHAMBER_SCAN` probe on Unit 1 (120 µs `PC6` pulse, ADC on 24 GPIOs, `PD13`/`PD15` enable combinations): no GPIO reacts to the pulse except AVDD (~65 mV sag) and the `PC7` ADC row, which follows `PC6` although `PC7` reads GND on the DMM (APORT mapping suspect), because `PC6` only switches the battery load-test MOSFET (`R1`∥`R56`, ~222 mA), not the IR LED.
+
+Saleae Logic 4 on stock `3EA8VKXK` at 3.0 V (Ch0 analog `IC81` pin 16, Ch1 `PB13`, Ch2 `PB11`, Ch3 `IC81` pin 12):
+
+| Signal | Observed |
+| :--- | :--- |
+| `PB11` (`IC301` pin 21) | 10 µs high pulse every 4.000 s. |
+| `IC81` pin 12 (from `IC301` pin 28) | 2.54 ms high window 6.4 ms after every second `PB11` pulse (8 s period). |
+| `IC81` pin 16 (`LED81` cathode) | Idles ~2.18 V; drops to ~1.25 V for 80–90 µs about 2.1 ms into each pin-12 window = IR flash every 8 s. |
+| `PB13` (`IC81` pin 14) | High; one 201 µs low pulse ~8.7 s after power-on, otherwise idle. |
+| Test button (~10 s hold, speaker fitted) | Short chirp, then a longer quiet tone ~9 s later; the 4 s / 8 s cycle paused ~43 s and then resumed. No test-specific edge on the four probed lines (the ~1.1 s `PB11` high in section 7 was on Unit 1 before unlock). |
+
+Conclusion: `IC301` is the smoke controller and `IC81` its LED/photodiode front end; the EFR32 exchanges `PB11` pulses with `IC301`, and `PB13` (`IC81` pin 14) was seen active only once (201 µs low after power-on). Which line reports smoke/alarm to the EFR32 is still open. Two captures taken after short test presses showed no cycle at all after power-on and stay unexplained (loose clips or a post-test pause).
+
 ## 8. Next bench steps
 
 - [x] Dump `IC6` (`W25Q16JL`, 2 MiB): sound table + audio clips only, no firmware (see section 4).
 - [ ] Identify the clip audio encoding (optional; needed only to reuse the stock sounds).
 - [x] Saleae Logic 4 capture of the stock firmware (see section 7). `IC81` and the `LED81` drive were not resolved.
+- [x] Chamber mapping (2026-11-27, see section 7a): `IC301` sequences `IC81`/`LED81`; `PC6` is a battery load test; test button on `PA0`.
+- [ ] Map `IC301` pins 3, 5–12, 17, 18, 22–27, 30–32 against the EFR32 to find the smoke/alarm result line.
 - [ ] Unlock Unit 1 (`3EB7KFZQ`) via `AAP DEVICE_ERASE` (keep `3EA8VKXK` and `3EA8W6D6` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).

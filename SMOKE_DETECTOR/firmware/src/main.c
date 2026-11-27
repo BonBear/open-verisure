@@ -19,6 +19,7 @@
 #include "em_rmu.h"
 
 #include "battery.h"
+#include "chamber_scan.h"
 #include "ctr_log.h"
 #include "packet.h"
 #include "power.h"
@@ -95,7 +96,7 @@ static void clocks_init(void)
 }
 
 /* Safe idle levels for pins that must not float (bench pull scan 2026-11-27, EM2 current):
- * PC6 high switches the LED81 IR drive on (~220 mA through R1/R56), PD13/PD15 high add ~7 mA /
+ * PC6 high switches the battery load-test MOSFET on (~220 mA through R1/R56), PD13/PD15 high add ~7 mA /
  * ~3 mA, PF2 low (CP92 load switch) adds ~0.35 mA. Pins keep these levels in EM2. */
 static void pins_init(void)
 {
@@ -162,10 +163,13 @@ int main(void)
   }
   g_lfxo_ok = power_init() ? 1u : 0u;
   g_status = 1u;
+#ifdef CHAMBER_SCAN
+  chamber_scan_run();              /* bench probe: never returns */
+#endif
 #ifdef RADIO_TEST_CW
   /* Bench probe: CW on 868.950 MHz; phases of 6 s: 0 none, 1 weak pull-up on all candidate
    * GPIOs, 2 weak pull-down on them (INPUTPULL, ~40 kOhm). PC6 is left out: pulled up it
-   * switches the LED81 IR drive on. */
+   * switches the battery load-test MOSFET on. */
   static const uint8_t cand[][2] = {
     {0, 1}, {0, 2}, {0, 3}, {0, 4}, {0, 5}, {1, 12}, {1, 13},
     {2, 7}, {2, 8}, {2, 9}, {2, 10}, {2, 11},
