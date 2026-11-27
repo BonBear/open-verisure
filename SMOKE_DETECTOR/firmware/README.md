@@ -113,3 +113,9 @@ Watch the gateway serial log: every 10 s `[AUTHENTICATED] Device: "<ID>"` with a
 Bench result 2026-11-26 on Unit 1 (`3EB7KFZQ`, then still built with ID `3EA8VKXK`): packets every 10.0 s, counter #2304–#2308,
 all authenticated and published to MQTT, RSSI −45 dBm, frequency error −30 kHz at the gateway
 (HFXO `CTUNE` not trimmed yet).
+
+HFXO trim (2026-11-27, Unit 1): `HFXO_CTUNE` in `src/main.c` sets
+`CMU_HFXOSTEADYSTATECTRL.CTUNE`. The reset default `0x168` gave −28.6 kHz at the gateway,
+`0x0F0` +4.8 kHz, `0x100` 0.0 kHz and `0x110` −4.8 kHz (about 0.3 kHz per step), so the
+firmware uses `0x100`. Crystals differ per board: on a new unit check `Freq. error` in the
+gateway log and rebuild with `EXTRA_CFLAGS=-DHFXO_CTUNE=0x...u` if it is more than a few kHz off.

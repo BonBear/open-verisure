@@ -7,6 +7,11 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
+### Smoke detector
+
+- HFXO `CTUNE` trimmed to `0x100` (`HFXO_CTUNE`): carrier error at the gateway went from −28.6 kHz
+  to 0.0 kHz on the bench unit.
+
 ### Tools
 
 - `tools/si446x_spi_decode.py`: decodes a Saleae SPI capture of a Si4460/Si446x radio (voicebox)
