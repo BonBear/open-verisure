@@ -19,6 +19,7 @@
 #ifdef RADIO_EVAL
 #include "sniff_format.h"
 #endif
+#include "smoke_packet.h"
 #include <WiFi.h>
 #include "esp_wifi.h"
 
@@ -286,10 +287,19 @@ static void printStatus() {
     for (int i = 0; i < count; i++) {
         const SensorRecord* rec = sensorRegistryGetByIndex(i);
         if (!rec) continue;
-        Serial.printf("    - ID: %s | Contact: %s | Shock: %s | Tamper: %s | Batt: %u mV (%u%%) | RSSI: %d dBm | Packets: %u\n",
-                      rec->lastTelem.deviceId,
-                      rec->lastTelem.isOpen ? "OPEN [ALARM]" : "CLOSED",
-                      rec->lastTelem.isShock ? "SHOCK!" : "Normal",
+        const VerisureTelemetry& t = rec->lastTelem;
+        const uint8_t st = t.smokeStatus;
+        const bool chamberOk = !(st & (SMOKE_STATUS_FAULT | SMOKE_STATUS_DIRTY | SMOKE_STATUS_TEST | SMOKE_STATUS_HUSHED));
+        Serial.printf("    - ID: %s | %s: %s | %s: %s%s%s%s%s | Tamper: %s | Batt: %u mV (%u%%) | RSSI: %d dBm | Packets: %u\n",
+                      t.deviceId,
+                      t.isSmoke ? "Smoke" : "Contact",
+                      t.isSmoke ? (t.isOpen ? "SMOKE ALARM" : "Clear") : (t.isOpen ? "OPEN [ALARM]" : "CLOSED"),
+                      t.isSmoke ? "Chamber" : "Shock",
+                      t.isSmoke ? (chamberOk ? "OK" : "") : (t.isShock ? "SHOCK!" : "Normal"),
+                      (t.isSmoke && (st & SMOKE_STATUS_FAULT)) ? "FAULT " : "",
+                      (t.isSmoke && (st & SMOKE_STATUS_DIRTY)) ? "DIRTY " : "",
+                      (t.isSmoke && (st & SMOKE_STATUS_TEST)) ? "TEST " : "",
+                      (t.isSmoke && (st & SMOKE_STATUS_HUSHED)) ? "HUSHED" : "",
                       rec->lastTelem.isButton ? "TAMPER!" : "Secured",
                       rec->lastTelem.batteryMv, rec->lastTelem.batteryPct,
                       rec->lastTelem.rssi, (unsigned)rec->packetCount);
