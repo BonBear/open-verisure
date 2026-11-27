@@ -163,8 +163,8 @@ button.danger:hover { background: #b91c1c; }
         <thead>
           <tr>
             <th>Device ID</th>
-            <th>Contact / Motion</th>
-            <th>Shock</th>
+            <th>Contact / Motion / Smoke</th>
+            <th>Shock / Chamber</th>
             <th>Tamper</th>
             <th>Battery</th>
             <th>Temp</th>
@@ -499,9 +499,18 @@ async function fetchStatus() {
           ? (s.magnet ? '<span class="badge badge-alarm">MOTION</span>' : '<span class="badge badge-ok">No motion</span>')
           : (s.siren
               ? (s.magnet ? '<span class="badge badge-alarm">SOUNDING</span>' : '<span class="badge badge-ok">Idle</span>')
-              : (s.magnet ? '<span class="badge badge-alarm">OPEN (ALARM)</span>' : '<span class="badge badge-ok">CLOSED</span>'));
+              : (s.smoke
+                  ? (s.magnet ? '<span class="badge badge-alarm">SMOKE!</span>' : '<span class="badge badge-ok">Clear</span>')
+                  : (s.magnet ? '<span class="badge badge-alarm">OPEN (ALARM)</span>' : '<span class="badge badge-ok">CLOSED</span>')));
+        // smoke_status bits (smoke_packet.h): 0x01 fault, 0x02 dirty, 0x04 test, 0x10 hushed
+        const st = s.smoke_status || 0;
+        const chamber = [(st & 0x01) ? 'FAULT' : '', (st & 0x02) ? 'DIRTY' : '', (st & 0x04) ? 'TEST' : '',
+                         (st & 0x10) ? 'HUSHED' : ''].filter(x => x).join(' ');
         const shockBadge = (s.camera || s.siren) ? '&mdash;'
-          : (s.shock ? '<span class="badge badge-alarm">SHOCK!</span>' : '<span class="badge badge-ok">Clear</span>');
+          : (s.smoke
+              ? ((st & 0x03) ? '<span class="badge badge-alarm">' + chamber + '</span>'
+                 : (chamber ? '<span class="badge badge-ap">' + chamber + '</span>' : '<span class="badge badge-ok">OK</span>'))
+              : (s.shock ? '<span class="badge badge-alarm">SHOCK!</span>' : '<span class="badge badge-ok">Clear</span>'));
         const btnBadge = s.button ? '<span class="badge badge-alarm">TAMPER</span>' : (s.power_on ? '<span class="badge badge-ap">Power-On</span>' : 'Normal');
         const battBadge = s.low_battery ? '<span style="color:var(--danger)">' + s.battery_mv + ' mV (' + s.battery_pct + '%)</span>' : s.battery_mv + ' mV (' + s.battery_pct + '%)';
         const tempCell = (s.temperature_c !== undefined) ? (Number(s.temperature_c).toFixed(1) + ' &deg;C') : '&mdash;';
@@ -1062,6 +1071,7 @@ static void handleApiStatus() {
         json += "\"camera\":" + String(haIsMotionCameraSensor(rec->lastTelem.deviceId) ? "true" : "false") + ",";
         json += "\"siren\":" + String(haIsSirenSensor(rec->lastTelem.deviceId) ? "true" : "false") + ",";
         json += "\"smoke\":" + String(rec->lastTelem.isSmoke ? "true" : "false") + ",";
+        if (rec->lastTelem.isSmoke) json += "\"smoke_status\":" + String(rec->lastTelem.smokeStatus) + ",";
         if (rec->hasTemp) {
             char tbuf[12];
             snprintf(tbuf, sizeof(tbuf), "%.1f", rec->tempC);
