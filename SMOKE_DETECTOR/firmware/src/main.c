@@ -83,6 +83,18 @@ static void clocks_init(void)
   g_hf_clock = SystemCoreClock;
 }
 
+/* Safe idle levels for pins that must not float (bench pull scan 2026-11-27, EM2 current):
+ * PC6 high switches the LED81 IR drive on (~220 mA through R1/R56), PD13/PD15 high add ~7 mA /
+ * ~3 mA, PF2 low (CP92 load switch) adds ~0.35 mA. Pins keep these levels in EM2. */
+static void pins_init(void)
+{
+  CMU_ClockEnable(cmuClock_GPIO, true);
+  GPIO_PinModeSet(gpioPortC, 6, gpioModePushPull, 0);
+  GPIO_PinModeSet(gpioPortD, 13, gpioModeInputPull, 0);
+  GPIO_PinModeSet(gpioPortD, 15, gpioModeInputPull, 0);
+  GPIO_PinModeSet(gpioPortF, 2, gpioModeInputPull, 1);
+}
+
 static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
 {
   const uint16_t mv = battery_read_mv();           /* before TX: no PA load on the cell */
@@ -112,6 +124,7 @@ static bool send_packet(uint32_t counter, uint8_t flags, uint8_t rst_cause)
 int main(void)
 {
   CHIP_Init();
+  pins_init();
   const uint8_t rst = reset_cause();
   clocks_init();
 
@@ -130,10 +143,11 @@ int main(void)
   g_status = 1u;
 #ifdef RADIO_TEST_CW
   /* Bench probe: CW on 868.950 MHz; phases of 6 s: 0 none, 1 weak pull-up on all candidate
-   * GPIOs, 2 weak pull-down on them (INPUTPULL, ~40 kOhm: cannot short anything). */
+   * GPIOs, 2 weak pull-down on them (INPUTPULL, ~40 kOhm). PC6 is left out: pulled up it
+   * switches the LED81 IR drive on. */
   static const uint8_t cand[][2] = {
     {0, 1}, {0, 2}, {0, 3}, {0, 4}, {0, 5}, {1, 12}, {1, 13},
-    {2, 6}, {2, 7}, {2, 8}, {2, 9}, {2, 10}, {2, 11},
+    {2, 7}, {2, 8}, {2, 9}, {2, 10}, {2, 11},
     {3, 13}, {3, 14}, {3, 15}, {5, 2}, {5, 5}, {5, 6}, {5, 7},
   };
   CMU_ClockEnable(cmuClock_GPIO, true);
