@@ -26,6 +26,7 @@ All notable changes to this project. The format follows
 
 ### Smoke detector
 
+- Bench probe `-DCHAMBER_SCAN` and corrected chamber mapping: `IC301` sequences `IC81`/`LED81`, `PC6` is a battery load test, the test button is `PA0` (active low).
 - Packets carry the smoke status type `0x5D` and the heartbeat bit (`PKT_TYPE_SMOKE_STATUS`,
   `PKT_SMOKE_*`); types `0x5E`/`0x5F` are reserved for temperature and humidity. An older gateway
   shows the detector as a door sensor.

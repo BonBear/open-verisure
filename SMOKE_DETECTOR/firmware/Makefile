@@ -23,7 +23,7 @@ RAILLIB := $(RAIL)/autogen/librail_release/librail_efr32xg14_gcc_release.a
 BUILD   := build
 TARGET  := $(BUILD)/smoke
 
-SRCS := src/main.c src/packet.c src/ctr_log.c src/radio.c src/battery.c src/power.c \
+SRCS := src/main.c src/chamber_scan.c src/packet.c src/ctr_log.c src/radio.c src/battery.c src/power.c \
         src/autogen/rail_config.c \
         $(DEV_DIR)/Source/startup_efr32fg14p.c \
         $(DEV_DIR)/Source/system_efr32fg14p.c \

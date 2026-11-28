@@ -25,7 +25,7 @@ same firmware drew ~23 mA in EM0 and ~1.8 mA in EM2 with DECOUPLE at 2.67 V; tha
 across short Otii power cycles and cleared after the board was left unpowered (cause not proven,
 latch-up suspected). The board has the DC-DC inductor (VREGSW–DVDD 0.3 Ω), but
 `EMU_DCDCINIT_DEFAULT` raised EM2 to ~11 mA, so the firmware leaves the reset power configuration.
-`pins_init()` holds PC6 low: PC6 high switches the LED81 IR drive on (~220 mA through R1/R56).
+`pins_init()` holds PC6 low: PC6 high switches the battery load-test MOSFET on (~220 mA through R1/R56). The chamber itself is sequenced by `IC301`/`IC81`, not by the EFR32 (see `../docs/re_worksheet.md` section 7a).
 
 | File | Content |
 | :--- | :--- |
@@ -33,6 +33,7 @@ latch-up suspected). The board has the DC-DC inductor (VREGSW–DVDD 0.3 Ω), bu
 | `src/packet.c` | Plaintext block, frame and CC1101 CRC-16 (poly `0x8005`, init `0xFFFF`) |
 | `src/ctr_log.c` | Persistent counter: upper 24 bits logged in the last two flash pages |
 | `src/radio.c` | RAIL init, fixed-length TX, RAIL sleep/wake (`RADIO_TEST_CW` adds a carrier test) |
+| `src/chamber_scan.c` | Bench probe (`-DCHAMBER_SCAN` only): pulses PC6 and samples 24 GPIOs with the ADC, results in `g_scan` over SWD |
 | `src/battery.c` | AVDD measurement and battery percentage |
 | `src/power.c` | LFXO/RTCC setup and EM2 sleep |
 | `radio/openverisure_868.radioconf` | PHY input for the Silicon Labs radio configurator |
@@ -93,9 +94,10 @@ python Efr32RadioConfiguratorUcAdapter.py <repo>/SMOKE_DETECTOR/firmware/radio/o
 make GECKO_SDK=C:/Tools/gecko_sdk_4.4.6          # build/smoke.{elf,hex,bin}
 make GECKO_SDK=C:/Tools/gecko_sdk_4.4.6 flash    # tools/flash.py via pyOCD (Linux: PYTHON=python3)
 make BUILD=build/cw EXTRA_CFLAGS=-DRADIO_TEST_CW  # bench carrier test (never deploy)
+make BUILD=build/chamber EXTRA_CFLAGS=-DCHAMBER_SCAN  # bench GPIO/ADC chamber probe, results in g_scan (never deploy)
 ```
 
-CI (job "Smoke detector" in `.github/workflows/build.yml`) runs both builds on Ubuntu with the
+CI (job "Smoke detector" in `.github/workflows/build.yml`) runs the default and `RADIO_TEST_CW` builds on Ubuntu (the `CHAMBER_SCAN` probe is not built or analysed in CI) with the
 packaged `gcc-arm-none-eabi` and `src/config.h.example`; it takes the RAIL library out of
 `gecko-sdk.zip` with `.github/scripts/fetch_zip_member.py` (HTTP range requests, no 1.3 GB download).
 

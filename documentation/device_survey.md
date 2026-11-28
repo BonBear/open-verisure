@@ -14,7 +14,7 @@ and voicebox remain research-only. Each device has a README and a bench workshee
 | Other radio | none expected (P231 = sub-GHz only) | DSP Group DCX81 (DECT voice SoC) | none |
 | External flash | Winbond W25Q16JL (16 Mbit, 2.3–3.6 V, power-gated; back pads `51–54`/`60`) | Winbond W25Q16DW (16 Mbit, 1.8 V) | none |
 | Audio | `M36BN20-A` 8 Ω speaker (`CN301`) driven BTL by `IC301` (`304A`) | 2x 8 Ω speakers, MEMS microphone | OKI L22901-707 + IC5/IC9 H-bridge piezo horn (`CN2`) |
-| Other sensors | optical smoke chamber (`LED81`=`PF4`, `PD81`→`IC81`), `CP92` temp/humidity | PIR | thermistor (`TH1`), tamper switch (`SW1`) |
+| Other sensors | optical smoke chamber (`LED81`/`PD81` on `IC81`, sequenced by `IC301`), `CP92` temp/humidity | PIR | thermistor (`TH1`), tamper switch (`SW1`) |
 | Debug | `CLK`/`DIO`/`RES` (`PF0`/`PF1`/`RESETn`) verified: `DPIDR 0x2BA01477`, AAP `0x26E60011` (locked, unlockable via Pi Debug Probe) | unlabelled pogo cluster (JTAG/SBW to find) | JTAG fuse blown (`TP61–64`/`TP5`); flashed via ROM BSL (`tools/esp32_msp430_bsl/`) |
 | Bench recipes | [bench_recipes.md](bench_recipes.md) §1, §2 | §2, §3, §4 | §3, §4 (firmware working) |
 | Battery | 1× `CR-2/3AZ` 3.0 V (built in, not replaceable) | 3× `CR-2/3AZ` (`SH384552520`) 3.0 V | 3x parallel `CR-2/3AZ` 3 V (`CN5`–`CN7`) |
