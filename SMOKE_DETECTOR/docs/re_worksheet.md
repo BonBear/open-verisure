@@ -157,7 +157,7 @@ Conclusion: `IC301` is the smoke controller and `IC81` its LED/photodiode front 
 
 ## 7b. EFR32 -> `IC301` command UART (stock `3EA8VKXK`, 2026-11-28)
 
-Stock unit, Otii 3.0 V / 0.5 A, speaker fitted (muffled), Saleae Logic 4 at 3 MS/s digital (`Ch0` = `IC81` pin 12, `Ch1` = `PB11`, `Ch2` = `PA4`, `Ch3` = `PB12`). Logic 4 with the analog channel enabled stopped twice with `ReadTimeout`; digital-only captures run cleanly. Idle (30 s) and power-on + ~10 s test hold (90 s):
+Stock unit, Otii 3.0 V / 0.5 A, speaker fitted (muffled), Saleae Logic 4 (`Ch0` = `IC81` pin 12, `Ch1` = `PB11`, `Ch2` = `PA4`, `Ch3` = `PB12`). The first two captures with the analog channel enabled stopped with `ReadTimeout`; later 12 MS/s digital + 31250 S/s analog on `Ch0` ran cleanly for 60 s, so the timeout was transient. Idle (30 s) and power-on + ~10 s test hold (90 s):
 
 | Signal | Observed |
 | :--- | :--- |
@@ -175,7 +175,9 @@ Decoded `PB12` traffic (test hold; the user heard a short chirp, then a longer t
 | 42.634 s | `FF`, `FE`, `F8` | - |
 | 42.647 s | `FF`, `FE`, `81 0C 0C` | `PA4` low 499 ms (tone) |
 
-Frame format: `0xFF` wake byte, ~6 ms for `IC301` to wake, `0xFE` sync, ~0.8 ms, then the command bytes. The 42.634 s frame lands exactly on the slot of the next 4 s `PB11` pulse, and `PB12` only goes high once the EFR32 firmware runs (low on Unit 1 with the custom firmware), so `PB12` is the EFR32 TX to `IC301` (no reply bytes were seen on it). Working hypotheses, not yet confirmed: `0x81 <a> <b>` plays a sound (`0x0B` = chirp, `0x0C` = longer tone); `0xF8` is a status or stop command; `PA4` is `IC301`'s busy output (low while sound plays). The test hold also paused the `PB11` / chamber cycle again. Captures: `scratch/sal_stock_alarmlines_idle2.sal`, `scratch/sal_stock_alarmlines_test2.sal` (git-ignored).
+Frame format: `0xFF` wake byte, ~6 ms for `IC301` to wake, `0xFE` sync, ~0.8 ms, then the command bytes. The 42.634 s frame lands exactly on the slot of the next 4 s `PB11` pulse, and `PB12` only goes high once the EFR32 firmware runs (low on Unit 1 with the custom firmware), so `PB12` is the EFR32 TX to `IC301` (no reply bytes were seen on it). Working hypotheses, not yet confirmed: `0x81 <a> <b>` plays a sound (`0x0B` = chirp, `0x0C` = longer tone); `0xF8` is a status or stop command; `PA4` is `IC301`'s busy output (low while sound plays). The test hold also paused the `PB11` / chamber cycle again.
+
+Repeat after a hard power cut (Otii core killed, then powered again): the unit booted (`PB12` high after 1.09 s) but ran **no** `PB11` / chamber cycle for over 2 minutes and nothing moved; a ~10 s test hold then started two `PB11` pulses (one chamber window), and the same UART sequence followed byte for byte (`81 0B 0C` 2.0 s after the first `PB11` pulse, `F8`, `F8`, `81 0C 0C`; `PA4` low 101 ms / 499 ms), after which the cycle stayed off for the rest of the 60 s capture. Analog `Ch0` shows the `IC81` pin 12 window is a flat **~1.8 V** level (1.78-1.80 V for 2.54 ms), i.e. `IC301` drives it from an internal ~1.8 V rail, not from `VCC`. Capture: `scratch/sal_stock_analog_test2.sal`. Captures: `scratch/sal_stock_alarmlines_idle2.sal`, `scratch/sal_stock_alarmlines_test2.sal` (git-ignored).
 
 ## 8. Next bench steps
 
