@@ -137,7 +137,7 @@ Saleae Logic 4 on stock `3EA8VKXK` at 3.0 V (Ch0 analog `IC81` pin 16, Ch1 `PB13
 | Signal | Observed |
 | :--- | :--- |
 | `PB11` (`IC301` pin 21) | 10 µs high pulse every 4.000 s. |
-| `IC81` pin 12 (from `IC301` pin 28) | 2.54 ms high window 6.4 ms after every second `PB11` pulse (8 s period). |
+| `IC81` pin 12 (`IC301` pin 27) | 2.54 ms high window 6.4 ms after every second `PB11` pulse (8 s period). |
 | `IC81` pin 16 (`LED81` cathode) | Idles ~2.18 V; drops to ~1.25 V for 80–90 µs about 2.1 ms into each pin-12 window = IR flash every 8 s. |
 | `PB13` (`IC81` pin 14) | High; one 201 µs low pulse ~8.7 s after power-on, otherwise idle. |
 | Test button (~10 s hold, speaker fitted) | Short chirp, then a longer quiet tone ~9 s later; the 4 s / 8 s cycle paused ~43 s and then resumed. No test-specific edge on the four probed lines (the ~1.1 s `PB11` high in section 7 was on Unit 1 before unlock). |
@@ -153,7 +153,29 @@ Unit 1 with the custom firmware (which leaves `PB11`, `PA4`, `PB12` and `PB13` u
 
 Without the `PB11` pulses nothing moved on any line, also during the test-button hold. The stock chamber window follows every second `PB11` pulse, so the EFR32 most likely triggers each measurement over `PB11` and `IC301` answers on `PA4` or `PB12`.
 
-Conclusion: `IC301` is the smoke controller and `IC81` its LED/photodiode front end; the EFR32 exchanges `PB11` pulses with `IC301`, and `PB13` (`IC81` pin 14) was seen active only once (201 µs low after power-on). Which line reports smoke/alarm to the EFR32 is still open. Two captures taken after short test presses showed no cycle at all after power-on and stay unexplained (loose clips or a post-test pause).
+Conclusion: `IC301` is the smoke controller and `IC81` its LED/photodiode front end; the EFR32 exchanges `PB11` pulses with `IC301`, and `PB13` (`IC81` pin 14) was seen active only once (201 µs low after power-on). Which line reports smoke/alarm to the EFR32 is answered in section 7b. Two captures taken after short test presses showed no cycle at all after power-on and stay unexplained (loose clips or a post-test pause).
+
+## 7b. EFR32 -> `IC301` command UART (stock `3EA8VKXK`, 2026-11-28)
+
+Stock unit, Otii 3.0 V / 0.5 A, speaker fitted (muffled), Saleae Logic 4 at 3 MS/s digital (`Ch0` = `IC81` pin 12, `Ch1` = `PB11`, `Ch2` = `PA4`, `Ch3` = `PB12`). Logic 4 with the analog channel enabled stopped twice with `ReadTimeout`; digital-only captures run cleanly. Idle (30 s) and power-on + ~10 s test hold (90 s):
+
+| Signal | Observed |
+| :--- | :--- |
+| `PB11` (`IC301` pin 21) | 10.3-10.7 us high pulse every 4.000 s; stops after the test command. |
+| `IC81` pin 12 (`IC301` pin 27) | 2.54 ms high 6.4 ms after every second `PB11` pulse. |
+| `PB12` (`IC301` pin 30) | Low after power-on, **driven high 1.09 s later** (EFR32 init) and idles high; carries **115200 baud 8O1 UART frames** during the test (all 16 bytes have valid odd parity and stop bits). |
+| `PA4` (`IC301` pin 22) | High from power-on; goes **low for 101 ms and 499 ms** right after each `0x81` frame on `PB12`. |
+
+Decoded `PB12` traffic (test hold; the user heard a short chirp, then a longer tone):
+
+| Time | Bytes | Then |
+| :--- | :--- | :--- |
+| 34.956 s | `FF`, 6 ms gap, `FE`, 0.8 ms gap, `81 0B 0C` | `PA4` low 101 ms (chirp) |
+| 40.755 s | `FF`, `FE`, `F8` | - |
+| 42.634 s | `FF`, `FE`, `F8` | - |
+| 42.647 s | `FF`, `FE`, `81 0C 0C` | `PA4` low 499 ms (tone) |
+
+Frame format: `0xFF` wake byte, ~6 ms for `IC301` to wake, `0xFE` sync, ~0.8 ms, then the command bytes. The 42.634 s frame lands exactly on the slot of the next 4 s `PB11` pulse, and `PB12` only goes high once the EFR32 firmware runs (low on Unit 1 with the custom firmware), so `PB12` is the EFR32 TX to `IC301` (no reply bytes were seen on it). Working hypotheses, not yet confirmed: `0x81 <a> <b>` plays a sound (`0x0B` = chirp, `0x0C` = longer tone); `0xF8` is a status or stop command; `PA4` is `IC301`'s busy output (low while sound plays). The test hold also paused the `PB11` / chamber cycle again. Captures: `scratch/sal_stock_alarmlines_idle2.sal`, `scratch/sal_stock_alarmlines_test2.sal` (git-ignored).
 
 ## 8. Next bench steps
 
@@ -167,5 +189,7 @@ Conclusion: `IC301` is the smoke controller and `IC81` its LED/photodiode front 
 - [x] `IC301` pins 1/2/4 = `IC81` pins 6/7/8, pin 32 no link (2026-11-28).
 - [ ] Check whether `IC81` pin 14 is a supply rail (pins 19/20, `PA1`/`PA2` dividers).
 - [x] Saleae `PB11`, `PA4`, `PB12`, `PB13` on Unit 1 with the custom firmware (2026-11-28): `PB13` is a rail, no activity without `PB11` pulses.
-- [ ] Saleae the stock unit (`3EA8VKXK`) on `PB11`, `PA4`, `PB12` and `IC81` pin 12 during idle and a ~10 s test hold, to read `IC301`'s answer to each `PB11` pulse.
+- [x] Saleae the stock unit (`3EA8VKXK`) on `PB11`, `PA4`, `PB12` and `IC81` pin 12 during idle and a ~10 s test hold (2026-11-28, see section 7b): `PB12` = EFR32 -> `IC301` UART (115200 8O1), `PA4` = likely `IC301` busy.
+- [ ] Find how `IC301` reports smoke to the EFR32 (stock unit with test smoke or a blocked chamber; watch `PA4`, `PB12` and `PB13`).
+- [ ] Replay `FF`/`FE`/`81 0B 0C` from the custom firmware on Unit 1 (`USART` TX on `PB12`, 8O1) to confirm the sound command.
 - [ ] Unlock Unit 1 (`3EB7KFZQ`) via `AAP DEVICE_ERASE` (keep `3EA8VKXK` and `3EA8W6D6` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).
