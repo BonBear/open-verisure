@@ -142,6 +142,17 @@ Saleae Logic 4 on stock `3EA8VKXK` at 3.0 V (Ch0 analog `IC81` pin 16, Ch1 `PB13
 | `PB13` (`IC81` pin 14) | High; one 201 µs low pulse ~8.7 s after power-on, otherwise idle. |
 | Test button (~10 s hold, speaker fitted) | Short chirp, then a longer quiet tone ~9 s later; the 4 s / 8 s cycle paused ~43 s and then resumed. No test-specific edge on the four probed lines (the ~1.1 s `PB11` high in section 7 was on Unit 1 before unlock). |
 
+Unit 1 with the custom firmware (which leaves `PB11`, `PA4`, `PB12` and `PB13` undriven), Saleae 120 s from power-on at 3.0 V, test button held ~10 s, speaker not fitted (2026-11-28):
+
+| Signal | Observed |
+| :--- | :--- |
+| `PB13` net (`IC81` pin 14, `IC301` pins 19/20/29/31) | Rises to 2.99 V ~38 ms after power-on and stays flat: a supply rail switched on by `IC301`, not a data line. |
+| `PB11` (`IC301` pin 21) | Low the whole time: no 4 s pulses, so in the stock firmware the EFR32 drives the `PB11` pulses. |
+| `PA4` (`IC301` pin 22) | High from power-on, no edges. |
+| `PB12` (`IC301` pin 30) | Low, no edges. |
+
+Without the `PB11` pulses nothing moved on any line, also during the test-button hold. The stock chamber window follows every second `PB11` pulse, so the EFR32 most likely triggers each measurement over `PB11` and `IC301` answers on `PA4` or `PB12`.
+
 Conclusion: `IC301` is the smoke controller and `IC81` its LED/photodiode front end; the EFR32 exchanges `PB11` pulses with `IC301`, and `PB13` (`IC81` pin 14) was seen active only once (201 µs low after power-on). Which line reports smoke/alarm to the EFR32 is still open. Two captures taken after short test presses showed no cycle at all after power-on and stay unexplained (loose clips or a post-test pause).
 
 ## 8. Next bench steps
@@ -155,5 +166,6 @@ Conclusion: `IC301` is the smoke controller and `IC81` its LED/photodiode front 
 - [x] Recheck `IC301` pins 3, 17–31 (2026-11-28): new EFR32 links `PA4` (pin 22), `PB12` (pin 30), `PB13` (pin 31), `AVDD` (pin 25).
 - [x] `IC301` pins 1/2/4 = `IC81` pins 6/7/8, pin 32 no link (2026-11-28).
 - [ ] Check whether `IC81` pin 14 is a supply rail (pins 19/20, `PA1`/`PA2` dividers).
-- [ ] Saleae `PB11`, `PA4`, `PB12` and `PB13` on Unit 1 with the custom firmware (which leaves these pins undriven) during a ~10 s test-button hold, to see which line `IC301` uses to report the alarm.
+- [x] Saleae `PB11`, `PA4`, `PB12`, `PB13` on Unit 1 with the custom firmware (2026-11-28): `PB13` is a rail, no activity without `PB11` pulses.
+- [ ] Saleae the stock unit (`3EA8VKXK`) on `PB11`, `PA4`, `PB12` and `IC81` pin 12 during idle and a ~10 s test hold, to read `IC301`'s answer to each `PB11` pulse.
 - [ ] Unlock Unit 1 (`3EB7KFZQ`) via `AAP DEVICE_ERASE` (keep `3EA8VKXK` and `3EA8W6D6` stock) and flash custom OpenVerisure EFR32FG14 firmware (`gecko_sdk v4.4.6` + RAIL).
