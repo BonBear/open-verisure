@@ -238,6 +238,21 @@ frequency comes from the `POWER_UP` command (`XO_FREQ`), so start the capture be
 "verify against WDS" in the source: check the first real capture against Silicon Labs WDS before
 relying on the derived values. Polls with CTS not ready are only counted (`--verbose` lists them).
 
+### UART lines from a raw export (smoke detector `PB12` -> `IC301`)
+
+Plain serial lines need no Logic 2 analyser: use "Export Raw Data" (digital, CSV) and decode the
+`digital.csv` it writes. The default framing is the GW-SD3 command line (115200 baud, 8O1):
+
+```
+python tools/saleae_uart_decode.py digital.csv --channel 3
+python tools/saleae_uart_decode.py digital.csv --edges
+```
+
+Each byte is printed with its time, the gap to the previous byte and `PARITY` / `STOP` when the
+framing does not fit (exit code 1 then: try `--parity none|even` or another `--baud`). `--edges`
+lists the pulse times and widths on every channel. On the Logic 4, 3 MS/s digital is enough for
+115200 baud; 12 MS/s digital with 31250 S/s analog on `Ch0` also runs cleanly for 60 s.
+
 ### Pins (CC1101, QFN20, TI SWRS061)
 
 | Pin | Name | Pin | Name |
