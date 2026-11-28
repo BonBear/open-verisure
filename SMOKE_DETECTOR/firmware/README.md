@@ -97,6 +97,28 @@ make BUILD=build/cw EXTRA_CFLAGS=-DRADIO_TEST_CW  # bench carrier test (never de
 make BUILD=build/chamber EXTRA_CFLAGS=-DCHAMBER_SCAN  # bench GPIO/ADC chamber probe, results in g_scan (never deploy)
 ```
 
+```bash
+make BUILD=build/ic301 EXTRA_CFLAGS=-DIC301_TEST  # bench: chirp after every packet (never deploy)
+```
+
+### IC301 sound chip UART (`src/ic301.c`)
+
+`ic301_init()` (called after `clocks_init`) drives `PB12` (pin 32, USART0 TX location 7) high as a
+GPIO and sets `PA4` (pin 29) as an input. `PB12` goes to IC301 pin 30, `PA4` comes from IC301
+pin 22. The USART route is enabled only while a frame is sent, so the GPIO holds the line high
+in between (also in EM2).
+
+Frame (stock firmware capture 2026-11-28): 115200 baud, 8 data bits, odd parity, 1 stop bit,
+idle high: `0xFF` wake byte, ~6 ms gap, `0xFE` sync byte, ~0.8 ms gap, then the command bytes
+back to back. `ic301_send()` blocks about 7 ms: call it from the main loop only.
+`ic301_play(a, b)` sends `0x81 a b`; `0x81 0x0B 0x0C` is a short chirp, `0x81 0x0C 0x0C` a
+longer tone. That `0x81` means "play sound" and that `PA4` low means "busy" are hypotheses
+(see `../docs/re_worksheet.md` section 7b).
+
+With `-DIC301_TEST` the main loop plays `0x81 0x0B 0x0C` after every packet and publishes
+`g_ic301_tx_ok`, `g_ic301_tx_fail` and `g_ic301_busy_ms` (ms `PA4` stayed low) for SWD. Without
+it the only change is the `PB12`/`PA4` pin setup.
+
 CI (job "Smoke detector" in `.github/workflows/build.yml`) runs the default and `RADIO_TEST_CW` builds on Ubuntu (the `CHAMBER_SCAN` probe is not built or analysed in CI) with the
 packaged `gcc-arm-none-eabi` and `src/config.h.example`; it takes the RAIL library out of
 `gecko-sdk.zip` with `.github/scripts/fetch_zip_member.py` (HTTP range requests, no 1.3 GB download).

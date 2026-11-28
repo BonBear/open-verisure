@@ -21,6 +21,7 @@
 #include "battery.h"
 #include "chamber_scan.h"
 #include "ctr_log.h"
+#include "ic301.h"
 #include "packet.h"
 #include "power.h"
 #include "radio.h"
@@ -54,6 +55,11 @@ volatile uint32_t g_status;      /* 1 = running, 0xE1 radio init, 0xE2 counter l
 volatile uint32_t g_hf_clock;    /* SystemCoreClock after the switch to HFXO */
 volatile uint32_t g_lfxo_ok;     /* 1 = RTCC on the LFXO crystal, 0 = LFRCO fallback */
 volatile uint32_t g_batt_mv;
+#ifdef IC301_TEST
+volatile uint32_t g_ic301_tx_ok;      /* IC301_TEST: ic301_play frames sent / failed */
+volatile uint32_t g_ic301_tx_fail;
+volatile uint32_t g_ic301_busy_ms;    /* ms PA4 was low after the last command */
+#endif
 
 /* Busy wait on the RAIL microsecond timer. The DWT cycle counter is not used: a debugger
  * that disconnects clears DEMCR.TRCENA and stops it (the loop then never ended). */
@@ -149,6 +155,7 @@ int main(void)
   pins_init();
   const uint8_t rst = reset_cause();
   clocks_init();
+  ic301_init();                    /* PB12 idles high, PA4 input */
 
   uint32_t ctr;
   if (!ctr_log_init(&ctr)) {
@@ -213,6 +220,15 @@ int main(void)
     g_last_ctr = ctr;
     ctr++;                       /* a failed send also uses up its counter value */
     first = false;
+#ifdef IC301_TEST
+    /* Bench probe: short chirp after every packet, then time how long PA4 stays low. */
+    if (ic301_play(0x0Bu, 0x0Cu)) {
+      g_ic301_tx_ok++;
+    } else {
+      g_ic301_tx_fail++;
+    }
+    g_ic301_busy_ms = ic301_wait_idle_ms(1000u);
+#endif
 
     g_heartbeat++;
     if (first_sleep) {
